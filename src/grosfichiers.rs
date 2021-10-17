@@ -12,8 +12,9 @@ use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, sauvegarder_transaction_recue};
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
+use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb::options::{CountOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
@@ -27,10 +28,16 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 const DOMAINE_NOM: &str = "GrosFichiers";
 pub const NOM_COLLECTION_CLES: &str = "GrosFichiers/cles";
 pub const NOM_COLLECTION_TRANSACTIONS: &str = "GrosFichiers";
+const NOM_COLLECTION_FICHIERS: &str = "GrosFichiers/fichiers";
+const NOM_COLLECTION_COLLECTIONS: &str = "GrosFichiers/collections";
+const NOM_COLLECTION_DOCUMENTS: &str = "GrosFichiers/documents";
 
 const NOM_Q_TRANSACTIONS: &str = "GrosFichiers/transactions";
 const NOM_Q_VOLATILS: &str = "GrosFichiers/volatils";
 const NOM_Q_TRIGGERS: &str = "GrosFichiers/triggers";
+
+const CHAMP_CUUID: &str = "cuuid";  // UUID collection
+const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 
 #[derive(Clone, Debug)]
 pub struct GestionnaireGrosFichiers<'a> {
@@ -90,11 +97,17 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers<'_> {
         entretien(middleware).await
     }
 
-    async fn traiter_cedule<M>(self: &'static Self, middleware: &M, trigger: MessageValideAction) -> Result<(), Box<dyn Error>> where M: Middleware + 'static {
+    async fn traiter_cedule<M>(self: &'static Self, middleware: &M, trigger: &MessageCedule)
+        -> Result<(), Box<dyn Error>>
+        where M: Middleware + 'static
+    {
         traiter_cedule(middleware, trigger).await
     }
 
-    async fn aiguillage_transaction<M, T>(&self, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String> where M: ValidateurX509 + GenerateurMessages + MongoDao, T: Transaction {
+    async fn aiguillage_transaction<M, T>(&self, middleware: &M, transaction: T)
+        -> Result<Option<MessageMilleGrille>, String>
+        where M: ValidateurX509 + GenerateurMessages + MongoDao, T: Transaction
+    {
         aiguillage_transaction(middleware, transaction).await
     }
 }
@@ -164,34 +177,33 @@ pub fn preparer_queues() -> Vec<QueueType> {
 pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), String>
     where M: MongoDao
 {
-    // // Index hachage_bytes
-    // let options_unique_cles_hachage_bytes = IndexOptions {
-    //     nom_index: Some(String::from(INDEX_CLES_HACHAGE_BYTES)),
-    //     unique: true
-    // };
-    // let champs_index_cles_hachage_bytes = vec!(
-    //     ChampIndex {nom_champ: String::from(CHAMP_HACHAGE_BYTES), direction: 1},
-    // );
-    // middleware.create_index(
-    //     nom_collection_cles,
-    //     champs_index_cles_hachage_bytes,
-    //     Some(options_unique_cles_hachage_bytes)
-    // ).await?;
-    //
-    // // Index cles non dechiffrable
-    // let options_non_dechiffrables = IndexOptions {
-    //     nom_index: Some(String::from(INDEX_NON_DECHIFFRABLES)),
-    //     unique: false,
-    // };
-    // let champs_index_non_dechiffrables = vec!(
-    //     ChampIndex {nom_champ: String::from(CHAMP_NON_DECHIFFRABLE), direction: 1},
-    //     ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
-    // );
-    // middleware.create_index(
-    //     nom_collection_cles,
-    //     champs_index_non_dechiffrables,
-    //     Some(options_non_dechiffrables)
-    // ).await?;
+    // Index fuuid pour fichiers
+    let options_unique_fuuid = IndexOptions {
+        nom_index: Some(format!("fichiers_fuuid")),
+        unique: true
+    };
+    let champs_index_fuuid = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_FUUID), direction: 1},
+    );
+    middleware.create_index(
+        NOM_COLLECTION_FICHIERS,
+        champs_index_fuuid,
+        Some(options_unique_fuuid)
+    ).await?;
+
+    // Index cuuid pour collections
+    let options_unique_cuuid = IndexOptions {
+        nom_index: Some(format!("collections_cuuid")),
+        unique: true
+    };
+    let champs_index_cuuid = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_CUUID), direction: 1},
+    );
+    middleware.create_index(
+        NOM_COLLECTION_COLLECTIONS,
+        champs_index_cuuid,
+        Some(options_unique_cuuid)
+    ).await?;
 
     Ok(())
 }
@@ -205,7 +217,7 @@ pub async fn entretien<M>(_middleware: Arc<M>)
     }
 }
 
-pub async fn traiter_cedule<M>(_middleware: &M, _trigger: MessageValideAction) -> Result<(), Box<dyn Error>>
+pub async fn traiter_cedule<M>(_middleware: &M, _trigger: &MessageCedule) -> Result<(), Box<dyn Error>>
 where M: Middleware + 'static {
     // let message = trigger.message;
 
