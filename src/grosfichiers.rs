@@ -37,6 +37,7 @@ const NOM_Q_VOLATILS: &str = "GrosFichiers/volatils";
 const NOM_Q_TRIGGERS: &str = "GrosFichiers/triggers";
 
 const REQUETE_ACTIVITE_RECENTE: &str = "activiteRecente";
+const REQUETE_FAVORIS: &str = "favoris";
 
 const CHAMP_CUUID: &str = "cuuid";  // UUID collection
 const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
@@ -118,16 +119,14 @@ pub fn preparer_queues() -> Vec<QueueType> {
     let mut rk_volatils = Vec::new();
     //let mut rk_sauvegarder_cle = Vec::new();
 
-    // // RK 3.protege et 4.secure
-    // let requetes_protegees: Vec<&str> = vec![
-    //     REQUETE_CLES_NON_DECHIFFRABLES,
-    //     REQUETE_COMPTER_CLES_NON_DECHIFFRABLES,
-    //     REQUETE_SYNCHRONISER_CLES,
-    // ];
-    // for req in requetes_protegees {
-    //     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L3Protege});
-    //     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L4Secure});
-    // }
+    // RK 2.prive, 3.protege et 4.secure
+    let requetes_protegees: Vec<&str> = vec![
+        REQUETE_ACTIVITE_RECENTE,
+        REQUETE_FAVORIS,
+    ];
+    for req in requetes_protegees {
+        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L3Protege});
+    }
     // let evenements_proteges: Vec<&str> = vec![
     //     EVENEMENT_CLES_MANQUANTES_PARTITION,
     // ];
@@ -243,6 +242,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
         DOMAINE_NOM => {
             match message.action.as_str() {
                 REQUETE_ACTIVITE_RECENTE => requete_activite_recente(middleware, message, gestionnaire).await,
+                REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
                     Ok(None)
@@ -446,11 +446,31 @@ async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, ges
     // let opts = CountOptions::builder().hint(hint).build();
     // let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
     // let compte = collection.count_documents(filtre, opts).await?;
-    //
-    // let reponse = json!({ "compte": compte });
-    // Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 
-    Ok(middleware.reponse_ok()?)
+    let reponse = json!({ "fichiers": [] });
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_favoris Message : {:?}", & m.message);
+    // let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
+    // debug!("requete_compter_cles_non_dechiffrables cle parsed : {:?}", requete);
+
+    // let filtre = doc! { CHAMP_NON_DECHIFFRABLE: true };
+    // let hint = Hint::Name(INDEX_NON_DECHIFFRABLES.into());
+    // // let sort_doc = doc! {
+    // //     CHAMP_NON_DECHIFFRABLE: 1,
+    // //     CHAMP_CREATION: 1,
+    // // };
+    // let opts = CountOptions::builder().hint(hint).build();
+    // let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    // let compte = collection.count_documents(filtre, opts).await?;
+
+    let reponse = json!({ "favoris": [] });
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
 // #[derive(Clone, Debug, Serialize, Deserialize)]
