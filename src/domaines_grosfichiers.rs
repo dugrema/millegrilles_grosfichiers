@@ -28,22 +28,22 @@ const DUREE_ATTENTE: u64 = 20000;
 
 // Creer espace static pour conserver les gestionnaires
 
-static mut GESTIONNAIRES: [TypeGestionnaire; 4] = [TypeGestionnaire::None, TypeGestionnaire::None, TypeGestionnaire::None, TypeGestionnaire::None];
+static mut GESTIONNAIRE: TypeGestionnaire = TypeGestionnaire::None;
 
 /// Enum pour distinger les types de gestionnaires.
 #[derive(Clone, Debug)]
-enum TypeGestionnaire<'a> {
-    PartitionConsignation(Arc<GestionnaireGrosFichiers<'a>>),
+enum TypeGestionnaire {
+    PartitionConsignation(Arc<GestionnaireGrosFichiers>),
     None
 }
 
 pub async fn run() {
 
     // Init gestionnaires ('static)
-    let gestionnaires = charger_gestionnaires();
+    let gestionnaire = charger_gestionnaire();
 
     // Wiring
-    let (futures, _) = build(gestionnaires).await;
+    let (futures, _) = build(gestionnaire).await;
 
     // Run
     executer(futures).await
@@ -51,33 +51,34 @@ pub async fn run() {
 
 /// Fonction qui lit le certificat local et extrait les fingerprints idmg et de partition
 /// Conserve les gestionnaires dans la variable GESTIONNAIRES 'static
-fn charger_gestionnaires() -> Vec<&'static TypeGestionnaire<'static>> {
+fn charger_gestionnaire() -> &'static TypeGestionnaire {
     // Charger une version simplifiee de la configuration - on veut le certificat associe a l'enveloppe privee
     // let config = charger_configuration().expect("config");
 
     // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
     unsafe {
-        GESTIONNAIRES[0] = TypeGestionnaire::PartitionConsignation(Arc::new(GestionnaireGrosFichiers { consignation: "DUMMY" }));
+        GESTIONNAIRE = TypeGestionnaire::PartitionConsignation(Arc::new(GestionnaireGrosFichiers {}));
 
-        let mut vec_gestionnaires = Vec::new();
-        vec_gestionnaires.extend(&GESTIONNAIRES);
-        vec_gestionnaires
+        // let mut vec_gestionnaires = Vec::new();
+        // vec_gestionnaires.extend(&GESTIONNAIRES);
+        // vec_gestionnaires
+        &GESTIONNAIRE
     }
 }
 
-async fn build(gestionnaires: Vec<&'static TypeGestionnaire<'_>>) -> (FuturesUnordered<JoinHandle<()>>, Arc<MiddlewareDb>) {
+async fn build(gestionnaire: &'static TypeGestionnaire) -> (FuturesUnordered<JoinHandle<()>>, Arc<MiddlewareDb>) {
 
     // Recuperer configuration des Q de tous les domaines
     let queues = {
         let mut queues: Vec<QueueType> = Vec::new();
-        for g in gestionnaires.clone() {
-            match g {
+        //for g in gestionnaires.clone() {
+            match gestionnaire {
                 TypeGestionnaire::PartitionConsignation(g) => {
                     queues.extend(g.preparer_queues());
                 },
                 TypeGestionnaire::None => ()
             }
-        }
+        //}
         queues
     };
 
@@ -114,11 +115,11 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire<'_>>) -> (FuturesUno
 
         // ** Domaines **
         {
-            for g in gestionnaires.clone() {
+            //for g in gestionnaires.clone() {
                 let (
                     routing_g,
                     futures_g,
-                ) = match g {
+                ) = match gestionnaire {
                     TypeGestionnaire::PartitionConsignation(g) => {
                         g.preparer_threads(middleware.clone()).await.expect("gestionnaire")
                     },
@@ -126,7 +127,7 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire<'_>>) -> (FuturesUno
                 };
                 futures.extend(futures_g);        // Deplacer vers futures globaux
                 map_senders.extend(routing_g);    // Deplacer vers mapping global
-            }
+            //}
         }
 
         // ** Wiring global **
@@ -140,7 +141,7 @@ async fn build(gestionnaires: Vec<&'static TypeGestionnaire<'_>>) -> (FuturesUno
         ));
 
         // ** Thread d'entretien **
-        futures.push(spawn(entretien(middleware.clone(), rx_entretien, gestionnaires.clone())));
+        futures.push(spawn(entretien(middleware.clone(), rx_entretien, vec![gestionnaire])));
 
         // Thread ecoute et validation des messages
         for f in future_recevoir_messages {
@@ -158,7 +159,7 @@ async fn executer(mut futures: FuturesUnordered<JoinHandle<()>>) {
 }
 
 /// Thread d'entretien
-async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnaires: Vec<&'static TypeGestionnaire<'_>>)
+async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnaires: Vec<&'static TypeGestionnaire>)
     where M: Middleware
 {
     let mut certificat_emis = false;

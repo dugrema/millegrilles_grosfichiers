@@ -36,16 +36,18 @@ const NOM_Q_TRANSACTIONS: &str = "GrosFichiers/transactions";
 const NOM_Q_VOLATILS: &str = "GrosFichiers/volatils";
 const NOM_Q_TRIGGERS: &str = "GrosFichiers/triggers";
 
+const REQUETE_ACTIVITE_RECENTE: &str = "activiteRecente";
+
 const CHAMP_CUUID: &str = "cuuid";  // UUID collection
 const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 
 #[derive(Clone, Debug)]
-pub struct GestionnaireGrosFichiers<'a> {
-    pub consignation: &'a str,
+pub struct GestionnaireGrosFichiers {
+    // pub consignation: String,
 }
 
 #[async_trait]
-impl TraiterTransaction for GestionnaireGrosFichiers<'_> {
+impl TraiterTransaction for GestionnaireGrosFichiers {
     async fn appliquer_transaction<M>(&self, middleware: &M, transaction: TransactionImpl) -> Result<Option<MessageMilleGrille>, String>
         where M: ValidateurX509 + GenerateurMessages + MongoDao
     {
@@ -54,7 +56,7 @@ impl TraiterTransaction for GestionnaireGrosFichiers<'_> {
 }
 
 #[async_trait]
-impl GestionnaireDomaine for GestionnaireGrosFichiers<'_> {
+impl GestionnaireDomaine for GestionnaireGrosFichiers {
     fn get_nom_domaine(&self) -> String { String::from(DOMAINE_NOM) }
 
     fn get_collection_transactions(&self) -> String { String::from(NOM_COLLECTION_TRANSACTIONS) }
@@ -226,7 +228,7 @@ where M: Middleware + 'static {
     Ok(())
 }
 
-async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers<'_>) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
 {
     debug!("Consommer requete : {:?}", &message.message);
@@ -240,7 +242,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
     match message.domaine.as_str() {
         DOMAINE_NOM => {
             match message.action.as_str() {
-                // REQUETE_COMPTER_CLES_NON_DECHIFFRABLES => requete_compter_cles_non_dechiffrables(middleware, message, gestionnaire).await,
+                REQUETE_ACTIVITE_RECENTE => requete_activite_recente(middleware, message, gestionnaire).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
                     Ok(None)
@@ -297,7 +299,7 @@ where
     }
 }
 
-async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire_ca: &GestionnaireGrosFichiers<'_>)
+async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire_ca: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage
 {
@@ -427,27 +429,29 @@ async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<
 //     Ok(None)
 // }
 
-// async fn requete_compter_cles_non_dechiffrables<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-//     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-//     where M: GenerateurMessages + MongoDao + VerificateurMessage,
-// {
-//     debug!("requete_compter_cles_non_dechiffrables Consommer commande : {:?}", & m.message);
-//     // let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
-//     // debug!("requete_compter_cles_non_dechiffrables cle parsed : {:?}", requete);
-//
-//     let filtre = doc! { CHAMP_NON_DECHIFFRABLE: true };
-//     let hint = Hint::Name(INDEX_NON_DECHIFFRABLES.into());
-//     // let sort_doc = doc! {
-//     //     CHAMP_NON_DECHIFFRABLE: 1,
-//     //     CHAMP_CREATION: 1,
-//     // };
-//     let opts = CountOptions::builder().hint(hint).build();
-//     let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
-//     let compte = collection.count_documents(filtre, opts).await?;
-//
-//     let reponse = json!({ "compte": compte });
-//     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
-// }
+async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_activite_recente Message : {:?}", & m.message);
+    // let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
+    // debug!("requete_compter_cles_non_dechiffrables cle parsed : {:?}", requete);
+
+    // let filtre = doc! { CHAMP_NON_DECHIFFRABLE: true };
+    // let hint = Hint::Name(INDEX_NON_DECHIFFRABLES.into());
+    // // let sort_doc = doc! {
+    // //     CHAMP_NON_DECHIFFRABLE: 1,
+    // //     CHAMP_CREATION: 1,
+    // // };
+    // let opts = CountOptions::builder().hint(hint).build();
+    // let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
+    // let compte = collection.count_documents(filtre, opts).await?;
+    //
+    // let reponse = json!({ "compte": compte });
+    // Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+
+    Ok(middleware.reponse_ok()?)
+}
 
 // #[derive(Clone, Debug, Serialize, Deserialize)]
 // struct RequeteClesNonDechiffrable {
