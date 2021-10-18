@@ -500,7 +500,7 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
     };
     debug!("nouveau fichier Resultat transaction update : {:?}", resultat);
 
-    Ok(None)
+    middleware.reponse_ok()
 }
 
 async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
