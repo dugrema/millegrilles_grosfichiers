@@ -22,6 +22,7 @@ use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange,
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::{serde_json, serde_json::json};
+use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio::time::{Duration, sleep};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction, TransactionImpl};
@@ -39,6 +40,7 @@ const NOM_Q_TRIGGERS: &str = "GrosFichiers/triggers";
 
 const REQUETE_ACTIVITE_RECENTE: &str = "activiteRecente";
 const REQUETE_FAVORIS: &str = "favoris";
+const REQUETE_DOCUMENTS_PAR_TUUID: &str = "documentsParTuuid";
 
 const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 
@@ -134,6 +136,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     let requetes_protegees: Vec<&str> = vec![
         REQUETE_ACTIVITE_RECENTE,
         REQUETE_FAVORIS,
+        REQUETE_DOCUMENTS_PAR_TUUID,
     ];
     for req in requetes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L3Protege});
@@ -302,9 +305,15 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
     debug!("Consommer requete : {:?}", &message.message);
 
     // Autorisation : On accepte les requetes de 3.protege ou 4.secure
-    match message.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+    match message.verifier_exchanges(vec![Securite::L3Protege]) {
         true => Ok(()),
-        false => Err(format!("Trigger cedule autorisation invalide (pas d'un exchange reconnu)")),
+        false => {
+            // Verifier si on a un certificat delegation globale
+            match message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+                true => Ok(()),
+                false => Err(format!("consommer_requete autorisation invalide (pas d'un exchange reconnu)"))
+            }
+        }
     }?;
 
     match message.domaine.as_str() {
@@ -312,6 +321,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
             match message.action.as_str() {
                 REQUETE_ACTIVITE_RECENTE => requete_activite_recente(middleware, message, gestionnaire).await,
                 REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
+                REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
                     Ok(None)
@@ -554,20 +564,24 @@ async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, ges
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let mut curseur = collection.find(filtre, opts).await?;
-    let fichiers_mappes = {
-        let mut fichiers_mappes = Vec::new();
-        while let Some(fresult) = curseur.next().await {
-            let fcurseur = fresult?;
-            let fichier_db = mapper_fichier_db(fcurseur)?;
-            let fichier_mappe: FichierVersionCourante = fichier_db.try_into()?;
-            fichiers_mappes.push(fichier_mappe);
-        }
-        // Convertir fichiers en Value (serde pour reponse json)
-        serde_json::to_value(fichiers_mappes)
-    }?;
+    let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
 
     let reponse = json!({ "fichiers": fichiers_mappes });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+async fn mapper_fichiers_curseur(mut curseur: Cursor<Document>) -> Result<Value, Box<dyn Error>> {
+    let mut fichiers_mappes = Vec::new();
+
+    while let Some(fresult) = curseur.next().await {
+        let fcurseur = fresult?;
+        let fichier_db = mapper_fichier_db(fcurseur)?;
+        let fichier_mappe: FichierVersionCourante = fichier_db.try_into()?;
+        fichiers_mappes.push(fichier_mappe);
+    }
+
+    // Convertir fichiers en Value (serde pour reponse json)
+    Ok(serde_json::to_value(fichiers_mappes)?)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -669,6 +683,34 @@ async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire
 
     let reponse = json!({ "favoris": [] });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_documents_par_tuuid Message : {:?}", & m.message);
+    let requete: RequeteDocumentsParTuuids = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_documents_par_tuuid cle parsed : {:?}", requete);
+
+    let filtre = doc! { CHAMP_TUUID: {"$in": &requete.tuuids_documents} };
+    // let hint = Hint::Name(INDEX_NON_DECHIFFRABLES.into());
+    // // let sort_doc = doc! {
+    // //     CHAMP_NON_DECHIFFRABLE: 1,
+    // //     CHAMP_CREATION: 1,
+    // // };
+    // let opts = CountOptions::builder().hint(hint).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let curseur = collection.find(filtre, None).await?;
+    let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
+
+    let reponse = json!({ "fichiers":  fichiers_mappes });
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteDocumentsParTuuids {
+    tuuids_documents: Vec<String>,
 }
 
 // #[derive(Clone, Debug, Serialize, Deserialize)]
