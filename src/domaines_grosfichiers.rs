@@ -153,9 +153,9 @@ async fn build(gestionnaire: &'static TypeGestionnaire) -> (FuturesUnordered<Joi
 }
 
 async fn executer(mut futures: FuturesUnordered<JoinHandle<()>>) {
-    info!("domaines_senseurspassifs: Demarrage traitement, top level threads {}", futures.len());
+    info!("domaines_grosfichiers: Demarrage traitement, top level threads {}", futures.len());
     let arret = futures.next().await;
-    info!("domaines_senseurspassifs: Fermeture du contexte, task daemon terminee : {:?}", arret);
+    info!("domaines_grosfichiers: Fermeture du contexte, task daemon terminee : {:?}", arret);
 }
 
 /// Thread d'entretien
@@ -191,23 +191,23 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
     let mut prochain_chargement_certificats_autres = chrono::Utc::now();
     let intervalle_chargement_certificats_autres = chrono::Duration::minutes(5);
 
-    info!("domaines_senseurspassifs.entretien : Debut thread dans 5 secondes");
+    info!("domaines_grosfichiers.entretien : Debut thread dans 5 secondes");
 
     // Donner 5 secondes pour que les Q soient pretes (e.g. Q reponse)
     sleep(DurationTokio::new(5, 0)).await;
 
     loop {
         let maintenant = chrono::Utc::now();
-        debug!("domaines_senseurspassifs.entretien  Execution task d'entretien Core {:?}", maintenant);
+        debug!("domaines_grosfichiers.entretien  Execution task d'entretien Core {:?}", maintenant);
 
         // Sleep jusqu'au prochain entretien ou evenement MQ (e.g. connexion)
-        debug!("domaines_senseurspassifs.entretien Fin cycle, sleep {} secondes", DUREE_ATTENTE / 1000);
+        debug!("domaines_grosfichiers.entretien Fin cycle, sleep {} secondes", DUREE_ATTENTE / 1000);
         let duration = DurationTokio::from_millis(DUREE_ATTENTE);
 
         let result = timeout(duration, rx.recv()).await;
         match result {
             Ok(inner) => {
-                debug!("domaines_senseurspassifs.entretien Recu event MQ : {:?}", inner);
+                debug!("domaines_grosfichiers.entretien Recu event MQ : {:?}", inner);
                 match inner {
                     Some(e) => {
                         match e {
@@ -220,14 +220,14 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                         }
                     },
                     None => {
-                        warn!("domaines_senseurspassifs.entretien MQ n'est pas disponible, on ferme");
+                        warn!("domaines_grosfichiers.entretien MQ n'est pas disponible, on ferme");
                         break
                     },
                 }
 
             },
             Err(_) => {
-                debug!("domaines_senseurspassifs.entretien entretien Timeout, entretien est du");
+                debug!("domaines_grosfichiers.entretien entretien Timeout, entretien est du");
             }
         }
 
@@ -244,18 +244,18 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                     prochain_entretien_transactions = maintenant + intervalle_entretien_transactions;
                 },
                 Err(e) => {
-                    warn!("domaines_senseurspassifs.entretien Erreur resoumission transactions (entretien) : {:?}", e);
+                    warn!("domaines_grosfichiers.entretien Erreur resoumission transactions (entretien) : {:?}", e);
                 }
             }
         }
 
         if certificat_emis == false {
-            debug!("domaines_senseurspassifs.entretien Emettre certificat");
+            debug!("domaines_grosfichiers.entretien Emettre certificat");
             match middleware.emettre_certificat(middleware.as_ref()).await {
                 Ok(()) => certificat_emis = true,
                 Err(e) => error!("Erreur emission certificat local : {:?}", e),
             }
-            debug!("domaines_senseurspassifs.entretien Fin emission traitement certificat local, resultat : {}", certificat_emis);
+            debug!("domaines_grosfichiers.entretien Fin emission traitement certificat local, resultat : {}", certificat_emis);
         }
 
         for g in &gestionnaires {
@@ -270,7 +270,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
     }
 
     // panic!("Forcer fermeture");
-    info!("domaines_senseurspassifs.entretien : Fin thread");
+    info!("domaines_grosfichiers.entretien : Fin thread");
 }
 
 async fn consommer(
@@ -278,12 +278,12 @@ async fn consommer(
     mut rx: Receiver<TypeMessage>,
     map_senders: HashMap<String, Sender<TypeMessage>>
 ) {
-    info!("domaines_senseurspassifs.consommer : Debut thread, mapping : {:?}", map_senders.keys());
+    info!("domaines_grosfichiers.consommer : Debut thread, mapping : {:?}", map_senders.keys());
 
     while let Some(message) = rx.recv().await {
         match &message {
             TypeMessage::Valide(m) => {
-                warn!("domaines_senseurspassifs.consommer: Message valide sans routing key/action : {:?}", m.message);
+                warn!("domaines_grosfichiers.consommer: Message valide sans routing key/action : {:?}", m.message);
             },
             TypeMessage::ValideAction(m) => {
                 let contenu = &m.message;
@@ -291,22 +291,22 @@ async fn consommer(
                 let action = m.action.as_str();
                 let domaine = m.domaine.as_str();
                 let nom_q = m.q.as_str();
-                info!("domaines_senseurspassifs.consommer: Traiter message valide (action: {}, rk: {}, q: {}): {:?}", action, rk, nom_q, contenu);
+                info!("domaines_grosfichiers.consommer: Traiter message valide (action: {}, rk: {}, q: {}): {:?}", action, rk, nom_q, contenu);
 
                 // Tenter de mapper avec le nom de la Q (ne fonctionnera pas pour la Q de reponse)
                 let sender = match map_senders.get(nom_q) {
                     Some(sender) => {
-                        debug!("domaines_senseurspassifs.consommer Mapping message avec nom_q: {}", nom_q);
+                        debug!("domaines_grosfichiers.consommer Mapping message avec nom_q: {}", nom_q);
                         sender
                     },
                     None => {
                         match map_senders.get(domaine) {
                             Some(sender) => {
-                                debug!("domaines_senseurspassifs.consommer Mapping message avec domaine: {}", domaine);
+                                debug!("domaines_grosfichiers.consommer Mapping message avec domaine: {}", domaine);
                                 sender
                             },
                             None => {
-                                error!("domaines_senseurspassifs.consommer Message de queue ({}) et domaine ({}) inconnu, on le drop", nom_q, domaine);
+                                error!("domaines_grosfichiers.consommer Message de queue ({}) et domaine ({}) inconnu, on le drop", nom_q, domaine);
                                 continue  // On skip
                             },
                         }
@@ -316,7 +316,7 @@ async fn consommer(
                 match sender.send(message).await {
                     Ok(()) => (),
                     Err(e) => {
-                        error!("domaines_senseurspassifs.consommer Erreur consommer message {:?}", e)
+                        error!("domaines_grosfichiers.consommer Erreur consommer message {:?}", e)
                     }
                 }
             },
@@ -325,7 +325,7 @@ async fn consommer(
         }
     }
 
-    info!("domaines_senseurspassifs.consommer: Fin thread : {:?}", map_senders.keys());
+    info!("domaines_grosfichiers.consommer: Fin thread : {:?}", map_senders.keys());
 }
 
 #[cfg(test)]

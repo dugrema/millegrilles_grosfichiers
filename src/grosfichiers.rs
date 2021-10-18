@@ -29,8 +29,8 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 const DOMAINE_NOM: &str = "GrosFichiers";
 pub const NOM_COLLECTION_TRANSACTIONS: &str = "GrosFichiers";
-const NOM_COLLECTION_FICHIERS: &str = "GrosFichiers/fichiers";
-const NOM_COLLECTION_COLLECTIONS: &str = "GrosFichiers/collections";
+const NOM_COLLECTION_FICHIERS_REP: &str = "GrosFichiers/fichiersRep";
+const NOM_COLLECTION_VERSIONS: &str = "GrosFichiers/versionsFichiers";
 const NOM_COLLECTION_DOCUMENTS: &str = "GrosFichiers/documents";
 
 const NOM_Q_TRANSACTIONS: &str = "GrosFichiers/transactions";
@@ -43,7 +43,7 @@ const REQUETE_FAVORIS: &str = "favoris";
 const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 
 const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
-const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale, serie de fuuids
+const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale (fichier ou collection)
 const CHAMP_CUUID: &str = "cuuid";  // UUID collection de tuuids
 const CHAMP_SUPPRIME: &str = "supprime";
 const CHAMP_MIMETYPE: &str = "mimetype";
@@ -70,8 +70,8 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
     fn get_collection_transactions(&self) -> String { String::from(NOM_COLLECTION_TRANSACTIONS) }
 
     fn get_collections_documents(&self) -> Vec<String> { vec![
-        String::from(NOM_COLLECTION_COLLECTIONS),
-        String::from(NOM_COLLECTION_FICHIERS),
+        String::from(NOM_COLLECTION_VERSIONS),
+        String::from(NOM_COLLECTION_FICHIERS_REP),
         String::from(NOM_COLLECTION_DOCUMENTS),
     ] }
 
@@ -200,7 +200,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from("fuuids"), direction: 1},
     );
     middleware.create_index(
-        NOM_COLLECTION_FICHIERS,
+        NOM_COLLECTION_FICHIERS_REP,
         champs_index_fuuid,
         Some(options_unique_fuuid)
     ).await?;
@@ -214,7 +214,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from("cuuids"), direction: 1},
     );
     middleware.create_index(
-        NOM_COLLECTION_FICHIERS,
+        NOM_COLLECTION_FICHIERS_REP,
         champs_index_cuuid,
         Some(options_unique_cuuid)
     ).await?;
@@ -228,7 +228,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
     );
     middleware.create_index(
-        NOM_COLLECTION_FICHIERS,
+        NOM_COLLECTION_FICHIERS_REP,
         champs_index_tuuid,
         Some(options_unique_tuuid)
     ).await?;
@@ -244,25 +244,37 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},  // Tri stable
     );
     middleware.create_index(
-        NOM_COLLECTION_FICHIERS,
+        NOM_COLLECTION_FICHIERS_REP,
         champs_recents,
         Some(options_recents)
     ).await?;
 
     // Index cuuid pour collections
-    let options_unique_cuuid = IndexOptions {
-        nom_index: Some(format!("collections_cuuid")),
+    let options_unique_versions_fuuid = IndexOptions {
+        nom_index: Some(format!("versions_fuuid")),
         unique: true
     };
-    let champs_index_cuuid = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_CUUID), direction: 1},
+    let champs_index_versions_fuuid = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_FUUID), direction: 1},
     );
     middleware.create_index(
-        NOM_COLLECTION_COLLECTIONS,
-        champs_index_cuuid,
-        Some(options_unique_cuuid)
+        NOM_COLLECTION_VERSIONS,
+        champs_index_versions_fuuid,
+        Some(options_unique_versions_fuuid)
     ).await?;
-
+    // Index fuuids pour fichiers (liste par fsuuid)
+    let options_unique_fuuid = IndexOptions {
+        nom_index: Some(format!("Versions_fuuids")),
+        unique: false
+    };
+    let champs_index_fuuid = vec!(
+        ChampIndex {nom_champ: String::from("fuuids"), direction: 1},
+    );
+    middleware.create_index(
+        NOM_COLLECTION_VERSIONS,
+        champs_index_fuuid,
+        Some(options_unique_fuuid)
+    ).await?;
     Ok(())
 }
 
@@ -447,14 +459,40 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
         Ok(d) => d,
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur conversion transaction en bson : {:?}", e))?
     };
+
     let fuuid = transaction_fichier.fuuid;
     let cuuid = transaction_fichier.cuuid;
     let nom_fichier = transaction_fichier.nom_fichier;
     let mimetype = transaction_fichier.mimetype;
+
+    // Retirer champ CUUID, pas utile dans l'information de version
+    doc_bson_transaction.remove(CHAMP_CUUID);
+
+    // Inserer document de version
+    {
+        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        let mut doc_version = doc_bson_transaction.clone();
+        doc_version.insert("tuuid", &tuuid);
+        doc_version.insert("fuuids", vec![&fuuid]);
+        // Information optionnelle pour accelerer indexation/traitement media
+        if mimetype.starts_with("image") {
+            doc_version.insert("flag_media", "image");
+            doc_version.insert("flag_media_traite", false);
+        } else if mimetype.starts_with("video") {
+            doc_version.insert("flag_media", "video");
+            doc_version.insert("flag_media_traite", false);
+        } else if mimetype =="application/pdf" {
+            doc_version.insert("flag_indexe", false);
+        }
+        match collection.insert_one(doc_version, None).await {
+            Ok(_) => (),
+            Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur insertion nouvelle version {} : {:?}", fuuid, e))?
+        }
+    }
+
     // Retirer champs cles - ils sont inutiles dans la version
     doc_bson_transaction.remove(CHAMP_TUUID);
     doc_bson_transaction.remove(CHAMP_FUUID);
-    doc_bson_transaction.remove(CHAMP_CUUID);
 
     let filtre = doc! {CHAMP_TUUID: &tuuid};
     let mut add_to_set = doc!{"fuuids": &fuuid};
@@ -463,36 +501,23 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
         add_to_set.insert("cuuids", c);
     }
 
-    let mut doc_set = doc!{
-        format!("versions.{}", fuuid): doc_bson_transaction,
-        CHAMP_FUUID_V_COURANTE: &fuuid,
-        CHAMP_MIMETYPE: &mimetype,
-        CHAMP_SUPPRIME: false,
-    };
-
-    // Information optionnelle pour accelerer indexation/traitement media
-    if mimetype.starts_with("image") {
-        doc_set.insert("flag_media", "image");
-        doc_set.insert("flag_media_traite", false);
-    } else if mimetype.starts_with("video") {
-        doc_set.insert("flag_media", "video");
-        doc_set.insert("flag_media_traite", false);
-    } else if mimetype =="application/pdf" {
-        doc_set.insert("flag_indexe", false);
-    }
-
     let ops = doc! {
-        "$set": doc_set,
+        "$set": {
+            "version_courante": doc_bson_transaction,
+            CHAMP_FUUID_V_COURANTE: &fuuid,
+            CHAMP_MIMETYPE: &mimetype,
+            CHAMP_SUPPRIME: false,
+        },
         "$addToSet": add_to_set,
         "$setOnInsert": {
-            "nom_fichier": &nom_fichier,
+            "nom": &nom_fichier,
             "tuuid": &tuuid,
             CHAMP_CREATION: Utc::now(),
         },
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
     let opts = UpdateOptions::builder().upsert(true).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS)?;
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     debug!("nouveau fichier update ops : {:?}", ops);
     let resultat = match collection.update_one(filtre, ops, opts).await {
         Ok(r) => r,
@@ -508,18 +533,26 @@ async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, ges
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_activite_recente Message : {:?}", & m.message);
-    // let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
-    // debug!("requete_compter_cles_non_dechiffrables cle parsed : {:?}", requete);
+    let requete: RequetePlusRecente = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_activite_recente cle parsed : {:?}", requete);
+    let limit = match requete.limit {
+        Some(l) => l,
+        None => 100
+    };
+    let skip = match requete.skip {
+        Some(s) => s,
+        None => 0
+    };
 
     let opts = FindOptions::builder()
         .hint(Hint::Name(String::from("fichiers_activite_recente")))
         .sort(doc!{CHAMP_SUPPRIME: -1, CHAMP_MODIFICATION: -1, CHAMP_TUUID: 1})
-        .limit(100)
-        .skip(0)
+        .limit(limit)
+        .skip(skip)
         .build();
     let filtre = doc!{CHAMP_SUPPRIME: false};
 
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS)?;
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let mut curseur = collection.find(filtre, opts).await?;
     let fichiers_mappes = {
         let mut fichiers_mappes = Vec::new();
@@ -537,11 +570,17 @@ async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, ges
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
-fn mapper_fichier_db(fichier: Document) -> Result<DBFichier, Box<dyn Error>> {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequetePlusRecente {
+    limit: Option<i64>,
+    skip: Option<u64>,
+}
+
+fn mapper_fichier_db(fichier: Document) -> Result<FichierVersionCourante, Box<dyn Error>> {
     let date_creation = fichier.get_datetime(CHAMP_CREATION)?.clone();
     let date_modification = fichier.get_datetime(CHAMP_MODIFICATION)?.clone();
-    let mut fichier_mappe: DBFichier = convertir_bson_deserializable(fichier)?;
-    fichier_mappe.creation = Some(DateEpochSeconds::from(date_creation.to_chrono()));
+    let mut fichier_mappe: FichierVersionCourante = convertir_bson_deserializable(fichier)?;
+    fichier_mappe.date_creation = Some(DateEpochSeconds::from(date_creation.to_chrono()));
     fichier_mappe.derniere_modification = Some(DateEpochSeconds::from(date_modification.to_chrono()));
     debug!("Fichier mappe : {:?}", fichier_mappe);
     Ok(fichier_mappe)
@@ -552,54 +591,54 @@ struct FichierVersionCourante {
     tuuid: String,
     #[serde(skip_serializing_if="Option::is_none")]
     cuuids: Option<Vec<String>>,
-    nom_fichier: String,
+    nom: String,
+    titre: Option<HashMap<String, String>>,
 
-    fuuid: String,
-    fuuid_v_courante: String,
-    version_courante: DBFichierVersion,
+    fuuid_v_courante: Option<String>,
+    version_courante: Option<DBFichierVersion>,
 
     date_creation: Option<DateEpochSeconds>,
     derniere_modification: Option<DateEpochSeconds>,
 }
 
-impl TryFrom<DBFichier> for FichierVersionCourante {
-    type Error = String;
+// impl TryFrom<DBFichier> for FichierVersionCourante {
+//     type Error = String;
+//
+//     fn try_from(mut value: DBFichier) -> Result<Self, Self::Error> {
+//         let fuuid = value.fuuid_v_courante;
+//         let vc = match value.versions.remove(&fuuid) {
+//             Some(v) => v,
+//             None => Err(format!("Mapping version {} manquant", &fuuid))?
+//         };
+//
+//         Ok(FichierVersionCourante {
+//             tuuid: value.tuuid,
+//             cuuids: value.cuuids,
+//             nom_fichier: value.nom_fichier,
+//
+//             fuuid: fuuid.clone(),
+//             fuuid_v_courante: fuuid,
+//             version_courante: vc,
+//
+//             date_creation: value.creation,
+//             derniere_modification: value.derniere_modification,
+//         })
+//     }
+// }
 
-    fn try_from(mut value: DBFichier) -> Result<Self, Self::Error> {
-        let fuuid = value.fuuid_v_courante;
-        let vc = match value.versions.remove(&fuuid) {
-            Some(v) => v,
-            None => Err(format!("Mapping version {} manquant", &fuuid))?
-        };
-
-        Ok(FichierVersionCourante {
-            tuuid: value.tuuid,
-            cuuids: value.cuuids,
-            nom_fichier: value.nom_fichier,
-
-            fuuid: fuuid.clone(),
-            fuuid_v_courante: fuuid,
-            version_courante: vc,
-
-            date_creation: value.creation,
-            derniere_modification: value.derniere_modification,
-        })
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct DBFichier {
-    tuuid: String,
-    cuuids: Option<Vec<String>>,
-    fuuids: Vec<String>,
-    nom_fichier: String,
-    fuuid_v_courante: String,
-    versions: HashMap<String, DBFichierVersion>,
-
-    // Champs mappes indirectement
-    creation: Option<DateEpochSeconds>,
-    derniere_modification: Option<DateEpochSeconds>,
-}
+// #[derive(Clone, Debug, Serialize, Deserialize)]
+// struct DBFichier {
+//     tuuid: String,
+//     cuuids: Option<Vec<String>>,
+//     fuuids: Vec<String>,
+//     nom_fichier: String,
+//     fuuid_v_courante: String,
+//     versions: HashMap<String, DBFichierVersion>,
+//
+//     // Champs mappes indirectement
+//     creation: Option<DateEpochSeconds>,
+//     derniere_modification: Option<DateEpochSeconds>,
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct DBFichierVersion {
