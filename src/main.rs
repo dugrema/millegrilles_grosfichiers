@@ -1,5 +1,10 @@
 mod grosfichiers;
 mod domaines_grosfichiers;
+mod traitement_media;
+mod transactions;
+mod grosfichiers_constantes;
+mod commandes;
+mod requetes;
 
 use log::{info};
 use millegrilles_common_rust::tokio as tokio;
