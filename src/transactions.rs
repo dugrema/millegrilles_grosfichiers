@@ -17,6 +17,7 @@ use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::mongodb::options::UpdateOptions;
 
 use crate::grosfichiers_constantes::*;
+use crate::traitement_media::emettre_commande_media;
 
 pub async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
 where
@@ -128,22 +129,28 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
     // Retirer champ CUUID, pas utile dans l'information de version
     doc_bson_transaction.remove(CHAMP_CUUID);
 
+    let mut flag_media = false;
+
     // Inserer document de version
     {
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
         let mut doc_version = doc_bson_transaction.clone();
         doc_version.insert("tuuid", &tuuid);
         doc_version.insert("fuuids", vec![&fuuid]);
+
         // Information optionnelle pour accelerer indexation/traitement media
         if mimetype.starts_with("image") {
+            flag_media = true;
             doc_version.insert("flag_media", "image");
             doc_version.insert("flag_media_traite", false);
         } else if mimetype.starts_with("video") {
+            flag_media = true;
             doc_version.insert("flag_media", "video");
             doc_version.insert("flag_media_traite", false);
         } else if mimetype =="application/pdf" {
             doc_version.insert("flag_indexe", false);
         }
+
         match collection.insert_one(doc_version, None).await {
             Ok(_) => (),
             Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur insertion nouvelle version {} : {:?}", fuuid, e))?
@@ -184,6 +191,14 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
         Err(e) => Err(format!("grosfichiers.transaction_cle Erreur update_one sur transcation : {:?}", e))?
     };
     debug!("nouveau fichier Resultat transaction update : {:?}", resultat);
+
+    if flag_media == true {
+        debug!("Emettre une commande de conversion pour media {}", fuuid);
+        match emettre_commande_media(middleware, &tuuid, &fuuid, &mimetype).await {
+            Ok(()) => (),
+            Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
+        }
+    }
 
     middleware.reponse_ok()
 }

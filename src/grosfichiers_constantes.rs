@@ -4,6 +4,8 @@ pub const NOM_COLLECTION_FICHIERS_REP: &str = "GrosFichiers/fichiersRep";
 pub const NOM_COLLECTION_VERSIONS: &str = "GrosFichiers/versionsFichiers";
 pub const NOM_COLLECTION_DOCUMENTS: &str = "GrosFichiers/documents";
 
+pub const DOMAINE_FICHIERS_NOM: &str = "fichiers";
+
 pub const NOM_Q_TRANSACTIONS: &str = "GrosFichiers/transactions";
 pub const NOM_Q_VOLATILS: &str = "GrosFichiers/volatils";
 pub const NOM_Q_TRIGGERS: &str = "GrosFichiers/triggers";
