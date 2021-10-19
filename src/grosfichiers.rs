@@ -15,7 +15,7 @@ use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMil
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, sauvegarder_traiter_transaction, sauvegarder_transaction_recue};
-use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, IndexOptions, MongoDao};
+use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, filtrer_doc_id, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::mongodb::options::{CountOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
@@ -41,6 +41,7 @@ const NOM_Q_TRIGGERS: &str = "GrosFichiers/triggers";
 const REQUETE_ACTIVITE_RECENTE: &str = "activiteRecente";
 const REQUETE_FAVORIS: &str = "favoris";
 const REQUETE_DOCUMENTS_PAR_TUUID: &str = "documentsParTuuid";
+const REQUETE_CONTENU_COLLECTION: &str = "contenuCollection";
 
 const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
@@ -48,6 +49,7 @@ const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
 const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale (fichier ou collection)
 const CHAMP_CUUID: &str = "cuuid";  // UUID collection de tuuids
+const CHAMP_CUUIDS: &str = "cuuids";  // Liste de cuuids (e.g. appartenance a plusieurs collections)
 const CHAMP_SUPPRIME: &str = "supprime";
 const CHAMP_NOM: &str = "nom";
 const CHAMP_MIMETYPE: &str = "mimetype";
@@ -139,6 +141,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         REQUETE_ACTIVITE_RECENTE,
         REQUETE_FAVORIS,
         REQUETE_DOCUMENTS_PAR_TUUID,
+        REQUETE_CONTENU_COLLECTION,
     ];
     for req in requetes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L3Protege});
@@ -327,6 +330,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
                 REQUETE_ACTIVITE_RECENTE => requete_activite_recente(middleware, message, gestionnaire).await,
                 REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
                 REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
+                REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
                     Ok(None)
@@ -611,7 +615,9 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
 
     // Ajouter collection parent au besoin
     if let Some(c) = cuuid {
-        doc_collection.insert("cuuids", doc!{"cuuids": [c]});
+        let mut arr = millegrilles_common_rust::bson::Array::new();
+        arr.push(millegrilles_common_rust::bson::Bson::String(c));
+        doc_collection.insert("cuuids", arr);
     }
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
@@ -780,12 +786,6 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
     debug!("requete_documents_par_tuuid cle parsed : {:?}", requete);
 
     let filtre = doc! { CHAMP_TUUID: {"$in": &requete.tuuids_documents} };
-    // let hint = Hint::Name(INDEX_NON_DECHIFFRABLES.into());
-    // // let sort_doc = doc! {
-    // //     CHAMP_NON_DECHIFFRABLE: 1,
-    // //     CHAMP_CREATION: 1,
-    // // };
-    // let opts = CountOptions::builder().hint(hint).build();
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let curseur = collection.find(filtre, None).await?;
     let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
@@ -794,9 +794,68 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
+async fn requete_contenu_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_contenu_collection Message : {:?}", & m.message);
+    let requete: RequeteContenuCollection = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_contenu_collection cle parsed : {:?}", requete);
+
+    let skip = match requete.skip { Some(s) => s, None => 0 };
+    let limit = match requete.limit { Some(l) => l, None => 50 };
+    let filtre_collection = doc! { CHAMP_TUUID: &requete.tuuid_collection, CHAMP_SUPPRIME: false };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut doc_info_collection = match collection.find_one(filtre_collection, None).await? {
+        Some(c) => c,
+        None => return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Collection introuvable"}), None)?))
+    };
+    filtrer_doc_id(&mut doc_info_collection);
+
+    let sort = match requete.sort_keys {
+        Some(s) => {
+            let mut doc_sort = doc!();
+            for k in s {
+                doc_sort.insert(k, 1);
+            }
+            doc_sort
+        },
+        None => doc!{"nom": 1}
+    };
+    let filtre_fichiers = doc! { CHAMP_CUUIDS: {"$all": [&requete.tuuid_collection]}, CHAMP_SUPPRIME: false };
+    let ops_fichiers = FindOptions::builder()
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .build();
+    let curseur = collection.find(filtre_fichiers, Some(ops_fichiers)).await?;
+    let fichiers_reps = mapper_fichiers_curseur(curseur).await?;
+
+    let reponse = json!({
+        "collection": doc_info_collection,
+        "documents": fichiers_reps,
+    });
+
+    // if permission is not None:
+    //     permission[ConstantesMaitreDesCles.TRANSACTION_CHAMP_LISTE_HACHAGE_BYTES] = extra_out[ConstantesGrosFichiers.DOCUMENT_LISTE_FUUIDS]
+    //     permission = self.generateur_transactions.preparer_enveloppe(permission, ConstantesMaitreDesCles.REQUETE_PERMISSION)
+    //     reponse['permission'] = permission
+
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RequeteDocumentsParTuuids {
     tuuids_documents: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteContenuCollection {
+    tuuid_collection: String,
+    limit: Option<i64>,
+    skip: Option<u64>,
+    sort_keys: Option<Vec<String>>,
 }
 
 // #[derive(Clone, Debug, Serialize, Deserialize)]
