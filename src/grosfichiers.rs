@@ -42,12 +42,14 @@ const REQUETE_ACTIVITE_RECENTE: &str = "activiteRecente";
 const REQUETE_FAVORIS: &str = "favoris";
 const REQUETE_DOCUMENTS_PAR_TUUID: &str = "documentsParTuuid";
 const REQUETE_CONTENU_COLLECTION: &str = "contenuCollection";
+const REQUETE_GET_CORBEILLE: &str = "getCorbeille";
 
 const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
 const TRANSACTION_AJOUTER_FICHIERS_COLLECTION: &str = "ajouterFichiersCollection";
 const TRANSACTION_RETIRER_DOCUMENTS_COLLECTION: &str = "retirerDocumentsCollection";
 const TRANSACTION_SUPPRIMER_DOCUMENTS: &str = "supprimerDocuments";
+const TRANSACTION_RECUPERER_DOCUMENTS: &str = "recupererDocuments";
 
 const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale (fichier ou collection)
@@ -145,6 +147,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         REQUETE_FAVORIS,
         REQUETE_DOCUMENTS_PAR_TUUID,
         REQUETE_CONTENU_COLLECTION,
+        REQUETE_GET_CORBEILLE,
     ];
     for req in requetes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L3Protege});
@@ -164,6 +167,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION,
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION,
         TRANSACTION_SUPPRIMER_DOCUMENTS,
+        TRANSACTION_RECUPERER_DOCUMENTS,
     ];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
@@ -189,6 +193,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION,
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION,
         TRANSACTION_SUPPRIMER_DOCUMENTS,
+        TRANSACTION_RECUPERER_DOCUMENTS,
     ];
     for ts in transactions_secures {
         rk_transactions.push(ConfigRoutingExchange {
@@ -346,6 +351,7 @@ async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gest
                 REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
                 REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
                 REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
+                REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
                     Ok(None)
@@ -427,6 +433,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION => commande_ajouter_fichiers_collection(middleware, m, gestionnaire).await,
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => commande_retirer_documents_collection(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => commande_supprimer_documents(middleware, m, gestionnaire).await,
+        TRANSACTION_RECUPERER_DOCUMENTS => commande_recuperer_documents(middleware, m, gestionnaire).await,
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
     }
@@ -532,6 +539,26 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction,
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
+async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_recuperer_documents Consommer commande : {:?}", & m.message);
+    let commande: TransactionSupprimerDocuments = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_recuperer_documents versions parsed : {:?}", commande);
+
+    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
+    // Verifier si on a un certificat delegation globale
+    // todo Ajouter usager acces prive
+    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        true => Ok(()),
+        false => Err(format!("grosfichiers.commande_recuperer_documents: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+    }?;
+
+    // Traiter la transaction
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TransactionNouvelleVersion {
     fuuid: String,
@@ -579,6 +606,7 @@ async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION => transaction_ajouter_fichiers_collection(middleware, transaction).await,
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => transaction_retirer_documents_collection(middleware, transaction).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, transaction).await,
+        TRANSACTION_RECUPERER_DOCUMENTS => transaction_recuperer_documents(middleware, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), transaction.get_action())),
     }
 }
@@ -814,6 +842,34 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
     middleware.reponse_ok()
 }
 
+async fn transaction_recuperer_documents<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_recuperer_documents Consommer transaction : {:?}", &transaction);
+    let transaction_collection: TransactionSupprimerDocuments = match transaction.clone().convertir::<TransactionSupprimerDocuments>() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_recuperer_documents Erreur conversion transaction : {:?}", e))?
+    };
+
+    // Conserver champs transaction uniquement (filtrer champs meta)
+    let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.tuuids}};
+    let ops = doc! {
+        "$set": {CHAMP_SUPPRIME: false},
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let resultat = match collection.update_one(filtre, ops, None).await {
+        Ok(r) => r,
+        Err(e) => Err(format!("grosfichiers.transaction_recuperer_documents Erreur update_one sur transcation : {:?}", e))?
+    };
+    debug!("grosfichiers.transaction_recuperer_documents Resultat transaction update : {:?}", resultat);
+
+    middleware.reponse_ok()
+}
+
 async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
@@ -1026,6 +1082,38 @@ async fn requete_contenu_collection<M>(middleware: &M, m: MessageValideAction, g
     //     permission = self.generateur_transactions.preparer_enveloppe(permission, ConstantesMaitreDesCles.REQUETE_PERMISSION)
     //     reponse['permission'] = permission
 
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+async fn requete_get_corbeille<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_get_corbeille Message : {:?}", & m.message);
+    let requete: RequetePlusRecente = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_get_corbeille cle parsed : {:?}", requete);
+    let limit = match requete.limit {
+        Some(l) => l,
+        None => 100
+    };
+    let skip = match requete.skip {
+        Some(s) => s,
+        None => 0
+    };
+
+    let opts = FindOptions::builder()
+        .hint(Hint::Name(String::from("fichiers_activite_recente")))
+        .sort(doc!{CHAMP_SUPPRIME: -1, CHAMP_MODIFICATION: -1, CHAMP_TUUID: 1})
+        .limit(limit)
+        .skip(skip)
+        .build();
+    let filtre = doc!{CHAMP_SUPPRIME: true};
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut curseur = collection.find(filtre, opts).await?;
+    let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
+
+    let reponse = json!({ "fichiers": fichiers_mappes });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
