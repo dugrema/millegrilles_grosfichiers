@@ -47,6 +47,7 @@ const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
 const TRANSACTION_AJOUTER_FICHIERS_COLLECTION: &str = "ajouterFichiersCollection";
 const TRANSACTION_RETIRER_DOCUMENTS_COLLECTION: &str = "retirerDocumentsCollection";
+const TRANSACTION_SUPPRIMER_DOCUMENTS: &str = "supprimerDocuments";
 
 const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale (fichier ou collection)
@@ -162,6 +163,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_NOUVELLE_COLLECTION,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION,
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION,
+        TRANSACTION_SUPPRIMER_DOCUMENTS,
     ];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
@@ -186,6 +188,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_NOUVELLE_COLLECTION,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION,
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION,
+        TRANSACTION_SUPPRIMER_DOCUMENTS,
     ];
     for ts in transactions_secures {
         rk_transactions.push(ConfigRoutingExchange {
@@ -423,6 +426,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
         TRANSACTION_NOUVELLE_COLLECTION => commande_nouvelle_collection(middleware, m, gestionnaire).await,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION => commande_ajouter_fichiers_collection(middleware, m, gestionnaire).await,
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => commande_retirer_documents_collection(middleware, m, gestionnaire).await,
+        TRANSACTION_SUPPRIMER_DOCUMENTS => commande_supprimer_documents(middleware, m, gestionnaire).await,
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
     }
@@ -508,6 +512,26 @@ async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageVali
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
+async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_supprimer_documents Consommer commande : {:?}", & m.message);
+    let commande: TransactionSupprimerDocuments = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_supprimer_documents versions parsed : {:?}", commande);
+
+    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
+    // Verifier si on a un certificat delegation globale
+    // todo Ajouter usager acces prive
+    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        true => Ok(()),
+        false => Err(format!("grosfichiers.commande_supprimer_documents: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+    }?;
+
+    // Traiter la transaction
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TransactionNouvelleVersion {
     fuuid: String,
@@ -539,6 +563,11 @@ struct TransactionRetirerDocumentsCollection {
     retirer_tuuids: Vec<String>,  // Fichiers/rep a retirer de la collection
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TransactionSupprimerDocuments {
+    tuuids: Vec<String>,  // Fichiers/rep a supprimer
+}
+
 async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao,
@@ -549,6 +578,7 @@ async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<
         TRANSACTION_NOUVELLE_COLLECTION => transaction_nouvelle_collection(middleware, transaction).await,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION => transaction_ajouter_fichiers_collection(middleware, transaction).await,
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => transaction_retirer_documents_collection(middleware, transaction).await,
+        TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), transaction.get_action())),
     }
 }
@@ -752,6 +782,34 @@ async fn transaction_retirer_documents_collection<M, T>(middleware: &M, transact
         Err(e) => Err(format!("grosfichiers.transaction_retirer_documents_collection Erreur update_one sur transcation : {:?}", e))?
     };
     debug!("grosfichiers.transaction_retirer_documents_collection Resultat transaction update : {:?}", resultat);
+
+    middleware.reponse_ok()
+}
+
+async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_supprimer_documents Consommer transaction : {:?}", &transaction);
+    let transaction_collection: TransactionSupprimerDocuments = match transaction.clone().convertir::<TransactionSupprimerDocuments>() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur conversion transaction : {:?}", e))?
+    };
+
+    // Conserver champs transaction uniquement (filtrer champs meta)
+    let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.tuuids}};
+    let ops = doc! {
+        "$set": {CHAMP_SUPPRIME: true},
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let resultat = match collection.update_one(filtre, ops, None).await {
+        Ok(r) => r,
+        Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur update_one sur transcation : {:?}", e))?
+    };
+    debug!("grosfichiers.transaction_supprimer_documents Resultat transaction update : {:?}", resultat);
 
     middleware.reponse_ok()
 }
