@@ -45,6 +45,7 @@ const REQUETE_CONTENU_COLLECTION: &str = "contenuCollection";
 
 const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
+const TRANSACTION_AJOUTER_FICHIERS_COLLECTION: &str = "ajouterFichiersCollection";
 
 const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale (fichier ou collection)
@@ -155,7 +156,11 @@ pub fn preparer_queues() -> Vec<QueueType> {
     //     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_NOM, evnt), exchange: Securite::L4Secure});
     // }
 
-    let commandes_privees: Vec<&str> = vec![TRANSACTION_NOUVELLE_VERSION, TRANSACTION_NOUVELLE_COLLECTION];
+    let commandes_privees: Vec<&str> = vec![
+        TRANSACTION_NOUVELLE_VERSION,
+        TRANSACTION_NOUVELLE_COLLECTION,
+        TRANSACTION_AJOUTER_FICHIERS_COLLECTION,
+    ];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
@@ -174,7 +179,11 @@ pub fn preparer_queues() -> Vec<QueueType> {
     ));
 
     let mut rk_transactions = Vec::new();
-    let transactions_secures = vec![TRANSACTION_NOUVELLE_VERSION, TRANSACTION_NOUVELLE_COLLECTION];
+    let transactions_secures = vec![
+        TRANSACTION_NOUVELLE_VERSION,
+        TRANSACTION_NOUVELLE_COLLECTION,
+        TRANSACTION_AJOUTER_FICHIERS_COLLECTION,
+    ];
     for ts in transactions_secures {
         rk_transactions.push(ConfigRoutingExchange {
             routing_key: format!("transaction.{}.{}", DOMAINE_NOM, ts).into(),
@@ -409,6 +418,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
         // Commandes standard
         TRANSACTION_NOUVELLE_VERSION => commande_nouvelle_version(middleware, m, gestionnaire).await,
         TRANSACTION_NOUVELLE_COLLECTION => commande_nouvelle_collection(middleware, m, gestionnaire).await,
+        TRANSACTION_AJOUTER_FICHIERS_COLLECTION => commande_ajouter_fichiers_collection(middleware, m, gestionnaire).await,
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
     }
@@ -454,6 +464,26 @@ async fn commande_nouvelle_collection<M>(middleware: &M, m: MessageValideAction,
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
+async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_ajouter_fichiers_collection Consommer commande : {:?}", & m.message);
+    let commande: TransactionAjouterFichiersCollection = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_ajouter_fichiers_collection versions parsed : {:?}", commande);
+
+    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
+    // Verifier si on a un certificat delegation globale
+    // todo Ajouter usager acces prive
+    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        true => Ok(()),
+        false => Err(format!("grosfichiers.commande_ajouter_fichiers_collection: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+    }?;
+
+    // Traiter la transaction
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TransactionNouvelleVersion {
     fuuid: String,
@@ -473,6 +503,12 @@ struct TransactionNouvelleCollection {
     securite: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TransactionAjouterFichiersCollection {
+    cuuid: String,  // Collection qui recoit les documents
+    inclure_tuuids: Vec<String>,  // Fichiers/rep a ajouter a la collection
+}
+
 async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao,
@@ -481,6 +517,7 @@ async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<
     match transaction.get_action() {
         TRANSACTION_NOUVELLE_VERSION => transaction_nouvelle_version(middleware, transaction).await,
         TRANSACTION_NOUVELLE_COLLECTION => transaction_nouvelle_collection(middleware, transaction).await,
+        TRANSACTION_AJOUTER_FICHIERS_COLLECTION => transaction_ajouter_fichiers_collection(middleware, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), transaction.get_action())),
     }
 }
@@ -626,6 +663,36 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur update_one sur transcation : {:?}", e))?
     };
     debug!("grosfichiers.transaction_nouvelle_collection Resultat transaction update : {:?}", resultat);
+
+    middleware.reponse_ok()
+}
+
+async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_ajouter_fichiers_collection Consommer transaction : {:?}", &transaction);
+    let transaction_collection: TransactionAjouterFichiersCollection = match transaction.clone().convertir::<TransactionAjouterFichiersCollection>() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur conversion transaction : {:?}", e))?
+    };
+
+    // Conserver champs transaction uniquement (filtrer champs meta)
+    let cuuid = transaction_collection.cuuid;
+    let add_to_set = doc! {CHAMP_CUUIDS: {"$each": transaction_collection.inclure_tuuids}};
+    let filtre = doc! {CHAMP_TUUID: cuuid};
+    let ops = doc! {
+        "$addToSet": add_to_set,
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let resultat = match collection.update_one(filtre, ops, None).await {
+        Ok(r) => r,
+        Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur update_one sur transcation : {:?}", e))?
+    };
+    debug!("grosfichiers.transaction_ajouter_fichiers_collection Resultat transaction update : {:?}", resultat);
 
     middleware.reponse_ok()
 }
