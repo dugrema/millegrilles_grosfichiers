@@ -43,11 +43,13 @@ const REQUETE_FAVORIS: &str = "favoris";
 const REQUETE_DOCUMENTS_PAR_TUUID: &str = "documentsParTuuid";
 
 const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
+const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
 
 const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale (fichier ou collection)
 const CHAMP_CUUID: &str = "cuuid";  // UUID collection de tuuids
 const CHAMP_SUPPRIME: &str = "supprime";
+const CHAMP_NOM: &str = "nom";
 const CHAMP_MIMETYPE: &str = "mimetype";
 const CHAMP_FUUID_V_COURANTE: &str = "fuuid_v_courante";
 
@@ -150,7 +152,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     //     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_NOM, evnt), exchange: Securite::L4Secure});
     // }
 
-    let commandes_privees: Vec<&str> = vec![TRANSACTION_NOUVELLE_VERSION];
+    let commandes_privees: Vec<&str> = vec![TRANSACTION_NOUVELLE_VERSION, TRANSACTION_NOUVELLE_COLLECTION];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
@@ -169,10 +171,13 @@ pub fn preparer_queues() -> Vec<QueueType> {
     ));
 
     let mut rk_transactions = Vec::new();
-    rk_transactions.push(ConfigRoutingExchange {
-        routing_key: format!("transaction.{}.{}", DOMAINE_NOM, TRANSACTION_NOUVELLE_VERSION).into(),
-        exchange: Securite::L4Secure
-    });
+    let transactions_secures = vec![TRANSACTION_NOUVELLE_VERSION, TRANSACTION_NOUVELLE_COLLECTION];
+    for ts in transactions_secures {
+        rk_transactions.push(ConfigRoutingExchange {
+            routing_key: format!("transaction.{}.{}", DOMAINE_NOM, ts).into(),
+            exchange: Securite::L4Secure
+        });
+    }
 
     // Queue de transactions
     queues.push(QueueType::ExchangeQueue (
@@ -399,6 +404,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
     match m.action.as_str() {
         // Commandes standard
         TRANSACTION_NOUVELLE_VERSION => commande_nouvelle_version(middleware, m, gestionnaire).await,
+        TRANSACTION_NOUVELLE_COLLECTION => commande_nouvelle_collection(middleware, m, gestionnaire).await,
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
     }
@@ -424,6 +430,26 @@ async fn commande_nouvelle_version<M>(middleware: &M, m: MessageValideAction, ge
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
+async fn commande_nouvelle_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_nouvelle_collection Consommer commande : {:?}", & m.message);
+    let commande: TransactionNouvelleCollection = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_nouvelle_collection versions parsed : {:?}", commande);
+
+    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
+    // Verifier si on a un certificat delegation globale
+    // todo Ajouter usager acces prive
+    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        true => Ok(()),
+        false => Err(format!("grosfichiers.commande_nouvelle_collection: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+    }?;
+
+    // Traiter la transaction
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TransactionNouvelleVersion {
     fuuid: String,
@@ -436,6 +462,13 @@ struct TransactionNouvelleVersion {
     date_fichier: DateEpochSeconds,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TransactionNouvelleCollection {
+    nom: String,
+    cuuid: Option<String>,  // Insertion dans collection destination
+    securite: Option<String>,
+}
+
 async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao,
@@ -443,6 +476,7 @@ async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<
 {
     match transaction.get_action() {
         TRANSACTION_NOUVELLE_VERSION => transaction_nouvelle_version(middleware, transaction).await,
+        TRANSACTION_NOUVELLE_COLLECTION => transaction_nouvelle_collection(middleware, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), transaction.get_action())),
     }
 }
@@ -534,6 +568,58 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
         Err(e) => Err(format!("grosfichiers.transaction_cle Erreur update_one sur transcation : {:?}", e))?
     };
     debug!("nouveau fichier Resultat transaction update : {:?}", resultat);
+
+    middleware.reponse_ok()
+}
+
+async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_nouvelle_collection Consommer transaction : {:?}", &transaction);
+    let transaction_collection: TransactionNouvelleCollection = match transaction.clone().convertir::<TransactionNouvelleCollection>() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion transaction : {:?}", e))?
+    };
+
+    // Conserver champs transaction uniquement (filtrer champs meta)
+    let mut doc_bson_transaction = match convertir_to_bson(&transaction_collection) {
+        Ok(d) => d,
+        Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion transaction en bson : {:?}", e))?
+    };
+
+    let tuuid = transaction.get_uuid_transaction().to_owned();
+    let cuuid = transaction_collection.cuuid;
+    let nom_collection = transaction_collection.nom;
+    let date_courante = millegrilles_common_rust::bson::DateTime::now();
+    let securite = match transaction_collection.securite {
+        Some(s) => s,
+        None => SECURITE_3_PROTEGE.to_owned()
+    };
+
+    // Creer document de collection (fichiersRep)
+    let mut doc_collection = doc! {
+        CHAMP_TUUID: &tuuid,
+        CHAMP_NOM: nom_collection,
+        CHAMP_CREATION: &date_courante,
+        CHAMP_MODIFICATION: &date_courante,
+        CHAMP_SECURITE: &securite,
+        CHAMP_SUPPRIME: false,
+    };
+    debug!("grosfichiers.transaction_nouvelle_collection Ajouter nouvelle collection doc : {:?}", doc_collection);
+
+    // Ajouter collection parent au besoin
+    if let Some(c) = cuuid {
+        doc_collection.insert("cuuids", doc!{"cuuids": [c]});
+    }
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let resultat = match collection.insert_one(doc_collection, None).await {
+        Ok(r) => r,
+        Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur update_one sur transcation : {:?}", e))?
+    };
+    debug!("grosfichiers.transaction_nouvelle_collection Resultat transaction update : {:?}", resultat);
 
     middleware.reponse_ok()
 }
@@ -789,3 +875,4 @@ mod test_integration {
     // }
 
 }
+
