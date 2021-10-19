@@ -50,6 +50,7 @@ const TRANSACTION_AJOUTER_FICHIERS_COLLECTION: &str = "ajouterFichiersCollection
 const TRANSACTION_RETIRER_DOCUMENTS_COLLECTION: &str = "retirerDocumentsCollection";
 const TRANSACTION_SUPPRIMER_DOCUMENTS: &str = "supprimerDocuments";
 const TRANSACTION_RECUPERER_DOCUMENTS: &str = "recupererDocuments";
+const TRANSACTION_CHANGER_FAVORIS: &str = "changerFavoris";
 
 const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale (fichier ou collection)
@@ -59,6 +60,7 @@ const CHAMP_SUPPRIME: &str = "supprime";
 const CHAMP_NOM: &str = "nom";
 const CHAMP_MIMETYPE: &str = "mimetype";
 const CHAMP_FUUID_V_COURANTE: &str = "fuuid_v_courante";
+const CHAMP_FAVORIS: &str = "favoris";
 
 #[derive(Clone, Debug)]
 pub struct GestionnaireGrosFichiers {
@@ -168,6 +170,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION,
         TRANSACTION_SUPPRIMER_DOCUMENTS,
         TRANSACTION_RECUPERER_DOCUMENTS,
+        TRANSACTION_CHANGER_FAVORIS,
     ];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
@@ -194,6 +197,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION,
         TRANSACTION_SUPPRIMER_DOCUMENTS,
         TRANSACTION_RECUPERER_DOCUMENTS,
+        TRANSACTION_CHANGER_FAVORIS,
     ];
     for ts in transactions_secures {
         rk_transactions.push(ConfigRoutingExchange {
@@ -434,6 +438,7 @@ async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionna
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => commande_retirer_documents_collection(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => commande_supprimer_documents(middleware, m, gestionnaire).await,
         TRANSACTION_RECUPERER_DOCUMENTS => commande_recuperer_documents(middleware, m, gestionnaire).await,
+        TRANSACTION_CHANGER_FAVORIS => commande_changer_favoris(middleware, m, gestionnaire).await,
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
     }
@@ -559,6 +564,26 @@ async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction,
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
+async fn commande_changer_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_changer_favoris Consommer commande : {:?}", & m.message);
+    let commande: TransactionChangerFavoris = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_changer_favoris versions parsed : {:?}", commande);
+
+    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
+    // Verifier si on a un certificat delegation globale
+    // todo Ajouter usager acces prive
+    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        true => Ok(()),
+        false => Err(format!("grosfichiers.commande_changer_favoris: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+    }?;
+
+    // Traiter la transaction
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TransactionNouvelleVersion {
     fuuid: String,
@@ -595,6 +620,11 @@ struct TransactionSupprimerDocuments {
     tuuids: Vec<String>,  // Fichiers/rep a supprimer
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TransactionChangerFavoris {
+    favoris: HashMap<String, bool>,
+}
+
 async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao,
@@ -607,6 +637,7 @@ async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => transaction_retirer_documents_collection(middleware, transaction).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, transaction).await,
         TRANSACTION_RECUPERER_DOCUMENTS => transaction_recuperer_documents(middleware, transaction).await,
+        TRANSACTION_CHANGER_FAVORIS => transaction_changer_favoris(middleware, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), transaction.get_action())),
     }
 }
@@ -870,6 +901,58 @@ async fn transaction_recuperer_documents<M, T>(middleware: &M, transaction: T) -
     middleware.reponse_ok()
 }
 
+async fn transaction_changer_favoris<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_changer_favoris Consommer transaction : {:?}", &transaction);
+    let transaction_collection: TransactionChangerFavoris = match transaction.clone().convertir::<TransactionChangerFavoris>() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_changer_favoris Erreur conversion transaction : {:?}", e))?
+    };
+
+    let (tuuids_set, tuuids_reset) = {
+        let mut tuuids_set = Vec::new();
+        let mut tuuids_reset = Vec::new();
+
+        // Split en deux requetes - une pour favoris = true, l'autre pour false
+        for (key, value) in transaction_collection.favoris.iter() {
+            if *value == true {
+                tuuids_set.push(key.to_owned());
+            } else {
+                tuuids_reset.push(key.to_owned());
+            }
+        }
+        (tuuids_set, tuuids_reset)
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+    // Faire 2 requetes, une pour favoris=true, l'autre false
+    if ! tuuids_reset.is_empty() {
+        let filtre_reset = doc! {CHAMP_TUUID: {"$in": &tuuids_reset}};
+        let ops_reset = doc! { "$set": {CHAMP_FAVORIS: false}, "$currentDate": {CHAMP_MODIFICATION: true} };
+        let resultat = match collection.update_many(filtre_reset, ops_reset, None).await {
+            Ok(r) => r,
+            Err(e) => Err(format!("grosfichiers.transaction_changer_favoris Erreur update_many reset sur transaction : {:?}", e))?
+        };
+        debug!("grosfichiers.transaction_changer_favoris Resultat transaction update reset : {:?}", resultat);
+    }
+
+    if ! tuuids_set.is_empty() {
+        let filtre_set = doc! {CHAMP_TUUID: {"$in": &tuuids_set}};
+        let ops_set = doc! { "$set": {CHAMP_FAVORIS: true}, "$currentDate": {CHAMP_MODIFICATION: true} };
+        let resultat = match collection.update_many(filtre_set, ops_set, None).await {
+            Ok(r) => r,
+            Err(e) => Err(format!("grosfichiers.transaction_changer_favoris Erreur update_many set sur transaction : {:?}", e))?
+        };
+        debug!("grosfichiers.transaction_changer_favoris Resultat transaction update set : {:?}", resultat);
+    }
+
+    middleware.reponse_ok()
+}
+
 async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
@@ -942,6 +1025,8 @@ struct FichierVersionCourante {
 
     fuuid_v_courante: Option<String>,
     version_courante: Option<DBFichierVersion>,
+
+    favoris: Option<bool>,
 
     date_creation: Option<DateEpochSeconds>,
     derniere_modification: Option<DateEpochSeconds>,
