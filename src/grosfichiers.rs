@@ -58,6 +58,7 @@ const CHAMP_CUUID: &str = "cuuid";  // UUID collection de tuuids
 const CHAMP_CUUIDS: &str = "cuuids";  // Liste de cuuids (e.g. appartenance a plusieurs collections)
 const CHAMP_SUPPRIME: &str = "supprime";
 const CHAMP_NOM: &str = "nom";
+const CHAMP_TITRE: &str = "titre";
 const CHAMP_MIMETYPE: &str = "mimetype";
 const CHAMP_FUUID_V_COURANTE: &str = "fuuid_v_courante";
 const CHAMP_FAVORIS: &str = "favoris";
@@ -282,6 +283,21 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         NOM_COLLECTION_FICHIERS_REP,
         champs_recents,
         Some(options_recents)
+    ).await?;
+
+    // Favoris
+    let options_favoris = IndexOptions {
+        nom_index: Some(format!("collections_favoris")),
+        unique: false
+    };
+    let champs_favoris = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_SUPPRIME), direction: -1},
+        ChampIndex {nom_champ: String::from(CHAMP_FAVORIS), direction: 1},
+    );
+    middleware.create_index(
+        NOM_COLLECTION_FICHIERS_REP,
+        champs_favoris,
+        Some(options_favoris)
     ).await?;
 
     // Index cuuid pour collections
@@ -1085,21 +1101,36 @@ async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_favoris Message : {:?}", & m.message);
-    // let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
+    //let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
     // debug!("requete_compter_cles_non_dechiffrables cle parsed : {:?}", requete);
 
-    // let filtre = doc! { CHAMP_NON_DECHIFFRABLE: true };
-    // let hint = Hint::Name(INDEX_NON_DECHIFFRABLES.into());
-    // // let sort_doc = doc! {
-    // //     CHAMP_NON_DECHIFFRABLE: 1,
-    // //     CHAMP_CREATION: 1,
-    // // };
-    // let opts = CountOptions::builder().hint(hint).build();
-    // let collection = middleware.get_collection(NOM_COLLECTION_CLES)?;
-    // let compte = collection.count_documents(filtre, opts).await?;
+    let projection = doc! {CHAMP_NOM: true, CHAMP_TITRE: true, CHAMP_SECURITE: true, CHAMP_TUUID: true};
+    let filtre = doc! { CHAMP_FAVORIS: true };
+    let hint = Hint::Name("collections_favoris".into());
+    let opts = FindOptions::builder().projection(projection).hint(hint).limit(1000).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
 
-    let reponse = json!({ "favoris": [] });
+    let favoris_mappes = {
+        let mut favoris_mappes = Vec::new();
+        let mut curseur = collection.find(filtre, opts).await?;
+        while let Some(c) = curseur.next().await {
+            let favori_doc = c?;
+            let favori_mappe: Favoris = convertir_bson_deserializable(favori_doc)?;
+            favoris_mappes.push(favori_mappe);
+        }
+        favoris_mappes
+    };
+
+    let reponse = json!({ "favoris": favoris_mappes });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Favoris {
+    nom: String,
+    tuuid: String,
+    securite: Option<String>,
+    // titre: Option<HashMap<String, String>>,
 }
 
 async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
