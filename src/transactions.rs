@@ -2,19 +2,21 @@ use std::collections::HashMap;
 use std::error::Error;
 
 use log::{debug, error, warn};
-use millegrilles_common_rust::bson::{doc, Document};
+use millegrilles_common_rust::{serde_json, serde_json::json};
 use millegrilles_common_rust::async_trait::async_trait;
+use millegrilles_common_rust::{bson, bson::{doc, Document}};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
+use millegrilles_common_rust::middleware::sauvegarder_transaction_recue;
 use millegrilles_common_rust::mongo_dao::{convertir_to_bson, MongoDao};
-use millegrilles_common_rust::recepteur_messages::MessageValideAction;
-use millegrilles_common_rust::transactions::Transaction;
-use millegrilles_common_rust::serde::{Deserialize, Serialize};
-use millegrilles_common_rust::{serde_json, serde_json::json};
-use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::mongodb::options::UpdateOptions;
+use millegrilles_common_rust::recepteur_messages::MessageValideAction;
+use millegrilles_common_rust::serde::{Deserialize, Serialize};
+use millegrilles_common_rust::serde_json::Value;
+use millegrilles_common_rust::transactions::Transaction;
 
 use crate::grosfichiers_constantes::*;
 use crate::traitement_media::emettre_commande_media;
@@ -23,21 +25,36 @@ pub async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction) ->
 where
     M: ValidateurX509 + GenerateurMessages + MongoDao,
 {
-    debug!("grosfichiers.consommer_transaction Consommer transaction : {:?}", &m.message);
+    debug!("transactions.consommer_transaction Consommer transaction : {:?}", &m.message);
 
-    // Autorisation : doit etre de niveau 3.protege ou 4.secure
-    match m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
-        true => Ok(()),
-        false => Err(format!("grosfichiers.consommer_transaction: Trigger cedule autorisation invalide (pas 4.secure)")),
-    }?;
-
+    // Autorisation
     match m.action.as_str() {
-        // TRANSACTION_CLE  => {
-        //     sauvegarder_transaction_recue(middleware, m, NOM_COLLECTION_TRANSACTIONS).await?;
-        //     Ok(None)
-        // },
-        _ => Err(format!("grosfichiers.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
+        // 4.secure - doivent etre validees par une commande
+        TRANSACTION_NOUVELLE_VERSION |
+        TRANSACTION_NOUVELLE_COLLECTION |
+        TRANSACTION_AJOUTER_FICHIERS_COLLECTION |
+        TRANSACTION_RETIRER_DOCUMENTS_COLLECTION |
+        TRANSACTION_SUPPRIMER_DOCUMENTS |
+        TRANSACTION_RECUPERER_DOCUMENTS |
+        TRANSACTION_CHANGER_FAVORIS => {
+            match m.verifier_exchanges(vec![Securite::L4Secure]) {
+                true => Ok(()),
+                false => Err(format!("transactions.consommer_transaction: Trigger cedule autorisation invalide (pas 4.secure)"))
+            }?;
+        },
+        // 3.protege ou 4.secure
+        TRANSACTION_ASSOCIER_CONVERSIONS => {
+            match m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+                true => Ok(()),
+                false => Err(format!("transactions.consommer_transaction: Trigger cedule autorisation invalide (pas 4.secure)")),
+            }?;
+        },
+        _ => Err(format!("transactions.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
     }
+
+    sauvegarder_transaction_recue(middleware, m, NOM_COLLECTION_TRANSACTIONS).await?;
+
+    Ok(None)
 }
 
 pub async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
@@ -53,6 +70,7 @@ pub async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Res
         TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, transaction).await,
         TRANSACTION_RECUPERER_DOCUMENTS => transaction_recuperer_documents(middleware, transaction).await,
         TRANSACTION_CHANGER_FAVORIS => transaction_changer_favoris(middleware, transaction).await,
+        TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), transaction.get_action())),
     }
 }
@@ -125,6 +143,8 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
     let cuuid = transaction_fichier.cuuid;
     let nom_fichier = transaction_fichier.nom_fichier;
     let mimetype = transaction_fichier.mimetype;
+
+    doc_bson_transaction.insert(CHAMP_FUUID_MIMETYPES, doc! {&fuuid: &mimetype});
 
     // Retirer champ CUUID, pas utile dans l'information de version
     doc_bson_transaction.remove(CHAMP_CUUID);
@@ -421,4 +441,142 @@ async fn transaction_changer_favoris<M, T>(middleware: &M, transaction: T) -> Re
     }
 
     middleware.reponse_ok()
+}
+
+async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_associer_conversions Consommer transaction : {:?}", &transaction);
+    let transaction_mappee: TransactionAssocierConversions = match transaction.clone().convertir::<TransactionAssocierConversions>() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_associer_conversions Erreur conversion transaction : {:?}", e))?
+    };
+
+    let doc_images = match convertir_to_bson(transaction_mappee.images.clone()) {
+        Ok(inner) => inner,
+        Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur conversion images en bson : {:?}", e))?
+    };
+
+    // Mapper tous les fuuids avec leur mimetype
+    let (fuuids, fuuid_mimetypes) = {
+        let mut fuuids = Vec::new();
+        let mut fuuid_mimetypes = HashMap::new();
+        fuuids.push(transaction_mappee.fuuid.clone());
+        if let Some(mimetype) = &transaction_mappee.mimetype {
+            fuuid_mimetypes.insert(transaction_mappee.fuuid.clone(), mimetype.clone());
+        }
+        for (_, image) in transaction_mappee.images.iter() {
+            fuuids.push(image.hachage.to_owned());
+            if let Some(mimetype) = &image.mimetype {
+                fuuid_mimetypes.insert(image.hachage.to_owned(), mimetype.clone());
+            }
+        }
+
+        (fuuids, fuuid_mimetypes)
+    };
+
+    // MAJ de la version du fichier
+    {
+        let filtre = doc! { CHAMP_FUUID: &transaction_mappee.fuuid };
+        let mut set_ops = doc! {
+            "images": &doc_images,
+            "flag_media_traite": true,
+        };
+        if let Some(inner) = transaction_mappee.anime {
+            set_ops.insert("anime", inner);
+        }
+        if let Some(inner) = &transaction_mappee.mimetype {
+            set_ops.insert("mimetype", inner);
+        }
+        if let Some(inner) = transaction_mappee.width {
+            set_ops.insert("width", inner);
+        }
+        if let Some(inner) = transaction_mappee.height {
+            set_ops.insert("height", inner);
+        }
+        for (fuuid, mimetype) in fuuid_mimetypes.iter() {
+            set_ops.insert(format!("{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
+        }
+
+        let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
+
+        let ops = doc! {
+            "$set": set_ops,
+            "$addToSet": add_to_set,
+            "$currentDate": { CHAMP_MODIFICATION: true }
+        };
+        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        match collection.update_one(filtre, ops, None).await {
+            Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
+            Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
+        }
+    }
+
+    // S'assurer d'appliquer le fitre sur la version courante
+    {
+        let filtre = doc! {
+            CHAMP_TUUID: &transaction_mappee.tuuid,
+            CHAMP_FUUID_V_COURANTE: &transaction_mappee.fuuid,
+        };
+
+        let mut set_ops = doc! {
+            "version_courante.images": &doc_images,
+        };
+        if let Some(inner) = &transaction_mappee.anime {
+            set_ops.insert("version_courante.anime", inner);
+        }
+        if let Some(inner) = &transaction_mappee.mimetype {
+            set_ops.insert("version_courante.mimetype", inner);
+        }
+        if let Some(inner) = &transaction_mappee.width {
+            set_ops.insert("version_courante.width", inner);
+        }
+        if let Some(inner) = &transaction_mappee.height {
+            set_ops.insert("version_courante.height", inner);
+        }
+        for (fuuid, mimetype) in fuuid_mimetypes.iter() {
+            set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
+        }
+
+        // Combiner les fuuids hors de l'info de version
+        let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
+
+        let ops = doc! {
+            "$set": set_ops,
+            "$addToSet": add_to_set,
+            "$currentDate": { CHAMP_MODIFICATION: true }
+        };
+        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+        match collection.update_one(filtre, ops, None).await {
+            Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
+            Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
+        }
+    }
+
+    middleware.reponse_ok()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TransactionAssocierConversions {
+    tuuid: String,
+    fuuid: String,
+    width: Option<u32>,
+    height: Option<u32>,
+    mimetype: Option<String>,
+    images: HashMap<String, ImageConversion>,
+    anime: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImageConversion {
+    hachage: String,
+    width: Option<u32>,
+    height: Option<u32>,
+    mimetype: Option<String>,
+    taille: Option<u64>,
+    resolution: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    data_chiffre: Option<String>,
 }

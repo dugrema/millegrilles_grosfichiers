@@ -169,6 +169,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_SUPPRIMER_DOCUMENTS,
         TRANSACTION_RECUPERER_DOCUMENTS,
         TRANSACTION_CHANGER_FAVORIS,
+        TRANSACTION_ASSOCIER_CONVERSIONS,
     ];
     for ts in transactions_secures {
         rk_transactions.push(ConfigRoutingExchange {
@@ -176,6 +177,12 @@ pub fn preparer_queues() -> Vec<QueueType> {
             exchange: Securite::L4Secure
         });
     }
+
+    // RK protege
+    rk_transactions.push(ConfigRoutingExchange {
+        routing_key: format!("transaction.{}.{}", DOMAINE_NOM, TRANSACTION_ASSOCIER_CONVERSIONS).into(),
+        exchange: Securite::L3Protege
+    });
 
     // Queue de transactions
     queues.push(QueueType::ExchangeQueue (

@@ -150,6 +150,12 @@ struct DBFichierVersion {
     taille: usize,
     #[serde(rename="dateFichier")]
     date_fichier: DateEpochSeconds,
+    #[serde(skip_serializing_if="Option::is_none")]
+    height: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    weight: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    images: Option<HashMap<String, ImageConversion>>,
 }
 
 async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)

@@ -23,8 +23,10 @@ pub const TRANSACTION_RETIRER_DOCUMENTS_COLLECTION: &str = "retirerDocumentsColl
 pub const TRANSACTION_SUPPRIMER_DOCUMENTS: &str = "supprimerDocuments";
 pub const TRANSACTION_RECUPERER_DOCUMENTS: &str = "recupererDocuments";
 pub const TRANSACTION_CHANGER_FAVORIS: &str = "changerFavoris";
+pub const TRANSACTION_ASSOCIER_CONVERSIONS: &str = "associerConversions";
 
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
+pub const CHAMP_FUUIDS: &str = "fuuids";
 pub const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale (fichier ou collection)
 pub const CHAMP_CUUID: &str = "cuuid";  // UUID collection de tuuids
 pub const CHAMP_CUUIDS: &str = "cuuids";  // Liste de cuuids (e.g. appartenance a plusieurs collections)
@@ -34,3 +36,4 @@ pub const CHAMP_TITRE: &str = "titre";
 pub const CHAMP_MIMETYPE: &str = "mimetype";
 pub const CHAMP_FUUID_V_COURANTE: &str = "fuuid_v_courante";
 pub const CHAMP_FAVORIS: &str = "favoris";
+pub const CHAMP_FUUID_MIMETYPES: &str = "fuuidMimetypes";
