@@ -102,8 +102,7 @@ async fn mapper_fichiers_curseur(mut curseur: Cursor<Document>) -> Result<Value,
     while let Some(fresult) = curseur.next().await {
         let fcurseur = fresult?;
         let fichier_db = mapper_fichier_db(fcurseur)?;
-        let fichier_mappe: FichierVersionCourante = fichier_db.try_into()?;
-        fichiers_mappes.push(fichier_mappe);
+        fichiers_mappes.push(fichier_db);
     }
 
     // Convertir fichiers en Value (serde pour reponse json)
@@ -116,10 +115,10 @@ struct RequetePlusRecente {
     skip: Option<u64>,
 }
 
-fn mapper_fichier_db(fichier: Document) -> Result<FichierVersionCourante, Box<dyn Error>> {
+fn mapper_fichier_db(fichier: Document) -> Result<FichierDetail, Box<dyn Error>> {
     let date_creation = fichier.get_datetime(CHAMP_CREATION)?.clone();
     let date_modification = fichier.get_datetime(CHAMP_MODIFICATION)?.clone();
-    let mut fichier_mappe: FichierVersionCourante = convertir_bson_deserializable(fichier)?;
+    let mut fichier_mappe: FichierDetail = convertir_bson_deserializable(fichier)?;
     fichier_mappe.date_creation = Some(DateEpochSeconds::from(date_creation.to_chrono()));
     fichier_mappe.derniere_modification = Some(DateEpochSeconds::from(date_modification.to_chrono()));
     debug!("Fichier mappe : {:?}", fichier_mappe);
@@ -158,8 +157,42 @@ struct DBFichierVersion {
     images: Option<HashMap<String, ImageConversion>>,
     #[serde(skip_serializing_if="Option::is_none")]
     anime: Option<bool>,
-
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct FichierDetail {
+    tuuid: String,
+    #[serde(skip_serializing_if="Option::is_none")]
+    cuuids: Option<Vec<String>>,
+    nom: String,
+    titre: Option<HashMap<String, String>>,
+
+    fuuid_v_courante: Option<String>,
+    version_courante: Option<DBFichierVersionDetail>,
+    favoris: Option<bool>,
+    date_creation: Option<DateEpochSeconds>,
+    derniere_modification: Option<DateEpochSeconds>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DBFichierVersionDetail {
+    nom_fichier: String,
+    mimetype: String,
+    taille: usize,
+    #[serde(rename="dateFichier")]
+    date_fichier: DateEpochSeconds,
+    #[serde(skip_serializing_if="Option::is_none")]
+    height: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    weight: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    images: Option<HashMap<String, ImageConversion>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    anime: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    video: Option<HashMap<String, TransactionAssocierVideo>>,
+}
+
 
 async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>

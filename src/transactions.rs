@@ -43,7 +43,8 @@ where
             }?;
         },
         // 3.protege ou 4.secure
-        TRANSACTION_ASSOCIER_CONVERSIONS => {
+        TRANSACTION_ASSOCIER_CONVERSIONS |
+        TRANSACTION_ASSOCIER_VIDEO => {
             match m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
                 true => Ok(()),
                 false => Err(format!("transactions.consommer_transaction: Trigger cedule autorisation invalide (pas 4.secure)")),
@@ -71,6 +72,7 @@ pub async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Res
         TRANSACTION_RECUPERER_DOCUMENTS => transaction_recuperer_documents(middleware, transaction).await,
         TRANSACTION_CHANGER_FAVORIS => transaction_changer_favoris(middleware, transaction).await,
         TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, transaction).await,
+        TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), transaction.get_action())),
     }
 }
@@ -558,6 +560,92 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
     middleware.reponse_ok()
 }
 
+async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_associer_conversions Consommer transaction : {:?}", &transaction);
+    let transaction_mappee: TransactionAssocierVideo = match transaction.clone().convertir::<TransactionAssocierVideo>() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_associer_video Erreur conversion transaction : {:?}", e))?
+    };
+
+    let doc_video = match convertir_to_bson(transaction_mappee.clone()) {
+        Ok(inner) => inner,
+        Err(e) => Err(format!("transactions.transaction_associer_video Erreur conversion images en bson : {:?}", e))?
+    };
+
+    // Mapper tous les fuuids avec leur mimetype
+    let (fuuids, fuuid_mimetypes) = {
+        let mut fuuids = Vec::new();
+        let mut fuuid_mimetypes = HashMap::new();
+        fuuids.push(transaction_mappee.fuuid_video.clone());
+        fuuid_mimetypes.insert(transaction_mappee.fuuid_video.clone(), transaction_mappee.mimetype.clone());
+
+        (fuuids, fuuid_mimetypes)
+    };
+
+    let resolution = match transaction_mappee.height {
+        Some(inner) => inner,
+        None => 240
+    };
+    let cle_video = format!("{};{};{}", &transaction_mappee.mimetype, resolution, &transaction_mappee.bitrate);
+
+    // MAJ de la version du fichier
+    {
+        let filtre = doc! { CHAMP_FUUID: &transaction_mappee.fuuid };
+        let mut set_ops = doc! {
+            format!("video.{}", &cle_video): &doc_video,
+        };
+        for (fuuid, mimetype) in fuuid_mimetypes.iter() {
+            set_ops.insert(format!("{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
+        }
+        let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
+        let ops = doc! {
+            "$set": set_ops,
+            "$addToSet": add_to_set,
+            "$currentDate": { CHAMP_MODIFICATION: true }
+        };
+        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        match collection.update_one(filtre, ops, None).await {
+            Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
+            Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
+        }
+    }
+
+    // S'assurer d'appliquer le fitre sur la version courante
+    {
+        let filtre = doc! {
+            CHAMP_TUUID: &transaction_mappee.tuuid,
+            CHAMP_FUUID_V_COURANTE: &transaction_mappee.fuuid,
+        };
+
+        let mut set_ops = doc! {
+            format!("version_courante.video.{}", &cle_video): &doc_video,
+        };
+        for (fuuid, mimetype) in fuuid_mimetypes.iter() {
+            set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
+        }
+
+        // Combiner les fuuids hors de l'info de version
+        let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
+
+        let ops = doc! {
+            "$set": set_ops,
+            "$addToSet": add_to_set,
+            "$currentDate": { CHAMP_MODIFICATION: true }
+        };
+        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+        match collection.update_one(filtre, ops, None).await {
+            Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
+            Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
+        }
+    }
+
+    middleware.reponse_ok()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TransactionAssocierConversions {
     tuuid: String,
@@ -579,4 +667,17 @@ pub struct ImageConversion {
     resolution: Option<u32>,
     #[serde(skip_serializing_if="Option::is_none")]
     data_chiffre: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionAssocierVideo {
+    tuuid: String,
+    fuuid: String,
+    width: Option<u32>,
+    height: Option<u32>,
+    mimetype: String,
+    fuuid_video: String,
+    codec: String,
+    bitrate: u32,
+    taille_fichier: u64,
 }

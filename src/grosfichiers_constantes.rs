@@ -24,6 +24,7 @@ pub const TRANSACTION_SUPPRIMER_DOCUMENTS: &str = "supprimerDocuments";
 pub const TRANSACTION_RECUPERER_DOCUMENTS: &str = "recupererDocuments";
 pub const TRANSACTION_CHANGER_FAVORIS: &str = "changerFavoris";
 pub const TRANSACTION_ASSOCIER_CONVERSIONS: &str = "associerConversions";
+pub const TRANSACTION_ASSOCIER_VIDEO: &str = "associerVideo";
 
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 pub const CHAMP_FUUIDS: &str = "fuuids";

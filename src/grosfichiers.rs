@@ -170,6 +170,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_RECUPERER_DOCUMENTS,
         TRANSACTION_CHANGER_FAVORIS,
         TRANSACTION_ASSOCIER_CONVERSIONS,
+        TRANSACTION_ASSOCIER_VIDEO,
     ];
     for ts in transactions_secures {
         rk_transactions.push(ConfigRoutingExchange {
@@ -179,10 +180,16 @@ pub fn preparer_queues() -> Vec<QueueType> {
     }
 
     // RK protege
-    rk_transactions.push(ConfigRoutingExchange {
-        routing_key: format!("transaction.{}.{}", DOMAINE_NOM, TRANSACTION_ASSOCIER_CONVERSIONS).into(),
-        exchange: Securite::L3Protege
-    });
+    let transactions_protegees = vec![
+        TRANSACTION_ASSOCIER_CONVERSIONS,
+        TRANSACTION_ASSOCIER_VIDEO,
+    ];
+    for t in transactions_protegees {
+        rk_transactions.push(ConfigRoutingExchange {
+            routing_key: format!("transaction.{}.{}", DOMAINE_NOM, t).into(),
+            exchange: Securite::L3Protege
+        });
+    }
 
     // Queue de transactions
     queues.push(QueueType::ExchangeQueue (
