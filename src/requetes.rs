@@ -156,6 +156,9 @@ struct DBFichierVersion {
     weight: Option<u32>,
     #[serde(skip_serializing_if="Option::is_none")]
     images: Option<HashMap<String, ImageConversion>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    anime: Option<bool>,
+
 }
 
 async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
