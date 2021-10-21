@@ -19,7 +19,7 @@ use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::transactions::Transaction;
 
 use crate::grosfichiers_constantes::*;
-use crate::traitement_media::emettre_commande_media;
+use crate::traitement_media::{emettre_commande_indexation, emettre_commande_media};
 
 pub async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
 where
@@ -82,7 +82,7 @@ pub struct TransactionNouvelleVersion {
     fuuid: String,
     cuuid: Option<String>,
     tuuid: Option<String>,  // uuid de la premiere commande/transaction comme collateur de versions
-    nom_fichier: String,
+    nom: String,
     mimetype: String,
     taille: u64,
     #[serde(rename="dateFichier")]
@@ -143,7 +143,7 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
 
     let fuuid = transaction_fichier.fuuid;
     let cuuid = transaction_fichier.cuuid;
-    let nom_fichier = transaction_fichier.nom_fichier;
+    let nom_fichier = transaction_fichier.nom;
     let mimetype = transaction_fichier.mimetype;
 
     doc_bson_transaction.insert(CHAMP_FUUID_MIMETYPES, doc! {&fuuid: &mimetype});
@@ -152,6 +152,7 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
     doc_bson_transaction.remove(CHAMP_CUUID);
 
     let mut flag_media = false;
+    let mut flag_index = false;
 
     // Inserer document de version
     {
@@ -170,6 +171,10 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
             doc_version.insert("flag_media", "video");
             doc_version.insert("flag_media_traite", false);
         } else if mimetype =="application/pdf" {
+            flag_media = true;
+            flag_index = true;
+            doc_version.insert("flag_media", "poster");
+            doc_version.insert("flag_media_traite", false);
             doc_version.insert("flag_indexe", false);
         }
 
@@ -217,6 +222,14 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
     if flag_media == true {
         debug!("Emettre une commande de conversion pour media {}", fuuid);
         match emettre_commande_media(middleware, &tuuid, &fuuid, &mimetype).await {
+            Ok(()) => (),
+            Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
+        }
+    }
+
+    if flag_index == true {
+        debug!("Emettre une commande d'indexation pour {}", fuuid);
+        match emettre_commande_indexation(middleware, &tuuid, &fuuid).await {
             Ok(()) => (),
             Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
         }
@@ -644,40 +657,4 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
     }
 
     middleware.reponse_ok()
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct TransactionAssocierConversions {
-    tuuid: String,
-    fuuid: String,
-    width: Option<u32>,
-    height: Option<u32>,
-    mimetype: Option<String>,
-    images: HashMap<String, ImageConversion>,
-    anime: Option<bool>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ImageConversion {
-    hachage: String,
-    width: Option<u32>,
-    height: Option<u32>,
-    mimetype: Option<String>,
-    taille: Option<u64>,
-    resolution: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    data_chiffre: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TransactionAssocierVideo {
-    tuuid: String,
-    fuuid: String,
-    width: Option<u32>,
-    height: Option<u32>,
-    mimetype: String,
-    fuuid_video: String,
-    codec: String,
-    bitrate: u32,
-    taille_fichier: u64,
 }

@@ -144,39 +144,7 @@ struct FichierVersionCourante {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct DBFichierVersion {
-    nom_fichier: String,
-    mimetype: String,
-    taille: usize,
-    #[serde(rename="dateFichier")]
-    date_fichier: DateEpochSeconds,
-    #[serde(skip_serializing_if="Option::is_none")]
-    height: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    weight: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    images: Option<HashMap<String, ImageConversion>>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    anime: Option<bool>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct FichierDetail {
-    tuuid: String,
-    #[serde(skip_serializing_if="Option::is_none")]
-    cuuids: Option<Vec<String>>,
     nom: String,
-    titre: Option<HashMap<String, String>>,
-
-    fuuid_v_courante: Option<String>,
-    version_courante: Option<DBFichierVersionDetail>,
-    favoris: Option<bool>,
-    date_creation: Option<DateEpochSeconds>,
-    derniere_modification: Option<DateEpochSeconds>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct DBFichierVersionDetail {
-    nom_fichier: String,
     mimetype: String,
     taille: usize,
     #[serde(rename="dateFichier")]
@@ -189,10 +157,7 @@ struct DBFichierVersionDetail {
     images: Option<HashMap<String, ImageConversion>>,
     #[serde(skip_serializing_if="Option::is_none")]
     anime: Option<bool>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    video: Option<HashMap<String, TransactionAssocierVideo>>,
 }
-
 
 async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
