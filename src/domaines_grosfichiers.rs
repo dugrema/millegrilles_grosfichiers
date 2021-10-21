@@ -195,6 +195,9 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
     let mut prochain_chargement_certificats_autres = chrono::Utc::now();
     let intervalle_chargement_certificats_autres = chrono::Duration::minutes(5);
 
+    let mut prochain_entretien_elasticsearch = chrono::Utc::now();
+    let intervalle_entretien_elasticsearch = chrono::Duration::minutes(5);
+
     info!("domaines_grosfichiers.entretien : Debut thread dans 5 secondes");
 
     // Donner 5 secondes pour que les Q soient pretes (e.g. Q reponse)
@@ -266,11 +269,14 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
             match g {
                 TypeGestionnaire::PartitionConsignation(g) => {
                     debug!("Entretien SenseursPassifs noeud protege");
-                    if ! g.es_est_pret() {
-                        debug!("Preparer ElasticSearch");
-                        match g.es_preparer().await {
-                            Ok(()) => (),
-                            Err(e) => warn!("domaines_grosfichiers.entretien Erreur preparation ElasticSearch : {:?}", e)
+                    if prochain_entretien_elasticsearch < maintenant {
+                        prochain_entretien_elasticsearch = maintenant + intervalle_entretien_elasticsearch;
+                        if !g.es_est_pret() {
+                            debug!("Preparer ElasticSearch");
+                            match g.es_preparer().await {
+                                Ok(()) => (),
+                                Err(e) => warn!("domaines_grosfichiers.entretien Erreur preparation ElasticSearch : {:?}", e)
+                            }
                         }
                     }
                 },
@@ -339,70 +345,69 @@ async fn consommer(
     info!("domaines_grosfichiers.consommer: Fin thread : {:?}", map_senders.keys());
 }
 
-#[cfg(test)]
-mod test_integration {
-    use std::collections::HashMap;
-
-    use millegrilles_common_rust::backup::CatalogueHoraire;
-    use millegrilles_common_rust::chiffrage::Chiffreur;
-    use millegrilles_common_rust::constantes::COMMANDE_SAUVEGARDER_CLE;
-    use millegrilles_common_rust::formatteur_messages::MessageSerialise;
-    use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
-    use millegrilles_common_rust::middleware::IsConfigurationPki;
-    use millegrilles_common_rust::middleware_db::preparer_middleware_db;
-    use millegrilles_common_rust::mongo_dao::convertir_to_bson;
-    use millegrilles_common_rust::tokio as tokio;
-    use millegrilles_common_rust::tokio_stream::StreamExt;
-
-    use crate::maitredescles_commun::DOMAINE_NOM;
-    use crate::test_setup::setup;
-
-    use super::*;
-
-// #[tokio::test]
-    // async fn test_sauvegarder_cle() {
-    //     setup("test_sauvegarder_cle");
-    //     let gestionnaires = charger_gestionnaires();
-    //     let (mut futures, middleware) = build(gestionnaires).await;
-    // 
-    //     let fingerprint_cert = middleware.get_enveloppe_privee();
-    //     let fingerprint = fingerprint_cert.fingerprint().to_owned();
-    // 
-    //     futures.push(tokio::spawn(async move {
-    // 
-    //         tokio::time::sleep(tokio::time::Duration::new(4, 0)).await;
-    // 
-    //         // S'assurer d'avoir recu le cert de chiffrage
-    //         middleware.charger_certificats_chiffrage().await.expect("certs");
-    // 
-    //         let input = b"Allo, le test";
-    //         let mut output = [0u8; 13];
-    // 
-    //         let mut cipher = middleware.get_cipher().expect("cipher");
-    //         let output_size = cipher.update(input, &mut output).expect("update");
-    //         let mut output_final = [0u8; 10];
-    //         let output_final_size = cipher.finalize(&mut output_final).expect("final");
-    //         let cipher_keys = cipher.get_cipher_keys().expect("keys");
-    // 
-    //         let mut doc_map = HashMap::new();
-    //         doc_map.insert(String::from("test"), String::from("true"));
-    //         let commande = cipher_keys.get_commande_sauvegarder_cles(
-    //             "Test", None, doc_map);
-    // 
-    //         debug!("Commande sauvegarder cles : {:?}", commande);
-    // 
-    //         let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
-    //             .partition(fingerprint)
-    //             .build();
-    // 
-    //         let reponse = middleware.transmettre_commande(routage, &commande, true).await.expect("commande");
-    //         debug!("Reponse commande cle : {:?}", reponse);
-    // 
-    //         debug!("Sleep 2 secondes pour attendre fin traitements");
-    //         tokio::time::sleep(tokio::time::Duration::new(2, 0)).await;
-    // 
-    //     }));
-    //     // Execution async du test
-    //     futures.next().await.expect("resultat").expect("ok");
-    // }
-}
+// #[cfg(test)]
+// mod test_integration {
+//     use std::collections::HashMap;
+//
+//     use millegrilles_common_rust::backup::CatalogueHoraire;
+//     use millegrilles_common_rust::chiffrage::Chiffreur;
+//     use millegrilles_common_rust::constantes::COMMANDE_SAUVEGARDER_CLE;
+//     use millegrilles_common_rust::formatteur_messages::MessageSerialise;
+//     use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+//     use millegrilles_common_rust::middleware::IsConfigurationPki;
+//     use millegrilles_common_rust::middleware_db::preparer_middleware_db;
+//     use millegrilles_common_rust::mongo_dao::convertir_to_bson;
+//     use millegrilles_common_rust::tokio as tokio;
+//     use millegrilles_common_rust::tokio_stream::StreamExt;
+//
+//     use crate::test_setup::setup;
+//
+//     use super::*;
+//
+// // #[tokio::test]
+//     // async fn test_sauvegarder_cle() {
+//     //     setup("test_sauvegarder_cle");
+//     //     let gestionnaires = charger_gestionnaires();
+//     //     let (mut futures, middleware) = build(gestionnaires).await;
+//     //
+//     //     let fingerprint_cert = middleware.get_enveloppe_privee();
+//     //     let fingerprint = fingerprint_cert.fingerprint().to_owned();
+//     //
+//     //     futures.push(tokio::spawn(async move {
+//     //
+//     //         tokio::time::sleep(tokio::time::Duration::new(4, 0)).await;
+//     //
+//     //         // S'assurer d'avoir recu le cert de chiffrage
+//     //         middleware.charger_certificats_chiffrage().await.expect("certs");
+//     //
+//     //         let input = b"Allo, le test";
+//     //         let mut output = [0u8; 13];
+//     //
+//     //         let mut cipher = middleware.get_cipher().expect("cipher");
+//     //         let output_size = cipher.update(input, &mut output).expect("update");
+//     //         let mut output_final = [0u8; 10];
+//     //         let output_final_size = cipher.finalize(&mut output_final).expect("final");
+//     //         let cipher_keys = cipher.get_cipher_keys().expect("keys");
+//     //
+//     //         let mut doc_map = HashMap::new();
+//     //         doc_map.insert(String::from("test"), String::from("true"));
+//     //         let commande = cipher_keys.get_commande_sauvegarder_cles(
+//     //             "Test", None, doc_map);
+//     //
+//     //         debug!("Commande sauvegarder cles : {:?}", commande);
+//     //
+//     //         let routage = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_SAUVEGARDER_CLE)
+//     //             .partition(fingerprint)
+//     //             .build();
+//     //
+//     //         let reponse = middleware.transmettre_commande(routage, &commande, true).await.expect("commande");
+//     //         debug!("Reponse commande cle : {:?}", reponse);
+//     //
+//     //         debug!("Sleep 2 secondes pour attendre fin traitements");
+//     //         tokio::time::sleep(tokio::time::Duration::new(2, 0)).await;
+//     //
+//     //     }));
+//     //     // Execution async du test
+//     //     futures.next().await.expect("resultat").expect("ok");
+//     // }
+// }
