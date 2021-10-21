@@ -23,6 +23,7 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
+use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl};
 
 const DUREE_ATTENTE: u64 = 20000;
 
@@ -55,9 +56,12 @@ fn charger_gestionnaire() -> &'static TypeGestionnaire {
     // Charger une version simplifiee de la configuration - on veut le certificat associe a l'enveloppe privee
     // let config = charger_configuration().expect("config");
 
+    // Index dao
+    let index_dao = Arc::new(ElasticSearchDaoImpl::new("http://192.168.2.131:9200"));
+
     // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
     unsafe {
-        GESTIONNAIRE = TypeGestionnaire::PartitionConsignation(Arc::new(GestionnaireGrosFichiers {}));
+        GESTIONNAIRE = TypeGestionnaire::PartitionConsignation(Arc::new(GestionnaireGrosFichiers {index_dao}));
 
         // let mut vec_gestionnaires = Vec::new();
         // vec_gestionnaires.extend(&GESTIONNAIRES);
@@ -262,6 +266,13 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
             match g {
                 TypeGestionnaire::PartitionConsignation(g) => {
                     debug!("Entretien SenseursPassifs noeud protege");
+                    if ! g.es_est_pret() {
+                        debug!("Preparer ElasticSearch");
+                        match g.es_preparer().await {
+                            Ok(()) => (),
+                            Err(e) => warn!("domaines_grosfichiers.entretien Erreur preparation ElasticSearch : {:?}", e)
+                        }
+                    }
                 },
                 _ => ()
             }

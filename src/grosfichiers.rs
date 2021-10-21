@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::error::Error;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use log::{debug, error, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
@@ -31,11 +31,13 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::commandes::consommer_commande;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::consommer_requete;
+use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl, InfoDocumentIndexation, ParametresIndex, ResultatRecherche};
 use crate::transactions::*;
 
 #[derive(Clone, Debug)]
 pub struct GestionnaireGrosFichiers {
     // pub consignation: String,
+    pub index_dao: Arc<ElasticSearchDaoImpl>,
 }
 
 #[async_trait]
@@ -107,6 +109,31 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
         where M: ValidateurX509 + GenerateurMessages + MongoDao, T: Transaction
     {
         aiguillage_transaction(middleware, transaction).await
+    }
+}
+
+#[async_trait]
+impl ElasticSearchDao for GestionnaireGrosFichiers {
+    async fn es_preparer(&self) -> Result<(), String> {
+        self.index_dao.es_preparer().await
+    }
+
+    fn es_est_pret(&self) -> bool {
+        self.index_dao.es_est_pret()
+    }
+
+    async fn es_indexer<S, T>(&self, nom_index: S, id_doc: T, info_doc: InfoDocumentIndexation)
+        -> Result<(), String>
+        where S: AsRef<str> + Send, T: AsRef<str> + Send
+    {
+        self.index_dao.es_indexer(nom_index, id_doc, info_doc).await
+    }
+
+    async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresIndex)
+        -> Result<ResultatRecherche, String>
+        where S: AsRef<str> + Send
+    {
+        self.index_dao.es_rechercher(nom_index, params).await
     }
 }
 

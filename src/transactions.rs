@@ -19,7 +19,8 @@ use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::transactions::Transaction;
 
 use crate::grosfichiers_constantes::*;
-use crate::traitement_media::{emettre_commande_indexation, emettre_commande_media};
+use crate::traitement_media::emettre_commande_media;
+use crate::traitement_index::emettre_commande_indexation;
 
 pub async fn consommer_transaction<M>(middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
 where
@@ -152,7 +153,6 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
     doc_bson_transaction.remove(CHAMP_CUUID);
 
     let mut flag_media = false;
-    let mut flag_index = false;
 
     // Inserer document de version
     {
@@ -172,7 +172,6 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
             doc_version.insert("flag_media_traite", false);
         } else if mimetype =="application/pdf" {
             flag_media = true;
-            flag_index = true;
             doc_version.insert("flag_media", "poster");
             doc_version.insert("flag_media_traite", false);
             doc_version.insert("flag_indexe", false);
@@ -227,12 +226,10 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
         }
     }
 
-    if flag_index == true {
-        debug!("Emettre une commande d'indexation pour {}", fuuid);
-        match emettre_commande_indexation(middleware, &tuuid, &fuuid).await {
-            Ok(()) => (),
-            Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
-        }
+    debug!("Emettre une commande d'indexation pour {}", fuuid);
+    match emettre_commande_indexation(middleware, &tuuid, &fuuid).await {
+        Ok(()) => (),
+        Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
     }
 
     middleware.reponse_ok()

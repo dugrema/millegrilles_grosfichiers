@@ -5,6 +5,7 @@ mod transactions;
 mod grosfichiers_constantes;
 mod commandes;
 mod requetes;
+mod traitement_index;
 
 use log::{info};
 use millegrilles_common_rust::tokio as tokio;
