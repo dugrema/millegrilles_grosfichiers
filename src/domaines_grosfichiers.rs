@@ -57,7 +57,7 @@ fn charger_gestionnaire() -> &'static TypeGestionnaire {
     // let config = charger_configuration().expect("config");
 
     // Index dao
-    let index_dao = Arc::new(ElasticSearchDaoImpl::new("http://192.168.2.131:9200"));
+    let index_dao = Arc::new(ElasticSearchDaoImpl::new("http://192.168.2.131:9200").expect("index"));
 
     // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
     unsafe {

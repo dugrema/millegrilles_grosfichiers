@@ -31,7 +31,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::commandes::consommer_commande;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::consommer_requete;
-use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl, InfoDocumentIndexation, ParametresIndex, ResultatRecherche};
+use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl, InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche};
 use crate::transactions::*;
 
 #[derive(Clone, Debug)]
@@ -129,7 +129,7 @@ impl ElasticSearchDao for GestionnaireGrosFichiers {
         self.index_dao.es_indexer(nom_index, id_doc, info_doc).await
     }
 
-    async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresIndex)
+    async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresRecherche)
         -> Result<ResultatRecherche, String>
         where S: AsRef<str> + Send
     {

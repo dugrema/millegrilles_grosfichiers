@@ -138,7 +138,7 @@ pub trait ElasticSearchDao {
         -> Result<(), String>
         where S: AsRef<str> + Send, T: AsRef<str> + Send;
 
-    async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresIndex)
+    async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresRecherche)
         -> Result<ResultatRecherche, String>
         where S: AsRef<str> + Send;
 
@@ -148,16 +148,22 @@ pub trait ElasticSearchDao {
 pub struct ElasticSearchDaoImpl {
     url: String,
     est_pret: Mutex<bool>,
+    client: reqwest::Client,
 }
 
 impl ElasticSearchDaoImpl {
-    pub fn new<S>(url: S) -> Self
+    pub fn new<S>(url: S) -> Result<Self, Box<dyn Error>>
         where S: Into<String>
     {
-        ElasticSearchDaoImpl {
+        let client = reqwest::Client::builder()
+            .timeout(core::time::Duration::new(20, 0))
+            .build()?;
+
+        Ok(ElasticSearchDaoImpl {
             url: url.into(),
             est_pret: Mutex::new(false),
-        }
+            client,
+        })
     }
 }
 
@@ -166,16 +172,9 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
     async fn es_preparer(&self) -> Result<(), String> {
         debug!("ElasticSearchDaoImpl preparer index");
 
-        let client = match reqwest::Client::builder()
-            .timeout(core::time::Duration::new(20, 0))
-            .build() {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur preparation reqwest : {:?}", e))?
-        };
-
         let index_json = index_grosfichiers();
         let url_post = format!("{}/_index_template/grosfichiers", self.url);
-        let response = match client.put(&url_post).json(&index_json).send().await {
+        let response = match self.client.put(&url_post).json(&index_json).send().await {
             Ok(inner) => inner,
             Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest : {:?}", e))?
         };
@@ -183,7 +182,7 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
         debug!("ElasticSearchDaoImpl.es_preparer status: {}, {:?}", response.status(), response);
         if response.status().is_client_error() {
             warn!("ElasticSearchDaoImpl.es_preparer Erreur preparation index grosfichiers, contenu invalide. On le reset");
-            match client.delete(&url_post).send().await {
+            match self.client.delete(&url_post).send().await {
                 Ok(inner) => {
                     if inner.status().is_success() {
                         info!("Reponse reset index : {:?}", inner);
@@ -194,10 +193,6 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
                 Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest delete index grosfichiers : {:?}", e))?
             }
         }
-
-        //
-        //
-        // client.put("http://192.168.2.131:9200/_index_template/test_dummy");
 
         let mut guard = match self.est_pret.lock() {
             Ok(inner) => inner,
@@ -222,23 +217,113 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
         -> Result<(), String>
         where S: AsRef<str> + Send, T: AsRef<str> + Send
     {
-        todo!()
+        let id_doc_str = id_doc.as_ref();
+
+        let doc_index = match serde_json::to_value(info_doc.doc) {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur conversion json info_doc : {:?}", e))?
+        };
+
+        let url_post = format!("{}/{}/_doc/{}", self.url, nom_index.as_ref(), id_doc_str);
+        let response = match self.client.post(&url_post).json(&doc_index).send().await {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur reqwest : {:?}", e))?
+        };
+
+        if ! response.status().is_success() {
+            Err(format!("ElasticSearchDaoImpl.es_indexer Erreur search index grosfichiers : {:?}", response))?
+        }
+
+        debug!("ElasticSearchDaoImpl.es_indexer OK, response : {:?}", response);
+
+        Ok(())
     }
 
-    async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresIndex)
+    async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresRecherche)
         -> Result<ResultatRecherche, String>
         where S: AsRef<str> + Send
     {
-        todo!()
+        let from_idx = match params.from_idx { Some(inner) => inner, None => 0 };
+        let size = match params.size { Some(inner) => inner, None => 20 };
+        let url_post = format!("{}/{}/_search?from={}&size={}", self.url, nom_index.as_ref(), from_idx, size);
+
+        let query = match &params.mots_cles {
+            Some(mots_cles) => {
+                json!({
+                    "query": {
+                        "bool": {
+                            "should": [
+                                {"match": {"contenu": mots_cles}},
+                                {"match": {"nom": mots_cles}},
+                                {"match": {"titre._combine": mots_cles}},
+                                {"match": {"description._combine": mots_cles}},
+                            ]
+                        }
+                    }
+                })
+            },
+            None => json!({})
+        };
+
+        // '%s/%s/_search?from=%d&size=%d' % (self.__url, nom_index, from_idx, size),
+        let response = match self.client.get(&url_post).json(&query).send().await {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest : {:?}", e))?
+        };
+
+        if ! response.status().is_success() {
+            Err(format!("ElasticSearchDaoImpl.es_preparer Erreur search index grosfichiers : {:?}", response))?
+        }
+
+        let resultat: ResultatRecherche = match response.text().await {
+            Ok(inner) => match serde_json::from_str(inner.as_str()) {
+                Ok(v) => v,
+                Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur conversion json search grosfichiers : {:?}", e))?
+            },
+            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur search grosfichiers, conversion text : {:?}", e))?
+        };
+
+        debug!("Resultat recherche : {:?}", resultat);
+
+        Ok(resultat)
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ParametresIndex {
 
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResultatRecherche {
+    took: u32,
+    timed_out: bool,
+    hits: Option<ResultatHits>,
+}
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResultatHits {
+    total: ResultatTotal,
+    max_score: Option<f32>,
+    hits: Option<Vec<ResultatHitsDetail>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResultatTotal {
+    value: u32,
+    relation: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResultatHitsDetail {
+    #[serde(rename="_index")]
+    index: String,
+    #[serde(rename="_type")]
+    type_: String,
+    #[serde(rename="_id")]
+    id_: String,
+    #[serde(rename="_score")]
+    score: f32,
 }
 
 pub fn index_grosfichiers() -> Value {
@@ -314,6 +399,13 @@ pub fn index_grosfichiers() -> Value {
     })
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ParametresRecherche {
+    mots_cles: Option<String>,
+    from_idx: Option<u32>,
+    size: Option<u32>,
+}
+
 #[cfg(test)]
 mod test_integration_index {
     use millegrilles_common_rust::tokio as tokio;
@@ -325,9 +417,53 @@ mod test_integration_index {
     #[tokio::test]
     async fn test_creation_index() {
         setup("test_creation_index");
-        let dao = ElasticSearchDaoImpl::new("http://192.168.2.131:9200");
+        let dao = ElasticSearchDaoImpl::new("http://192.168.2.131:9200").expect("dao");
         debug!("Test preparer index");
         dao.es_preparer().await.expect("pret");
+    }
+
+    #[tokio::test]
+    async fn test_indexer() {
+        setup("test_indexer");
+        let dao = ElasticSearchDaoImpl::new("http://192.168.2.131:9200").expect("dao");
+        let document_index = DocumentIndexation {
+            nom: String::from("dummy_nom"),
+            mimetype: String::from("application/data"),
+            date_v_courante: DateEpochSeconds::now(),
+            titre: None, description: None, cuuids: None,
+        };
+        let info_doc = InfoDocumentIndexation {
+            tuuid: String::from("tuuid-abcd-1234"),
+            fuuid: String::from("fuuid-abcd-1234"),
+            doc: document_index,
+            permission_hachage_bytes: None, permission_duree: None,
+        };
+        dao.es_indexer("grosfichiers", info_doc.fuuid.clone(), info_doc).await.expect("indexer");
+    }
+
+    #[tokio::test]
+    async fn test_search() {
+        setup("test_search");
+        let dao = ElasticSearchDaoImpl::new("http://192.168.2.131:9200").expect("dao");
+
+        let params = ParametresRecherche {
+            mots_cles: Some(String::from("dadada")),
+            from_idx: Some(0),
+            size: Some(20),
+        };
+        let resultat = dao.es_rechercher("grosfichiers", &params).await.expect("search");
+        debug!("Resultat 1 test_search : {:?}", resultat);
+        assert_eq!(0, resultat.hits.expect("hits").total.value);
+
+        let params = ParametresRecherche {
+            mots_cles: Some(String::from("dummy_nom")),
+            from_idx: Some(0),
+            size: Some(20),
+        };
+        let resultat = dao.es_rechercher("grosfichiers", &params).await.expect("search");
+        debug!("Resultat 2 test_search : {:?}", resultat);
+        assert_eq!(1, resultat.hits.expect("hits").total.value);
+
     }
 
 }
