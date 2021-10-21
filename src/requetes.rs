@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::convert::{TryFrom, TryInto};
+use std::ops::Deref;
 
 use log::{debug, error, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
@@ -24,6 +25,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
+use crate::traitement_index::{ElasticSearchDao, ParametresRecherche, ResultatHits, ResultatHitsDetail};
 use crate::transactions::*;
 
 pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -51,6 +53,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
                 REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
                 REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
                 REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
+                REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
                     Ok(None)
@@ -145,6 +148,8 @@ struct FichierVersionCourante {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct DBFichierVersion {
     nom: String,
+    fuuid: String,
+    tuuid: String,
     mimetype: String,
     taille: usize,
     #[serde(rename="dateFichier")]
@@ -294,6 +299,185 @@ async fn requete_get_corbeille<M>(middleware: &M, m: MessageValideAction, gestio
 
     let reponse = json!({ "fichiers": fichiers_mappes });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+async fn requete_recherche_index<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_recherche_index Message : {:?}", & m.message);
+    let requete: ParametresRecherche = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_recherche_index cle parsed : {:?}", requete);
+
+    let info = match gestionnaire.es_rechercher("grosfichiers", &requete).await {
+        Ok(resultats) => {
+            match resultats.hits {
+                Some(inner) => {
+                    let total = inner.total.value;
+                    match inner.hits {
+                        Some(hits) => {
+                            let resultats = mapper_fichiers_resultat(middleware, hits).await?;
+                            Some((total, resultats))
+                        },
+                        None => None
+                    }
+                },
+                None => None
+            }
+        },
+        Err(e) => {
+            error!("requetes.requete_recherche_index Erreur recherche index grosfichiers : {}", e);
+            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": e.clone()}), None)?))
+        }
+    };
+
+    let reponse = match info {
+        Some((total, hits)) => {
+            json!({"ok": true, "total": total, "hits": hits})
+        },
+        None => json!({"ok": true, "total": 0})
+    };
+
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHitsDetail>)
+    -> Result<Vec<ResultatDocumentRecherche>, Box<dyn Error>>
+    where M: MongoDao
+{
+    // Generer liste de tous les fichiers par version
+    let (resultat_par_fuuid, fuuids) = {
+        let mut map = HashMap::new();
+        let mut fuuids = Vec::new();
+        for r in &resultats {
+            map.insert(r.id_.as_str(), r);
+            fuuids.push(r.id_.clone());
+        }
+        (map, fuuids)
+    };
+
+    debug!("requete.mapper_fichiers_resultat resultat par fuuid : {:?}", resultat_par_fuuid);
+
+    let mut fichiers_par_tuuid = {
+        let filtre = doc! { CHAMP_FUUID: {"$in": &fuuids} };
+        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        let mut curseur = collection.find(filtre, None).await?;
+
+        let mut fichiers: HashMap<String, Vec<ResultatDocumentRecherche>> = HashMap::new();
+        while let Some(c) = curseur.next().await {
+            let fichier: DBFichierVersionDetail = convertir_bson_deserializable(c?)?;
+            let fuuid = fichier.fuuid.as_ref().expect("fuuid");
+            let resultat = resultat_par_fuuid.get(fuuid.as_str()).expect("resultat");
+            let fichier_resultat = ResultatDocumentRecherche::new(fichier, *resultat)?;
+            let tuuid = fichier_resultat.tuuid.clone();
+            match fichiers.get_mut(&tuuid) {
+                Some(mut inner) => {inner.push(fichier_resultat);},
+                None => {fichiers.insert(tuuid, vec![fichier_resultat]);}
+            }
+        }
+
+        fichiers
+    };
+
+    debug!("requete.mapper_fichiers_resultat Fichiers par tuuid : {:?}", fichiers_par_tuuid);
+
+    // Charger les details "courants" pour les fichiers
+    {
+        let tuuids: Vec<String> = fichiers_par_tuuid.keys().map(|k| k.clone()).collect();
+        let filtre = doc! { CHAMP_TUUID: {"$in": tuuids} };
+        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+        let mut curseur = collection.find(filtre, None).await?;
+        while let Some(c) = curseur.next().await {
+            let fichier: FichierDetail = convertir_bson_deserializable(c?)?;
+            let tuuid = &fichier.tuuid;
+            if let Some(mut fichier_resultat) = fichiers_par_tuuid.get_mut(tuuid) {
+                for f in fichier_resultat {
+                    f.nom = fichier.nom.clone();
+                    f.titre = fichier.titre.clone();
+                    f.description = fichier.description.clone();
+                    f.date_creation = fichier.date_creation.clone();
+                    f.date_modification = fichier.derniere_modification.clone();
+                }
+            }
+        }
+    };
+
+    // Generer liste de fichiers en reponse, garder l'ordre des fuuid
+    let mut fichiers_par_fuuid: HashMap<String, ResultatDocumentRecherche> = HashMap::new();
+    for (_, vec_fichiers) in fichiers_par_tuuid.into_iter() {
+        for f in vec_fichiers {
+            fichiers_par_fuuid.insert(f.fuuid.clone(), f);
+        }
+    }
+
+    let mut liste_reponse = Vec::new();
+    for fuuid in &fuuids {
+        if let Some(f) = fichiers_par_fuuid.remove(fuuid) {
+            liste_reponse.push(f);
+        }
+    }
+
+    debug!("requete.mapper_fichiers_resultat Liste response hits : {:?}", liste_reponse);
+
+    Ok(liste_reponse)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ResultatDocumentRecherche {
+    tuuid: String,
+    fuuid: String,
+    nom: String,
+    nom_version: String,
+    taille: u64,
+    date_creation: Option<DateEpochSeconds>,
+    date_modification: Option<DateEpochSeconds>,
+    date_version: DateEpochSeconds,
+    titre: Option<HashMap<String, String>>,
+    description: Option<HashMap<String, String>>,
+
+    // Thumbnail
+    thumb_hachage_bytes: Option<String>,
+    thumb_data: Option<String>,
+
+    // Info recherche
+    score: f32,
+}
+
+impl ResultatDocumentRecherche {
+    fn new(value: DBFichierVersionDetail, resultat: &ResultatHitsDetail) -> Result<Self, Box<dyn Error>> {
+
+        let (thumb_hachage_bytes, thumb_data) = match value.images {
+            Some(mut images) => {
+                match images.remove("thumb") {
+                    Some(inner) => {
+                        (Some(inner.hachage), inner.data_chiffre)
+                    },
+                    None => (None, None)
+                }
+            },
+            None => (None, None)
+        };
+
+        Ok(ResultatDocumentRecherche {
+            tuuid: value.tuuid.expect("tuuid"),
+            fuuid: value.fuuid.expect("fuuid"),
+            nom: value.nom.clone(),
+            nom_version: value.nom,
+            taille: value.taille as u64,
+            date_creation: None,
+            date_modification: None,
+            date_version: value.date_fichier,
+            titre: None,
+            description: None,
+
+            // Thumbnail
+            thumb_hachage_bytes,
+            thumb_data,
+
+            // Info recherche
+            score: resultat.score,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -278,9 +278,12 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
         }
 
         let resultat: ResultatRecherche = match response.text().await {
-            Ok(inner) => match serde_json::from_str(inner.as_str()) {
-                Ok(v) => v,
-                Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur conversion json search grosfichiers : {:?}", e))?
+            Ok(inner) => {
+                debug!("Resultat recherche(str) : {}", inner);
+                match serde_json::from_str(inner.as_str()) {
+                    Ok(v) => v,
+                    Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur conversion json search grosfichiers : {:?}", e))?
+                }
             },
             Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur search grosfichiers, conversion text : {:?}", e))?
         };
@@ -298,34 +301,34 @@ pub struct ParametresIndex {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResultatRecherche {
-    took: u32,
-    timed_out: bool,
-    hits: Option<ResultatHits>,
+    pub took: u32,
+    pub timed_out: bool,
+    pub hits: Option<ResultatHits>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResultatHits {
-    total: ResultatTotal,
-    max_score: Option<f32>,
-    hits: Option<Vec<ResultatHitsDetail>>,
+    pub total: ResultatTotal,
+    pub max_score: Option<f32>,
+    pub hits: Option<Vec<ResultatHitsDetail>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResultatTotal {
-    value: u32,
-    relation: String,
+    pub value: u32,
+    pub relation: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResultatHitsDetail {
     #[serde(rename="_index")]
-    index: String,
+    pub index: String,
     #[serde(rename="_type")]
-    type_: String,
+    pub type_: String,
     #[serde(rename="_id")]
-    id_: String,
+    pub id_: String,
     #[serde(rename="_score")]
-    score: f32,
+    pub score: f32,
 }
 
 pub fn index_grosfichiers() -> Value {

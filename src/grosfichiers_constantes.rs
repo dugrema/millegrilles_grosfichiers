@@ -19,6 +19,7 @@ pub const REQUETE_FAVORIS: &str = "favoris";
 pub const REQUETE_DOCUMENTS_PAR_TUUID: &str = "documentsParTuuid";
 pub const REQUETE_CONTENU_COLLECTION: &str = "contenuCollection";
 pub const REQUETE_GET_CORBEILLE: &str = "getCorbeille";
+pub const REQUETE_RECHERCHE_INDEX: &str = "rechercheIndex";
 
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
@@ -35,6 +36,7 @@ pub const COMMANDE_INDEXER: &str = "indexerContenu";
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 pub const CHAMP_FUUIDS: &str = "fuuids";
 pub const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale (fichier ou collection)
+pub const CHAMP_TUUIDS: &str = "tuuids";
 pub const CHAMP_CUUID: &str = "cuuid";  // UUID collection de tuuids
 pub const CHAMP_CUUIDS: &str = "cuuids";  // Liste de cuuids (e.g. appartenance a plusieurs collections)
 pub const CHAMP_SUPPRIME: &str = "supprime";
@@ -52,6 +54,7 @@ pub struct FichierDetail {
     pub cuuids: Option<Vec<String>>,
     pub nom: String,
     pub titre: Option<HashMap<String, String>>,
+    pub description: Option<HashMap<String, String>>,
 
     pub fuuid_v_courante: Option<String>,
     pub version_courante: Option<DBFichierVersionDetail>,
@@ -63,6 +66,8 @@ pub struct FichierDetail {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DBFichierVersionDetail {
     pub nom: String,
+    pub fuuid: Option<String>,
+    pub tuuid: Option<String>,
     pub mimetype: String,
     pub taille: usize,
     #[serde(rename="dateFichier")]
@@ -106,11 +111,11 @@ pub struct TransactionAssocierVideo {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImageConversion {
     pub hachage: String,
-    width: Option<u32>,
-    height: Option<u32>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
     pub mimetype: Option<String>,
-    taille: Option<u64>,
-    resolution: Option<u32>,
+    pub taille: Option<u64>,
+    pub resolution: Option<u32>,
     #[serde(skip_serializing_if="Option::is_none")]
-    data_chiffre: Option<String>,
+    pub data_chiffre: Option<String>,
 }
