@@ -14,10 +14,11 @@ use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::reqwest;
 use millegrilles_common_rust::serde_json::Value;
+use crate::grosfichiers::GestionnaireGrosFichiers;
 
 use crate::grosfichiers_constantes::*;
 
-pub async fn emettre_commande_indexation<M, S, U>(middleware: &M, tuuid: U, fuuid: S)
+pub async fn emettre_commande_indexation<M, S, U>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, tuuid: U, fuuid: S)
     -> Result<(), String>
     where
         M: GenerateurMessages + MongoDao,
@@ -81,6 +82,7 @@ pub async fn emettre_commande_indexation<M, S, U>(middleware: &M, tuuid: U, fuui
         _ => {
             // Format de document de base, aucun contenu a indexer
             debug!("Indexation document metadata seulement : {}", fuuid_str);
+            gestionnaire.es_indexer("grosfichiers", fuuid_str, info_index).await?;
         }
     }
 

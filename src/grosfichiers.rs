@@ -45,7 +45,7 @@ impl TraiterTransaction for GestionnaireGrosFichiers {
     async fn appliquer_transaction<M>(&self, middleware: &M, transaction: TransactionImpl) -> Result<Option<MessageMilleGrille>, String>
         where M: ValidateurX509 + GenerateurMessages + MongoDao
     {
-        aiguillage_transaction(middleware, transaction).await
+        aiguillage_transaction(self, middleware, transaction).await
     }
 }
 
@@ -108,7 +108,7 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
         -> Result<Option<MessageMilleGrille>, String>
         where M: ValidateurX509 + GenerateurMessages + MongoDao, T: Transaction
     {
-        aiguillage_transaction(middleware, transaction).await
+        aiguillage_transaction(self, middleware, transaction).await
     }
 }
 

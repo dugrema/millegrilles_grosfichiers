@@ -17,6 +17,7 @@ use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::transactions::Transaction;
+use crate::grosfichiers::GestionnaireGrosFichiers;
 
 use crate::grosfichiers_constantes::*;
 use crate::traitement_media::emettre_commande_media;
@@ -59,13 +60,13 @@ where
     Ok(None)
 }
 
-pub async fn aiguillage_transaction<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao,
         T: Transaction
 {
     match transaction.get_action() {
-        TRANSACTION_NOUVELLE_VERSION => transaction_nouvelle_version(middleware, transaction).await,
+        TRANSACTION_NOUVELLE_VERSION => transaction_nouvelle_version(gestionnaire, middleware, transaction).await,
         TRANSACTION_NOUVELLE_COLLECTION => transaction_nouvelle_collection(middleware, transaction).await,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION => transaction_ajouter_fichiers_collection(middleware, transaction).await,
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => transaction_retirer_documents_collection(middleware, transaction).await,
@@ -119,7 +120,7 @@ pub struct TransactionChangerFavoris {
     favoris: HashMap<String, bool>,
 }
 
-async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
         M: GenerateurMessages + MongoDao,
         T: Transaction
@@ -227,7 +228,7 @@ async fn transaction_nouvelle_version<M, T>(middleware: &M, transaction: T) -> R
     }
 
     debug!("Emettre une commande d'indexation pour {}", fuuid);
-    match emettre_commande_indexation(middleware, &tuuid, &fuuid).await {
+    match emettre_commande_indexation(gestionnaire, middleware, &tuuid, &fuuid).await {
         Ok(()) => (),
         Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
     }
