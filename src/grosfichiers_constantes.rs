@@ -61,6 +61,7 @@ pub struct FichierDetail {
     pub favoris: Option<bool>,
     pub date_creation: Option<DateEpochSeconds>,
     pub derniere_modification: Option<DateEpochSeconds>,
+    pub supprime: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

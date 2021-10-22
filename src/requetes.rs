@@ -128,41 +128,42 @@ pub fn mapper_fichier_db(fichier: Document) -> Result<FichierDetail, Box<dyn Err
     Ok(fichier_mappe)
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct FichierVersionCourante {
-    tuuid: String,
-    #[serde(skip_serializing_if="Option::is_none")]
-    cuuids: Option<Vec<String>>,
-    nom: String,
-    titre: Option<HashMap<String, String>>,
+// #[derive(Clone, Debug, Serialize, Deserialize)]
+// struct FichierVersionCourante {
+//     tuuid: String,
+//     #[serde(skip_serializing_if="Option::is_none")]
+//     cuuids: Option<Vec<String>>,
+//     nom: String,
+//     titre: Option<HashMap<String, String>>,
+//
+//     fuuid_v_courante: Option<String>,
+//     version_courante: Option<DBFichierVersion>,
+//
+//     favoris: Option<bool>,
+//
+//     date_creation: Option<DateEpochSeconds>,
+//     derniere_modification: Option<DateEpochSeconds>,
+//     supprime: Option<bool>,
+// }
 
-    fuuid_v_courante: Option<String>,
-    version_courante: Option<DBFichierVersion>,
-
-    favoris: Option<bool>,
-
-    date_creation: Option<DateEpochSeconds>,
-    derniere_modification: Option<DateEpochSeconds>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct DBFichierVersion {
-    nom: String,
-    fuuid: String,
-    tuuid: String,
-    mimetype: String,
-    taille: usize,
-    #[serde(rename="dateFichier")]
-    date_fichier: DateEpochSeconds,
-    #[serde(skip_serializing_if="Option::is_none")]
-    height: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    weight: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    images: Option<HashMap<String, ImageConversion>>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    anime: Option<bool>,
-}
+// #[derive(Clone, Debug, Serialize, Deserialize)]
+// struct DBFichierVersion {
+//     nom: String,
+//     fuuid: String,
+//     tuuid: String,
+//     mimetype: String,
+//     taille: usize,
+//     #[serde(rename="dateFichier")]
+//     date_fichier: DateEpochSeconds,
+//     #[serde(skip_serializing_if="Option::is_none")]
+//     height: Option<u32>,
+//     #[serde(skip_serializing_if="Option::is_none")]
+//     weight: Option<u32>,
+//     #[serde(skip_serializing_if="Option::is_none")]
+//     images: Option<HashMap<String, ImageConversion>>,
+//     #[serde(skip_serializing_if="Option::is_none")]
+//     anime: Option<bool>,
+// }
 
 async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>

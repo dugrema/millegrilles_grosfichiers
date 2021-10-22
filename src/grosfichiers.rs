@@ -412,6 +412,38 @@ where
     Ok(())
 }
 
+pub async fn emettre_evenement_maj_collection<M, S>(middleware: &M, tuuid: S) -> Result<(), String>
+where
+    M: GenerateurMessages + MongoDao,
+    S: AsRef<str>
+{
+    let tuuid_str = tuuid.as_ref();
+    debug!("grosfichiers.emettre_evenement_maj_collection Emettre evenement maj pour collection {}", tuuid_str);
+
+    // Charger fichier
+    let filtre = doc! {CHAMP_TUUID: tuuid_str};
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let doc_fichier = match collection.find_one(filtre, None).await {
+        Ok(inner) => inner,
+        Err(e) => Err(format!("grosfichiers.where Erreur collection.find_one pour {} : {:?}", tuuid_str, e))?
+    };
+    match doc_fichier {
+        Some(inner) => {
+            let fichier_mappe = match mapper_fichier_db(inner) {
+                Ok(inner) => inner,
+                Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_collection Erreur mapper_fichier_db : {:?}", e))?
+            };
+            let routage = RoutageMessageAction::builder("grosfichiers", "majCollection")
+                .exchanges(vec![Securite::L3Protege])
+                .build();
+            middleware.emettre_evenement(routage, &fichier_mappe).await?;
+        },
+        None => Err(format!("grosfichiers.emettre_evenement_maj_collection Collection {} introuvable", tuuid_str))?
+    };
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod test_integration {
     use millegrilles_common_rust::backup::CatalogueHoraire;

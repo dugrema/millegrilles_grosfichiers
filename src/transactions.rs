@@ -17,7 +17,7 @@ use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::transactions::Transaction;
-use crate::grosfichiers::{emettre_evenement_maj_fichier, GestionnaireGrosFichiers};
+use crate::grosfichiers::{emettre_evenement_maj_collection, emettre_evenement_maj_fichier, GestionnaireGrosFichiers};
 
 use crate::grosfichiers_constantes::*;
 use crate::traitement_media::emettre_commande_media;
@@ -290,6 +290,9 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
     };
     debug!("grosfichiers.transaction_nouvelle_collection Resultat transaction update : {:?}", resultat);
 
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    emettre_evenement_maj_collection(middleware, &tuuid).await?;
+
     middleware.reponse_ok()
 }
 
@@ -388,7 +391,13 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
 
     for tuuid in &transaction_collection.tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
-        emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+        match emettre_evenement_maj_fichier(middleware, &tuuid).await {
+            Ok(()) => (),
+            Err(e) => {
+                // Peut-etre une collection
+                emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+            }
+        }
     }
 
     middleware.reponse_ok()
@@ -467,7 +476,7 @@ async fn transaction_changer_favoris<M, T>(middleware: &M, transaction: T) -> Re
 
         for tuuid in &tuuids_reset {
             // Emettre fichier pour que tous les clients recoivent la mise a jour
-            emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+            emettre_evenement_maj_collection(middleware, &tuuid).await?;
         }
 
     }
@@ -483,7 +492,7 @@ async fn transaction_changer_favoris<M, T>(middleware: &M, transaction: T) -> Re
 
         for tuuid in &tuuids_set {
             // Emettre fichier pour que tous les clients recoivent la mise a jour
-            emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+            emettre_evenement_maj_collection(middleware, &tuuid).await?;
         }
     }
 
