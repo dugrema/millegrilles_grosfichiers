@@ -48,6 +48,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         TRANSACTION_SUPPRIMER_DOCUMENTS => commande_supprimer_documents(middleware, m, gestionnaire).await,
         TRANSACTION_RECUPERER_DOCUMENTS => commande_recuperer_documents(middleware, m, gestionnaire).await,
         TRANSACTION_CHANGER_FAVORIS => commande_changer_favoris(middleware, m, gestionnaire).await,
+        TRANSACTION_DECRIRE_FICHIER => commande_decrire_fichier(middleware, m, gestionnaire).await,
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
     }
@@ -60,6 +61,26 @@ async fn commande_nouvelle_version<M>(middleware: &M, m: MessageValideAction, ge
     debug!("commande_nouvelle_version Consommer commande : {:?}", & m.message);
     let commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu(None)?;
     debug!("Commande nouvelle versions parsed : {:?}", commande);
+
+    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
+    // Verifier si on a un certificat delegation globale
+    // todo Ajouter usager acces prive
+    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        true => Ok(()),
+        false => Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+    }?;
+
+    // Traiter la transaction
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
+async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_decrire_fichier Consommer commande : {:?}", & m.message);
+    let commande: TransactionDecrireFichier = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande decrire_fichier parsed : {:?}", commande);
 
     // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
     // Verifier si on a un certificat delegation globale

@@ -30,6 +30,7 @@ pub const TRANSACTION_RECUPERER_DOCUMENTS: &str = "recupererDocuments";
 pub const TRANSACTION_CHANGER_FAVORIS: &str = "changerFavoris";
 pub const TRANSACTION_ASSOCIER_CONVERSIONS: &str = "associerConversions";
 pub const TRANSACTION_ASSOCIER_VIDEO: &str = "associerVideo";
+pub const TRANSACTION_DECRIRE_FICHIER: &str = "decrireFichier";
 
 pub const COMMANDE_INDEXER: &str = "indexerContenu";
 

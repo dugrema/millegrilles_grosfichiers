@@ -75,6 +75,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_CHANGER_FAVORIS => transaction_changer_favoris(middleware, transaction).await,
         TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, transaction).await,
         TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, transaction).await,
+        TRANSACTION_DECRIRE_FICHIER => transaction_decire_fichier(middleware, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), transaction.get_action())),
     }
 }
@@ -89,6 +90,14 @@ pub struct TransactionNouvelleVersion {
     taille: u64,
     #[serde(rename="dateFichier")]
     date_fichier: DateEpochSeconds,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionDecrireFichier {
+    tuuid: Option<String>,
+    nom: Option<String>,
+    titre: Option<HashMap<String, String>>,
+    description: Option<HashMap<String, String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -702,6 +711,65 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
             Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
             Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
         }
+    }
+
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+
+    middleware.reponse_ok()
+}
+
+async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_decire_fichier Consommer transaction : {:?}", &transaction);
+    let transaction_mappee: TransactionDecrireFichier = match transaction.clone().convertir::<TransactionDecrireFichier>() {
+        Ok(t) => t,
+        Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion transaction : {:?}", e))?
+    };
+
+    let tuuid = match &transaction_mappee.tuuid {
+        Some(inner) => inner.to_owned(),
+        None => Err(format!("transactions.transaction_decire_fichier Tuuid fichier manquant"))?
+    };
+
+    let filtre = doc! { CHAMP_TUUID: &transaction_mappee.tuuid };
+
+    let mut set_ops = doc! {};
+
+    // Modifier champ nom si present
+    if let Some(nom) = &transaction_mappee.nom {
+        set_ops.insert("nom", nom);
+    }
+
+    // Modifier champ titre si present
+    if let Some(titre) = &transaction_mappee.titre {
+        let titre_bson = match bson::to_bson(titre) {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion titre vers bson : {:?}", e))?
+        };
+        set_ops.insert("titre", titre_bson);
+    }
+
+    // Modifier champ description si present
+    if let Some(description) = &transaction_mappee.description {
+        let description_bson = match bson::to_bson(description) {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion titre vers bson : {:?}", e))?
+        };
+        set_ops.insert("description", description_bson);
+    }
+
+    let ops = doc! {
+        "$set": set_ops,
+        "$currentDate": { CHAMP_MODIFICATION: true }
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    match collection.update_one(filtre, ops, None).await {
+        Ok(inner) => debug!("transactions.transaction_decire_fichier Update description : {:?}", inner),
+        Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur update description : {:?}", e))?
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour

@@ -170,6 +170,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_SUPPRIMER_DOCUMENTS,
         TRANSACTION_RECUPERER_DOCUMENTS,
         TRANSACTION_CHANGER_FAVORIS,
+        TRANSACTION_DECRIRE_FICHIER,
     ];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
@@ -199,6 +200,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_CHANGER_FAVORIS,
         TRANSACTION_ASSOCIER_CONVERSIONS,
         TRANSACTION_ASSOCIER_VIDEO,
+        TRANSACTION_DECRIRE_FICHIER,
     ];
     for ts in transactions_secures {
         rk_transactions.push(ConfigRoutingExchange {
