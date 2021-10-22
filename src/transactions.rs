@@ -17,7 +17,7 @@ use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::transactions::Transaction;
-use crate::grosfichiers::GestionnaireGrosFichiers;
+use crate::grosfichiers::{emettre_evenement_maj_fichier, GestionnaireGrosFichiers};
 
 use crate::grosfichiers_constantes::*;
 use crate::traitement_media::emettre_commande_media;
@@ -233,6 +233,9 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
     }
 
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+
     middleware.reponse_ok()
 }
 
@@ -316,6 +319,11 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, transacti
     };
     debug!("grosfichiers.transaction_ajouter_fichiers_collection Resultat transaction update : {:?}", resultat);
 
+    for tuuid in &transaction_collection.inclure_tuuids {
+        // Emettre fichier pour que tous les clients recoivent la mise a jour
+        emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+    }
+
     middleware.reponse_ok()
 }
 
@@ -345,6 +353,11 @@ async fn transaction_retirer_documents_collection<M, T>(middleware: &M, transact
     };
     debug!("grosfichiers.transaction_retirer_documents_collection Resultat transaction update : {:?}", resultat);
 
+    for tuuid in &transaction_collection.retirer_tuuids {
+        // Emettre fichier pour que tous les clients recoivent la mise a jour
+        emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+    }
+
     middleware.reponse_ok()
 }
 
@@ -373,6 +386,11 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
     };
     debug!("grosfichiers.transaction_supprimer_documents Resultat transaction update : {:?}", resultat);
 
+    for tuuid in &transaction_collection.tuuids {
+        // Emettre fichier pour que tous les clients recoivent la mise a jour
+        emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+    }
+
     middleware.reponse_ok()
 }
 
@@ -400,6 +418,11 @@ async fn transaction_recuperer_documents<M, T>(middleware: &M, transaction: T) -
         Err(e) => Err(format!("grosfichiers.transaction_recuperer_documents Erreur update_one sur transcation : {:?}", e))?
     };
     debug!("grosfichiers.transaction_recuperer_documents Resultat transaction update : {:?}", resultat);
+
+    for tuuid in &transaction_collection.tuuids {
+        // Emettre fichier pour que tous les clients recoivent la mise a jour
+        emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+    }
 
     middleware.reponse_ok()
 }
@@ -441,6 +464,12 @@ async fn transaction_changer_favoris<M, T>(middleware: &M, transaction: T) -> Re
             Err(e) => Err(format!("grosfichiers.transaction_changer_favoris Erreur update_many reset sur transaction : {:?}", e))?
         };
         debug!("grosfichiers.transaction_changer_favoris Resultat transaction update reset : {:?}", resultat);
+
+        for tuuid in &tuuids_reset {
+            // Emettre fichier pour que tous les clients recoivent la mise a jour
+            emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+        }
+
     }
 
     if ! tuuids_set.is_empty() {
@@ -451,6 +480,11 @@ async fn transaction_changer_favoris<M, T>(middleware: &M, transaction: T) -> Re
             Err(e) => Err(format!("grosfichiers.transaction_changer_favoris Erreur update_many set sur transaction : {:?}", e))?
         };
         debug!("grosfichiers.transaction_changer_favoris Resultat transaction update set : {:?}", resultat);
+
+        for tuuid in &tuuids_set {
+            // Emettre fichier pour que tous les clients recoivent la mise a jour
+            emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+        }
     }
 
     middleware.reponse_ok()
@@ -466,6 +500,8 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
         Ok(t) => t,
         Err(e) => Err(format!("grosfichiers.transaction_associer_conversions Erreur conversion transaction : {:?}", e))?
     };
+
+    let tuuid = transaction_mappee.tuuid.clone();
 
     let doc_images = match convertir_to_bson(transaction_mappee.images.clone()) {
         Ok(inner) => inner,
@@ -568,6 +604,9 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
         }
     }
 
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+
     middleware.reponse_ok()
 }
 
@@ -581,6 +620,8 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
         Ok(t) => t,
         Err(e) => Err(format!("grosfichiers.transaction_associer_video Erreur conversion transaction : {:?}", e))?
     };
+
+    let tuuid = transaction_mappee.tuuid.clone();
 
     let doc_video = match convertir_to_bson(transaction_mappee.clone()) {
         Ok(inner) => inner,
@@ -653,6 +694,9 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
             Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
         }
     }
+
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    emettre_evenement_maj_fichier(middleware, &tuuid).await?;
 
     middleware.reponse_ok()
 }

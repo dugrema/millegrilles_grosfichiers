@@ -118,7 +118,7 @@ struct RequetePlusRecente {
     skip: Option<u64>,
 }
 
-fn mapper_fichier_db(fichier: Document) -> Result<FichierDetail, Box<dyn Error>> {
+pub fn mapper_fichier_db(fichier: Document) -> Result<FichierDetail, Box<dyn Error>> {
     let date_creation = fichier.get_datetime(CHAMP_CREATION)?.clone();
     let date_modification = fichier.get_datetime(CHAMP_MODIFICATION)?.clone();
     let mut fichier_mappe: FichierDetail = convertir_bson_deserializable(fichier)?;

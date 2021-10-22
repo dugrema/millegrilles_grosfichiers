@@ -30,7 +30,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::commandes::consommer_commande;
 use crate::grosfichiers_constantes::*;
-use crate::requetes::consommer_requete;
+use crate::requetes::{consommer_requete, mapper_fichier_db};
 use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl, InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche};
 use crate::transactions::*;
 
@@ -378,6 +378,38 @@ where
         // },
         _ => Err(format!("grosfichiers.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
     }
+}
+
+pub async fn emettre_evenement_maj_fichier<M, S>(middleware: &M, tuuid: S) -> Result<(), String>
+where
+    M: GenerateurMessages + MongoDao,
+    S: AsRef<str>
+{
+    let tuuid_str = tuuid.as_ref();
+    debug!("grosfichiers.emettre_evenement_maj_fichier Emettre evenement maj pour fichier {}", tuuid_str);
+
+    // Charger fichier
+    let filtre = doc! {CHAMP_TUUID: tuuid_str};
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let doc_fichier = match collection.find_one(filtre, None).await {
+        Ok(inner) => inner,
+        Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_fichier Erreur collection.find_one pour {} : {:?}", tuuid_str, e))?
+    };
+    match doc_fichier {
+        Some(inner) => {
+            let fichier_mappe = match mapper_fichier_db(inner) {
+                Ok(inner) => inner,
+                Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_fichier Erreur mapper_fichier_db : {:?}", e))?
+            };
+            let routage = RoutageMessageAction::builder("grosfichiers", "majFichier")
+                .exchanges(vec![Securite::L3Protege])
+                .build();
+            middleware.emettre_evenement(routage, &fichier_mappe).await?;
+        },
+        None => Err(format!("grosfichiers.emettre_evenement_maj_fichier Fichier {} introuvable", tuuid_str))?
+    };
+
+    Ok(())
 }
 
 #[cfg(test)]
