@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::error::Error;
+use std::convert::TryInto;
 
 use log::{debug, error, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
@@ -38,7 +39,9 @@ where
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION |
         TRANSACTION_SUPPRIMER_DOCUMENTS |
         TRANSACTION_RECUPERER_DOCUMENTS |
-        TRANSACTION_CHANGER_FAVORIS => {
+        TRANSACTION_CHANGER_FAVORIS |
+        TRANSACTION_DECRIRE_FICHIER |
+        TRANSACTION_DECRIRE_COLLECTION => {
             match m.verifier_exchanges(vec![Securite::L4Secure]) {
                 true => Ok(()),
                 false => Err(format!("transactions.consommer_transaction: Trigger cedule autorisation invalide (pas 4.secure)"))
@@ -76,6 +79,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, transaction).await,
         TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, transaction).await,
         TRANSACTION_DECRIRE_FICHIER => transaction_decire_fichier(middleware, transaction).await,
+        TRANSACTION_DECRIRE_COLLECTION => transaction_decire_collection(middleware, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), transaction.get_action())),
     }
 }
@@ -98,6 +102,15 @@ pub struct TransactionDecrireFichier {
     nom: Option<String>,
     titre: Option<HashMap<String, String>>,
     description: Option<HashMap<String, String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionDecrireCollection {
+    tuuid: Option<String>,
+    nom: Option<String>,
+    titre: Option<HashMap<String, String>>,
+    description: Option<HashMap<String, String>>,
+    securite: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -774,6 +787,80 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Res
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
     emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+
+    middleware.reponse_ok()
+}
+
+async fn transaction_decire_collection<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_decire_collection Consommer transaction : {:?}", &transaction);
+    let transaction_mappee: TransactionDecrireCollection = match transaction.clone().convertir::<TransactionDecrireCollection>() {
+        Ok(t) => t,
+        Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion transaction : {:?}", e))?
+    };
+
+    let tuuid = match &transaction_mappee.tuuid {
+        Some(inner) => inner.to_owned(),
+        None => Err(format!("transactions.transaction_decire_collection Tuuid fichier manquant"))?
+    };
+
+    let filtre = doc! { CHAMP_TUUID: &transaction_mappee.tuuid };
+
+    let mut set_ops = doc! {};
+
+    // Modifier champ nom si present
+    if let Some(nom) = &transaction_mappee.nom {
+        set_ops.insert("nom", nom);
+    }
+
+    // Modifier champ titre si present
+    if let Some(titre) = &transaction_mappee.titre {
+        let titre_bson = match bson::to_bson(titre) {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion titre vers bson : {:?}", e))?
+        };
+        set_ops.insert("titre", titre_bson);
+    }
+
+    // Modifier champ securite si present
+    if let Some(securite) = &transaction_mappee.securite {
+        // Valider le champ securite
+        let _: Securite = match securite.as_str().try_into() {
+            Ok(s) => s,
+            Err(e) => Err(format!("transactions.transaction_decire_collection Champ securite invalide '{}' : {:?}", securite, e))?
+        };
+
+        let titre_bson = match bson::to_bson(securite) {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion securite vers bson : {:?}", e))?
+        };
+        set_ops.insert("securite", titre_bson);
+    }
+
+    // Modifier champ description si present
+    if let Some(description) = &transaction_mappee.description {
+        let description_bson = match bson::to_bson(description) {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion titre vers bson : {:?}", e))?
+        };
+        set_ops.insert("description", description_bson);
+    }
+
+    let ops = doc! {
+        "$set": set_ops,
+        "$currentDate": { CHAMP_MODIFICATION: true }
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    match collection.update_one(filtre, ops, None).await {
+        Ok(inner) => debug!("transactions.transaction_decire_collection Update description : {:?}", inner),
+        Err(e) => Err(format!("transactions.transaction_decire_collection Erreur update description : {:?}", e))?
+    }
+
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    emettre_evenement_maj_collection(middleware, &tuuid).await?;
 
     middleware.reponse_ok()
 }

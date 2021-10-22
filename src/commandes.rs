@@ -49,6 +49,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         TRANSACTION_RECUPERER_DOCUMENTS => commande_recuperer_documents(middleware, m, gestionnaire).await,
         TRANSACTION_CHANGER_FAVORIS => commande_changer_favoris(middleware, m, gestionnaire).await,
         TRANSACTION_DECRIRE_FICHIER => commande_decrire_fichier(middleware, m, gestionnaire).await,
+        TRANSACTION_DECRIRE_COLLECTION => commande_decrire_collection(middleware, m, gestionnaire).await,
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
     }
@@ -207,7 +208,27 @@ async fn commande_changer_favoris<M>(middleware: &M, m: MessageValideAction, ges
     // todo Ajouter usager acces prive
     match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         true => Ok(()),
-        false => Err(format!("grosfichiers.commande_changer_favoris: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+        false => Err(format!("commandes.commande_changer_favoris: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+    }?;
+
+    // Traiter la transaction
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
+async fn commande_decrire_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_decrire_collection Consommer commande : {:?}", & m.message);
+    let commande: TransactionDecrireCollection = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande decrire_collection parsed : {:?}", commande);
+
+    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
+    // Verifier si on a un certificat delegation globale
+    // todo Ajouter usager acces prive
+    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        true => Ok(()),
+        false => Err(format!("commandes.commande_decrire_collection: Commande autorisation invalide pour message {:?}", m.correlation_id)),
     }?;
 
     // Traiter la transaction

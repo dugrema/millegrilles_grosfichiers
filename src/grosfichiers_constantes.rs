@@ -31,6 +31,7 @@ pub const TRANSACTION_CHANGER_FAVORIS: &str = "changerFavoris";
 pub const TRANSACTION_ASSOCIER_CONVERSIONS: &str = "associerConversions";
 pub const TRANSACTION_ASSOCIER_VIDEO: &str = "associerVideo";
 pub const TRANSACTION_DECRIRE_FICHIER: &str = "decrireFichier";
+pub const TRANSACTION_DECRIRE_COLLECTION: &str = "decrireCollection";
 
 pub const COMMANDE_INDEXER: &str = "indexerContenu";
 
@@ -56,6 +57,7 @@ pub struct FichierDetail {
     pub nom: String,
     pub titre: Option<HashMap<String, String>>,
     pub description: Option<HashMap<String, String>>,
+    pub securite: Option<String>,  // Collection seulement
 
     pub fuuid_v_courante: Option<String>,
     pub version_courante: Option<DBFichierVersionDetail>,
