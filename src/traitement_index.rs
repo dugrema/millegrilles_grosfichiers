@@ -2,20 +2,23 @@ use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::error::Error;
 use std::sync::Mutex;
-use log::{debug, error, info, warn};
 
+use log::{debug, error, info, warn};
+use millegrilles_common_rust::{serde_json, serde_json::json};
 use millegrilles_common_rust::async_trait::async_trait;
+use millegrilles_common_rust::bson::{doc, Document};
+use millegrilles_common_rust::certificats::ValidateurX509;
+use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
-use millegrilles_common_rust::{serde_json, serde_json::json};
-use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
-use millegrilles_common_rust::bson::{doc, Document};
-use millegrilles_common_rust::serde::{Deserialize, Serialize};
+use millegrilles_common_rust::mongodb::options::{FindOptions, Hint};
 use millegrilles_common_rust::reqwest;
+use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
-use crate::grosfichiers::GestionnaireGrosFichiers;
+use millegrilles_common_rust::tokio_stream::StreamExt;
 
+use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
 
 pub async fn emettre_commande_indexation<M, S, U>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, tuuid: U, fuuid: S)
@@ -457,6 +460,37 @@ pub struct ParametresRecherche {
     mots_cles: Option<String>,
     from_idx: Option<u32>,
     size: Option<u32>,
+}
+
+pub async fn traiter_index_manquant<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, limite: i64)
+    -> Result<Vec<String>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    let opts = FindOptions::builder()
+        .hint(Hint::Name(String::from("flag_indexe")))
+        .sort(doc! {CHAMP_FLAG_INDEXE: 1, CHAMP_CREATION: 1})
+        .limit(limite)
+        .build();
+
+    let filtre = doc! { CHAMP_FLAG_INDEXE: false };
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let mut curseur = collection.find(filtre, Some(opts)).await?;
+    let mut tuuids = Vec::new();
+
+    while let Some(d) = curseur.next().await {
+        let doc_version = d?;
+        let version_mappe: DBFichierVersionDetail = convertir_bson_deserializable(doc_version)?;
+        let tuuid = version_mappe.tuuid;
+        let fuuid = version_mappe.fuuid;
+        if let Some(t) = tuuid {
+            if let Some(f) = fuuid {
+                emettre_commande_indexation(gestionnaire, middleware, &t, f).await?;
+                tuuids.push(t);
+            }
+        }
+    }
+
+    Ok(tuuids)
 }
 
 #[cfg(test)]

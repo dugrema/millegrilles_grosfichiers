@@ -12,6 +12,7 @@ use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMil
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
+use millegrilles_common_rust::mongodb::Collection;
 use millegrilles_common_rust::mongodb::options::{FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
@@ -21,8 +22,8 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
-use crate::traitement_index::{ElasticSearchDao, emettre_commande_indexation, set_flag_indexe};
-use crate::traitement_media::emettre_commande_media;
+use crate::traitement_index::{ElasticSearchDao, emettre_commande_indexation, set_flag_indexe, traiter_index_manquant};
+use crate::traitement_media::{emettre_commande_media, traiter_media_batch};
 use crate::transactions::*;
 
 pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -276,26 +277,7 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionna
         None => 1000,
     };
 
-    let opts = FindOptions::builder()
-        .hint(Hint::Name(String::from("flag_indexe")))
-        .sort(doc!{CHAMP_FLAG_INDEXE: 1, CHAMP_CREATION: 1})
-        .limit(limite)
-        .build();
-    let filtre = doc! { CHAMP_FLAG_INDEXE: false };
-    let mut curseur = collection.find(filtre, Some(opts)).await?;
-    let mut tuuids = Vec::new();
-    while let Some(d) = curseur.next().await {
-        let doc_version = d?;
-        let version_mappe: DBFichierVersionDetail = convertir_bson_deserializable(doc_version)?;
-        let tuuid = version_mappe.tuuid;
-        let fuuid = version_mappe.fuuid;
-        if let Some(t) = tuuid {
-            if let Some(f) = fuuid {
-                emettre_commande_indexation(gestionnaire, middleware, &t, f).await?;
-                tuuids.push(t);
-            }
-        }
-    }
+    let tuuids = traiter_index_manquant(middleware, gestionnaire, limite).await?;
 
     let reponse = ReponseCommandeReindexer {tuuids: Some(tuuids)};
     Ok(Some(middleware.formatter_reponse(reponse, None)?))
@@ -332,28 +314,7 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, 
         None => 1000,
     };
 
-    let opts = FindOptions::builder()
-        .hint(Hint::Name(String::from("flag_media_traite")))
-        .sort(doc!{CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_CREATION: 1})
-        .limit(limite)
-        .build();
-    let filtre = doc! { CHAMP_FLAG_MEDIA_TRAITE: false };
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    let mut curseur = collection.find(filtre, Some(opts)).await?;
-    let mut tuuids = Vec::new();
-    while let Some(d) = curseur.next().await {
-        let doc_version = d?;
-        let version_mappe: DBFichierVersionDetail = convertir_bson_deserializable(doc_version)?;
-        let tuuid = version_mappe.tuuid;
-        let fuuid = version_mappe.fuuid;
-        let mimteype = version_mappe.mimetype;
-        if let Some(t) = tuuid {
-            if let Some(f) = fuuid {
-                emettre_commande_media(middleware, &t, &f,&mimteype).await?;
-                tuuids.push(t);
-            }
-        }
-    }
+    let tuuids = traiter_media_batch(middleware, limite).await?;
 
     // Reponse generer preview
     let reponse = ReponseCommandeReindexer {tuuids: Some(tuuids)};

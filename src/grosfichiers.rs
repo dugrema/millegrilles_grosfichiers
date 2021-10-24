@@ -9,7 +9,8 @@ use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage::CommandeSauvegarderCle;
-use millegrilles_common_rust::chrono::{DateTime, Utc};
+use millegrilles_common_rust::{chrono, chrono::{DateTime, Utc}};
+use millegrilles_common_rust::chrono::Timelike;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
@@ -31,7 +32,8 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::commandes::consommer_commande;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{consommer_requete, mapper_fichier_db};
-use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl, InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche};
+use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl, InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche, traiter_index_manquant};
+use crate::traitement_media::traiter_media_batch;
 use crate::transactions::*;
 
 #[derive(Clone, Debug)]
@@ -94,14 +96,14 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
     }
 
     async fn entretien<M>(&self, middleware: Arc<M>) where M: Middleware + 'static {
-        entretien(middleware).await
+        entretien(self, middleware).await
     }
 
     async fn traiter_cedule<M>(self: &'static Self, middleware: &M, trigger: &MessageCedule)
         -> Result<(), Box<dyn Error>>
         where M: Middleware + 'static
     {
-        traiter_cedule(middleware, trigger).await
+        traiter_cedule(self, middleware, trigger).await
     }
 
     async fn aiguillage_transaction<M, T>(&self, middleware: &M, transaction: T)
@@ -387,7 +389,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
     Ok(())
 }
 
-pub async fn entretien<M>(_middleware: Arc<M>)
+pub async fn entretien<M>(_gestionnaire: &GestionnaireGrosFichiers, _middleware: Arc<M>)
     where M: Middleware + 'static
 {
     loop {
@@ -396,11 +398,28 @@ pub async fn entretien<M>(_middleware: Arc<M>)
     }
 }
 
-pub async fn traiter_cedule<M>(_middleware: &M, _trigger: &MessageCedule) -> Result<(), Box<dyn Error>>
-where M: Middleware + 'static {
-    // let message = trigger.message;
-
+pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, trigger: &MessageCedule)
+    -> Result<(), Box<dyn Error>>
+    where M: Middleware + 'static
+{
     debug!("Traiter cedule {}", DOMAINE_NOM);
+
+    let mut prochain_entretien_index_media = chrono::Utc::now();
+    let intervalle_entretien_index_media = chrono::Duration::minutes(5);
+
+    let date_epoch = trigger.get_date();
+    let minutes = date_epoch.get_datetime().minute();
+
+    // Executer a toutes les 5 minutes
+    if minutes % 5 == 0 {
+        debug!("Generer index et media manquants");
+        if let Err(e) = traiter_media_batch(middleware, 1000).await {
+            warn!("Erreur traitement media batch : {:?}", e);
+        }
+        if let Err(e) = traiter_index_manquant(middleware, gestionnaire, 1000).await {
+            warn!("Erreur traitement index manquant batch : {:?}", e);
+        }
+    }
 
     Ok(())
 }
