@@ -21,7 +21,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
-use crate::traitement_index::{emettre_commande_indexation, set_flag_indexe};
+use crate::traitement_index::{ElasticSearchDao, emettre_commande_indexation, set_flag_indexe};
 use crate::transactions::*;
 
 pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -243,7 +243,7 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValideAction, 
 
 async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
     debug!("commande_reindexer Consommer commande : {:?}", & m.message);
     let commande: CommandeIndexerContenu = m.message.get_msg().map_contenu(None)?;
@@ -264,6 +264,9 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionna
             let ops = doc! { "$set": { CHAMP_FLAG_INDEXE: false } };
             let resultat = collection.update_many(filtre, ops, None).await?;
             debug!("commande_reindexer Reset flag indexes, resultat {:?}", resultat);
+
+            // Delete index, recreer
+            gestionnaire.es_reset_index().await?;
         }
     }
 

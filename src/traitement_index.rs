@@ -167,6 +167,8 @@ pub trait ElasticSearchDao {
         -> Result<ResultatRecherche, String>
         where S: AsRef<str> + Send;
 
+    async fn es_reset_index(&self) -> Result<(), String>;
+
 }
 
 #[derive(Debug)]
@@ -207,16 +209,8 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
         debug!("ElasticSearchDaoImpl.es_preparer status: {}, {:?}", response.status(), response);
         if response.status().is_client_error() {
             warn!("ElasticSearchDaoImpl.es_preparer Erreur preparation index grosfichiers, contenu invalide. On le reset");
-            match self.client.delete(&url_post).send().await {
-                Ok(inner) => {
-                    if inner.status().is_success() {
-                        info!("Reponse reset index : {:?}", inner);
-                        Err(format!("Index grosfichiers supprime, va etre recree prochaine fois"))?
-                    }
-                    Err(format!("Index grosfichiers ne peut pas etre supprimer, code : {:?}", inner))?
-                },
-                Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest delete index grosfichiers : {:?}", e))?
-            }
+            self.es_reset_index().await?;
+            Err(format!("Index grosfichiers supprime, va etre recree prochaine fois"))?
         }
 
         let mut guard = match self.est_pret.lock() {
@@ -315,6 +309,37 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
 
         Ok(resultat)
     }
+
+    async fn es_reset_index(&self) -> Result<(), String> {
+        info!("Reset index fichiers");
+        let url_post = format!("{}/_index_template/grosfichiers", self.url);
+        match self.client.delete(&url_post).send().await {
+            Ok(inner) => {
+                if inner.status().is_success() {
+                    info!("Reponse reset index : {:?}", inner);
+                    self.es_preparer().await?;
+                } else {
+                    Err(format!("Template grosfichiers ne peut pas etre supprimer, code : {:?}", inner))?
+                }
+            },
+            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest delete template grosfichiers : {:?}", e))?
+        }
+
+        // Supprimer index documents grosfichiers
+        let url_post = format!("{}/grosfichiers", self.url);
+        match self.client.delete(&url_post).send().await {
+            Ok(inner) => {
+                if inner.status().is_success() {
+                    info!("Reponse reset index : {:?}", inner);
+                } else {
+                    Err(format!("Index grosfichiers ne peut pas etre supprimer, code : {:?}", inner))?
+                }
+            },
+            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest delete index grosfichiers : {:?}", e))?
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -398,7 +423,7 @@ pub fn index_grosfichiers() -> Value {
                     "contenu": {
                         "type": "text",
                     },
-                    "nom_fichier": {
+                    "nom": {
                         "type": "text",
                         "search_analyzer": "filename_search",
                         "analyzer": "filename_index"

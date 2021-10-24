@@ -135,6 +135,8 @@ impl ElasticSearchDao for GestionnaireGrosFichiers {
     {
         self.index_dao.es_rechercher(nom_index, params).await
     }
+
+    async fn es_reset_index(&self) -> Result<(), String> { self.index_dao.es_reset_index().await }
 }
 
 pub fn preparer_queues() -> Vec<QueueType> {
