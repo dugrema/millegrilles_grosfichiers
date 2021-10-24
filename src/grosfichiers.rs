@@ -178,6 +178,15 @@ pub fn preparer_queues() -> Vec<QueueType> {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
     }
 
+    let commandes_protegees: Vec<&str> = vec![
+        COMMANDE_INDEXER,
+        COMMANDE_COMPLETER_PREVIEWS,
+        COMMANDE_CONFIRMER_FICHIER_INDEXE,
+    ];
+    for cmd in commandes_protegees {
+        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
+    }
+
     let mut queues = Vec::new();
 
     // Queue de messages volatils (requete, commande, evenements)
@@ -342,6 +351,37 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         champs_index_fuuid,
         Some(options_unique_fuuid)
     ).await?;
+
+    // Index flag indexe
+    let options_index_indexe = IndexOptions {
+        nom_index: Some(format!("flag_indexe")),
+        unique: false
+    };
+    let champs_index_indexe = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_FLAG_INDEXE), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
+    );
+    middleware.create_index(
+        NOM_COLLECTION_VERSIONS,
+        champs_index_indexe,
+        Some(options_index_indexe)
+    ).await?;
+
+    // Index flag image_traitees
+    let options_index_media_traite = IndexOptions {
+        nom_index: Some(format!("flag_media_traite")),
+        unique: false
+    };
+    let champs_index_media_traite = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_FLAG_MEDIA_TRAITE), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
+    );
+    middleware.create_index(
+        NOM_COLLECTION_VERSIONS,
+        champs_index_media_traite,
+        Some(options_index_media_traite)
+    ).await?;
+
     Ok(())
 }
 

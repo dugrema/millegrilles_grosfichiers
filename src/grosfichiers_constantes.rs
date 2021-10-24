@@ -34,6 +34,8 @@ pub const TRANSACTION_DECRIRE_FICHIER: &str = "decrireFichier";
 pub const TRANSACTION_DECRIRE_COLLECTION: &str = "decrireCollection";
 
 pub const COMMANDE_INDEXER: &str = "indexerContenu";
+pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";
+pub const COMMANDE_CONFIRMER_FICHIER_INDEXE: &str = "confirmerFichierIndexe";
 
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 pub const CHAMP_FUUIDS: &str = "fuuids";
@@ -48,6 +50,9 @@ pub const CHAMP_MIMETYPE: &str = "mimetype";
 pub const CHAMP_FUUID_V_COURANTE: &str = "fuuid_v_courante";
 pub const CHAMP_FAVORIS: &str = "favoris";
 pub const CHAMP_FUUID_MIMETYPES: &str = "fuuidMimetypes";
+pub const CHAMP_FLAG_INDEXE: &str = "flag_indexe";
+pub const CHAMP_FLAG_MEDIA: &str = "flag_media";
+pub const CHAMP_FLAG_MEDIA_TRAITE: &str = "flag_media_traite";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FichierDetail {

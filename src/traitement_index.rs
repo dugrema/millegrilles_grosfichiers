@@ -83,7 +83,30 @@ pub async fn emettre_commande_indexation<M, S, U>(gestionnaire: &GestionnaireGro
             // Format de document de base, aucun contenu a indexer
             debug!("Indexation document metadata seulement : {}", fuuid_str);
             gestionnaire.es_indexer("grosfichiers", fuuid_str, info_index).await?;
+            set_flag_indexe(middleware, fuuid_str).await?;
         }
+    }
+
+    Ok(())
+}
+
+// Set le flag indexe a true pour le fuuid (version)
+pub async fn set_flag_indexe<M, S>(middleware: &M, fuuid: S) -> Result<(), String>
+    where
+        M: GenerateurMessages + MongoDao,
+        S: AsRef<str>
+{
+    let fuuid_str = fuuid.as_ref();
+    let filtre = doc! { CHAMP_FUUID: fuuid_str };
+    let ops = doc! {
+        "$set": { CHAMP_FLAG_INDEXE: true },
+        "$currentDate": { CHAMP_MODIFICATION: true },
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    match collection.update_one(filtre, ops, None).await {
+        Ok(_) => (),
+        Err(e) => Err(format!("traitement_index.set_flag_indexe Erreur {:?}", e))?
     }
 
     Ok(())

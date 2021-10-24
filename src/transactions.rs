@@ -181,24 +181,24 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
     {
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
         let mut doc_version = doc_bson_transaction.clone();
-        doc_version.insert("tuuid", &tuuid);
-        doc_version.insert("fuuids", vec![&fuuid]);
+        doc_version.insert(CHAMP_TUUID, &tuuid);
+        doc_version.insert(CHAMP_FUUIDS, vec![&fuuid]);
 
         // Information optionnelle pour accelerer indexation/traitement media
         if mimetype.starts_with("image") {
             flag_media = true;
-            doc_version.insert("flag_media", "image");
-            doc_version.insert("flag_media_traite", false);
+            doc_version.insert(CHAMP_FLAG_MEDIA, "image");
+            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
         } else if mimetype.starts_with("video") {
             flag_media = true;
-            doc_version.insert("flag_media", "video");
-            doc_version.insert("flag_media_traite", false);
+            doc_version.insert(CHAMP_FLAG_MEDIA, "video");
+            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
         } else if mimetype =="application/pdf" {
             flag_media = true;
-            doc_version.insert("flag_media", "poster");
-            doc_version.insert("flag_media_traite", false);
-            doc_version.insert("flag_indexe", false);
+            doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
+            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
         }
+        doc_version.insert(CHAMP_FLAG_INDEXE, false);
 
         match collection.insert_one(doc_version, None).await {
             Ok(_) => (),
