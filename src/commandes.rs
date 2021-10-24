@@ -261,7 +261,7 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionna
         if r == true {
             info!("Reset flag indexe sur tous les documents");
             let filtre = doc! { CHAMP_FLAG_INDEXE: true };
-            let ops = doc! { CHAMP_FLAG_INDEXE: false };
+            let ops = doc! { "$set": { CHAMP_FLAG_INDEXE: false } };
             let resultat = collection.update_many(filtre, ops, None).await?;
             debug!("commande_reindexer Reset flag indexes, resultat {:?}", resultat);
         }
