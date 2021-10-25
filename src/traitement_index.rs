@@ -14,6 +14,7 @@ use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageM
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOptions, Hint};
 use millegrilles_common_rust::reqwest;
+use millegrilles_common_rust::reqwest::Url;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
@@ -203,8 +204,15 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
         debug!("ElasticSearchDaoImpl preparer index");
 
         let index_json = index_grosfichiers();
-        let url_post = format!("{}/_index_template/grosfichiers", self.url);
-        let response = match self.client.put(&url_post).json(&index_json).send().await {
+
+        let mut url_post = match Url::parse(&self.url) {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur preparation url template index '{}' : {:?}", self.url, e))?
+        };
+        url_post.set_path("_index_template/grosfichiers");
+
+        // let url_post = format!("{}/_index_template/grosfichiers", self.url);
+        let response = match self.client.put(url_post).json(&index_json).send().await {
             Ok(inner) => inner,
             Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest : {:?}", e))?
         };
@@ -246,14 +254,20 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
             Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur conversion json info_doc : {:?}", e))?
         };
 
-        let url_post = format!("{}/{}/_doc/{}", self.url, nom_index.as_ref(), id_doc_str);
-        let response = match self.client.post(&url_post).json(&doc_index).send().await {
+        let mut url_post = match Url::parse(&self.url) {
             Ok(inner) => inner,
-            Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur reqwest : {:?}", e))?
+            Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur preparation url indexation '{}' : {:?}", self.url, e))?
+        };
+        url_post.set_path(format!("{}/_doc/{}", nom_index.as_ref(), id_doc_str).as_str());
+
+        // let url_post = format!("{}{}/_doc/{}", self.url, nom_index.as_ref(), id_doc_str);
+        let response = match self.client.post(url_post.clone()).json(&doc_index).send().await {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur reqwest sur url '{}' : {:?}", url_post, e))?
         };
 
         if ! response.status().is_success() {
-            Err(format!("ElasticSearchDaoImpl.es_indexer Erreur search index grosfichiers : {:?}", response))?
+            Err(format!("ElasticSearchDaoImpl.es_indexer Erreur indexation (status {}) avec search index grosfichiers : {:?}", response.status(), response))?
         }
 
         debug!("ElasticSearchDaoImpl.es_indexer OK, response : {:?}", response);
@@ -267,7 +281,15 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
     {
         let from_idx = match params.from_idx { Some(inner) => inner, None => 0 };
         let size = match params.size { Some(inner) => inner, None => 20 };
-        let url_post = format!("{}/{}/_search?from={}&size={}", self.url, nom_index.as_ref(), from_idx, size);
+
+        let mut url_post = match Url::parse(&self.url) {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("ElasticSearchDaoImpl.es_rechercher Erreur recherche avec url de base '{}' : {:?}", self.url, e))?
+        };
+        url_post.set_path(format!("{}/_search", nom_index.as_ref()).as_str());
+        url_post.set_query(Some(format!("from={}&size={}", from_idx, size).as_str()));
+
+        // let url_post = format!("{}/{}/_search?from={}&size={}", self.url, nom_index.as_ref(), from_idx, size);
 
         let query = match &params.mots_cles {
             Some(mots_cles) => {
@@ -288,9 +310,9 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
         };
 
         // '%s/%s/_search?from=%d&size=%d' % (self.__url, nom_index, from_idx, size),
-        let response = match self.client.get(&url_post).json(&query).send().await {
+        let response = match self.client.get(url_post.clone()).json(&query).send().await {
             Ok(inner) => inner,
-            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest : {:?}", e))?
+            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest '{:?}' : {:?}", url_post, e))?
         };
 
         if ! response.status().is_success() {
@@ -322,7 +344,12 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
                     info!("Reponse reset index : {:?}", inner);
                     self.es_preparer().await?;
                 } else {
-                    Err(format!("Template grosfichiers ne peut pas etre supprimer, code : {:?}", inner))?
+                    if inner.status() == 404 {
+                        info!("ElasticSearchDaoImpl.es_reset_index Template index absent (404), on peut le creer");
+                        self.es_preparer().await?;
+                    } else {
+                        Err(format!("Template grosfichiers ne peut pas etre supprimer, code : {:?}", inner))?
+                    }
                 }
             },
             Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest delete template grosfichiers : {:?}", e))?
@@ -332,10 +359,15 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
         let url_post = format!("{}/grosfichiers", self.url);
         match self.client.delete(&url_post).send().await {
             Ok(inner) => {
-                if inner.status().is_success() {
+                let status = inner.status();
+                if status.is_success() {
                     info!("Reponse reset index : {:?}", inner);
                 } else {
-                    Err(format!("Index grosfichiers ne peut pas etre supprimer, code : {:?}", inner))?
+                    if status == 404 || status == 405 {
+                        info!("ElasticSearchDaoImpl.es_reset_index Index absent (404/405), on peut le creer");
+                    } else {
+                        Err(format!("Index grosfichiers ne peut pas etre supprimer, code : {:?}", inner))?
+                    }
                 }
             },
             Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest delete index grosfichiers : {:?}", e))?

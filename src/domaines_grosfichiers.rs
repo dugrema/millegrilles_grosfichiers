@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::certificats::ValidateurX509;
 use millegrilles_common_rust::chrono as chrono;
-use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessages};
+use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessages, IsConfigNoeud};
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::futures::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
@@ -54,10 +54,15 @@ pub async fn run() {
 /// Conserve les gestionnaires dans la variable GESTIONNAIRES 'static
 fn charger_gestionnaire() -> &'static TypeGestionnaire {
     // Charger une version simplifiee de la configuration - on veut le certificat associe a l'enveloppe privee
-    // let config = charger_configuration().expect("config");
+    let config = charger_configuration().expect("config");
+    let config_noeud = config.get_configuration_noeud();
+    let elastic_search_url = match &config_noeud.elastic_search_url {
+        Some(inner) => inner,
+        None => panic!("URL MG_ELASTICSEARCH_URL doit etre fourni")
+    };
 
     // Index dao
-    let index_dao = Arc::new(ElasticSearchDaoImpl::new("http://192.168.2.131:9200").expect("index"));
+    let index_dao = Arc::new(ElasticSearchDaoImpl::new(elastic_search_url.as_str()).expect("index"));
 
     // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
     unsafe {
@@ -272,9 +277,11 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
                     if prochain_entretien_elasticsearch < maintenant {
                         prochain_entretien_elasticsearch = maintenant + intervalle_entretien_elasticsearch;
                         if !g.es_est_pret() {
-                            debug!("Preparer ElasticSearch");
+                            info!("Preparer ElasticSearch");
                             match g.es_preparer().await {
-                                Ok(()) => (),
+                                Ok(()) => {
+                                    info!("Index ElasticSearch prets");
+                                },
                                 Err(e) => warn!("domaines_grosfichiers.entretien Erreur preparation ElasticSearch : {:?}", e)
                             }
                         }
@@ -308,7 +315,8 @@ async fn consommer(
                 let action = m.action.as_str();
                 let domaine = m.domaine.as_str();
                 let nom_q = m.q.as_str();
-                info!("domaines_grosfichiers.consommer: Traiter message valide (action: {}, rk: {}, q: {}): {:?}", action, rk, nom_q, contenu);
+                info!("domaines_grosfichiers.consommer: Traiter message valide (action: {}, rk: {}, q: {})", action, rk, nom_q);
+                debug!("domaines_grosfichiers.consommer: Traiter message valide contenu {:?}", contenu);
 
                 // Tenter de mapper avec le nom de la Q (ne fonctionnera pas pour la Q de reponse)
                 let sender = match map_senders.get(nom_q) {
