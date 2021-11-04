@@ -72,7 +72,7 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
     fn preparer_queues(&self) -> Vec<QueueType> { preparer_queues() }
 
     fn chiffrer_backup(&self) -> bool {
-        false
+        true
     }
 
     async fn preparer_index_mongodb_custom<M>(&self, middleware: &M) -> Result<(), String> where M: MongoDao {
