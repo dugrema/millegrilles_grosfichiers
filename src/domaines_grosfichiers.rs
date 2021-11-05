@@ -188,6 +188,10 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
     };
 
     let mut rechiffrage_complete = false;
+
+    let mut prochain_chargement_certificats_maitredescles = chrono::Utc::now();
+    let intervalle_chargement_certificats_maitredescles = chrono::Duration::minutes(5);
+
     let mut prochain_entretien_transactions = chrono::Utc::now();
     let intervalle_entretien_transactions = chrono::Duration::minutes(5);
 
@@ -211,6 +215,16 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
     loop {
         let maintenant = chrono::Utc::now();
         debug!("domaines_grosfichiers.entretien  Execution task d'entretien Core {:?}", maintenant);
+
+        if prochain_chargement_certificats_maitredescles < maintenant {
+            match middleware.charger_certificats_chiffrage(middleware.get_enveloppe_privee().enveloppe.as_ref()).await {
+                Ok(()) => {
+                    prochain_chargement_certificats_maitredescles = maintenant + intervalle_chargement_certificats_maitredescles;
+                    debug!("Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_maitredescles);
+                },
+                Err(e) => warn!("Erreur chargement certificats de maitre des cles : {:?}", e)
+            }
+        }
 
         // Sleep jusqu'au prochain entretien ou evenement MQ (e.g. connexion)
         debug!("domaines_grosfichiers.entretien Fin cycle, sleep {} secondes", DUREE_ATTENTE / 1000);
