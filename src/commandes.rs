@@ -113,11 +113,18 @@ async fn commande_nouvelle_collection<M>(middleware: &M, m: MessageValideAction,
 
     // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
     // Verifier si on a un certificat delegation globale
+
+    let user_id = m.get_user_id();
+
     // todo Ajouter usager acces prive
-    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        true => Ok(()),
-        false => Err(format!("grosfichiers.commande_nouvelle_collection: Commande autorisation invalide pour message {:?}", m.correlation_id)),
-    }?;
+    if user_id.is_none() {
+        Err(format!("grosfichiers.commande_nouvelle_collection: Commande invalide (aucun user_id) pour message {:?}", m.correlation_id))?;
+    }
+
+    // match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    //     true => Ok(()),
+    //     false => Err(format!("grosfichiers.commande_nouvelle_collection: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+    // }?;
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)

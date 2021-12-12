@@ -118,6 +118,7 @@ pub struct TransactionNouvelleCollection {
     nom: String,
     cuuid: Option<String>,  // Insertion dans collection destination
     securite: Option<String>,
+    favoris: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -286,6 +287,11 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion transaction en bson : {:?}", e))?
     };
 
+    let user_id = match transaction.get_enveloppe_certificat() {
+        Some(e) => e.get_user_id()?.to_owned(),
+        None => None
+    };
+
     let tuuid = transaction.get_uuid_transaction().to_owned();
     let cuuid = transaction_collection.cuuid;
     let nom_collection = transaction_collection.nom;
@@ -293,6 +299,10 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
     let securite = match transaction_collection.securite {
         Some(s) => s,
         None => SECURITE_3_PROTEGE.to_owned()
+    };
+    let favoris = match transaction_collection.favoris {
+        Some(f) => f,
+        None => false
     };
 
     // Creer document de collection (fichiersRep)
@@ -302,7 +312,9 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
         CHAMP_CREATION: &date_courante,
         CHAMP_MODIFICATION: &date_courante,
         CHAMP_SECURITE: &securite,
+        CHAMP_USER_ID: user_id,
         CHAMP_SUPPRIME: false,
+        CHAMP_FAVORIS: favoris,
     };
     debug!("grosfichiers.transaction_nouvelle_collection Ajouter nouvelle collection doc : {:?}", doc_collection);
 

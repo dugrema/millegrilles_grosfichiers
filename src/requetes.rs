@@ -189,7 +189,7 @@ async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire
     let user_id = m.get_user_id();
 
     let projection = doc! {CHAMP_NOM: true, CHAMP_TITRE: true, CHAMP_SECURITE: true, CHAMP_TUUID: true};
-    let filtre = doc! { CHAMP_FAVORIS: true /*, CHAMP_USER_ID: user_id*/ };
+    let filtre = doc! { CHAMP_FAVORIS: true, CHAMP_USER_ID: user_id };
     let hint = Hint::Name("collections_favoris".into());
     let opts = FindOptions::builder().projection(projection).hint(hint).limit(1000).build();
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
