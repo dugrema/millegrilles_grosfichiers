@@ -33,14 +33,21 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
 {
     debug!("Consommer requete : {:?}", &message.message);
 
+    let user_id = message.get_user_id();
+
     // Autorisation : On accepte les requetes de 3.protege ou 4.secure
-    match message.verifier_exchanges(vec![Securite::L3Protege]) {
-        true => Ok(()),
-        false => {
-            // Verifier si on a un certificat delegation globale
-            match message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    match user_id {
+        Some(_) => Ok(()),  // Ok, on a un user qui fait la requete
+        None => {
+            match message.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege]) {
                 true => Ok(()),
-                false => Err(format!("consommer_requete autorisation invalide (pas d'un exchange reconnu)"))
+                false => {
+                    // Verifier si on a un certificat delegation globale
+                    match message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+                        true => Ok(()),
+                        false => Err(format!("consommer_requete autorisation invalide (pas d'un exchange reconnu)"))
+                    }
+                }
             }
         }
     }?;
@@ -74,6 +81,12 @@ async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, ges
     debug!("requete_activite_recente Message : {:?}", & m.message);
     let requete: RequetePlusRecente = m.message.get_msg().map_contenu(None)?;
     debug!("requete_activite_recente cle parsed : {:?}", requete);
+
+    let user_id = m.get_user_id();
+    if user_id.is_none() {
+        return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "msg": "Access denied"}), None)?))
+    }
+
     let limit = match requete.limit {
         Some(l) => l,
         None => 100
@@ -89,7 +102,7 @@ async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, ges
         .limit(limit)
         .skip(skip)
         .build();
-    let filtre = doc!{CHAMP_SUPPRIME: false};
+    let filtre = doc!{CHAMP_SUPPRIME: false, CHAMP_USER_ID: user_id};
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let mut curseur = collection.find(filtre, opts).await?;
@@ -173,8 +186,10 @@ async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire
     //let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
     // debug!("requete_compter_cles_non_dechiffrables cle parsed : {:?}", requete);
 
+    let user_id = m.get_user_id();
+
     let projection = doc! {CHAMP_NOM: true, CHAMP_TITRE: true, CHAMP_SECURITE: true, CHAMP_TUUID: true};
-    let filtre = doc! { CHAMP_FAVORIS: true };
+    let filtre = doc! { CHAMP_FAVORIS: true /*, CHAMP_USER_ID: user_id*/ };
     let hint = Hint::Name("collections_favoris".into());
     let opts = FindOptions::builder().projection(projection).hint(hint).limit(1000).build();
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;

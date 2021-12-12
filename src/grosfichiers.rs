@@ -158,14 +158,6 @@ pub fn preparer_queues() -> Vec<QueueType> {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L3Protege});
     }
 
-    // let evenements_proteges: Vec<&str> = vec![
-    //     EVENEMENT_CLES_MANQUANTES_PARTITION,
-    // ];
-    // for evnt in evenements_proteges {
-    //     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_NOM, evnt), exchange: Securite::L3Protege});
-    //     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_NOM, evnt), exchange: Securite::L4Secure});
-    // }
-
     let commandes_privees: Vec<&str> = vec![
         TRANSACTION_NOUVELLE_VERSION,
         TRANSACTION_NOUVELLE_COLLECTION,

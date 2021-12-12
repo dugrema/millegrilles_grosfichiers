@@ -170,6 +170,13 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
     let nom_fichier = transaction_fichier.nom;
     let mimetype = transaction_fichier.mimetype;
 
+    let user_id = match transaction.get_enveloppe_certificat() {
+        Some(e) => {
+            e.get_user_id()?.to_owned()
+        },
+        None => None
+    };
+
     doc_bson_transaction.insert(CHAMP_FUUID_MIMETYPES, doc! {&fuuid: &mimetype});
 
     // Retirer champ CUUID, pas utile dans l'information de version
@@ -229,6 +236,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
             "nom": &nom_fichier,
             "tuuid": &tuuid,
             CHAMP_CREATION: Utc::now(),
+            CHAMP_USER_ID: &user_id,
         },
         "$currentDate": {CHAMP_MODIFICATION: true}
     };

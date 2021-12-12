@@ -53,6 +53,7 @@ pub const CHAMP_FUUID_MIMETYPES: &str = "fuuidMimetypes";
 pub const CHAMP_FLAG_INDEXE: &str = "flag_indexe";
 pub const CHAMP_FLAG_MEDIA: &str = "flag_media";
 pub const CHAMP_FLAG_MEDIA_TRAITE: &str = "flag_media_traite";
+pub const CHAMP_USER_ID: &str = "user_id";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FichierDetail {
