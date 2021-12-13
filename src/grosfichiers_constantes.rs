@@ -64,6 +64,7 @@ pub struct FichierDetail {
     pub titre: Option<HashMap<String, String>>,
     pub description: Option<HashMap<String, String>>,
     pub securite: Option<String>,  // Collection seulement
+    pub user_id: Option<String>,
 
     pub fuuid_v_courante: Option<String>,
     pub version_courante: Option<DBFichierVersionDetail>,

@@ -34,23 +34,18 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
     debug!("Consommer requete : {:?}", &message.message);
 
     let user_id = message.get_user_id();
+    let role_prive = message.verifier_roles(vec![RolesCertificats::ComptePrive]);
 
-    // Autorisation : On accepte les requetes de 3.protege ou 4.secure
-    match user_id {
-        Some(_) => Ok(()),  // Ok, on a un user qui fait la requete
-        None => {
-            match message.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege]) {
-                true => Ok(()),
-                false => {
-                    // Verifier si on a un certificat delegation globale
-                    match message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-                        true => Ok(()),
-                        false => Err(format!("consommer_requete autorisation invalide (pas d'un exchange reconnu)"))
-                    }
-                }
-            }
-        }
-    }?;
+    if role_prive && user_id.is_some() {
+        // Ok, commande usager
+    } else if message.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege]) {
+        // Autorisation : On accepte les requetes de 3.protege ou 4.secure
+        // Ok
+    } else if message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("consommer_requete autorisation invalide (pas d'un exchange reconnu)"))?
+    }
 
     match message.domaine.as_str() {
         DOMAINE_NOM => {

@@ -32,17 +32,23 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
 {
     debug!("consommer_commande : {:?}", &m.message);
 
-    // Autorisation : doit etre un message via exchange
-    match m.verifier_exchanges(vec!(Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure)) {
-        true => Ok(()),
-        false => {
-            // Verifier si on a un certificat delegation globale
-            match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-                true => Ok(()),
-                false => Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+
+    if role_prive && user_id.is_some() {
+        // Ok, commande usager
+    } else {
+        match m.verifier_exchanges(vec!(Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure)) {
+            true => Ok(()),
+            false => {
+                // Verifier si on a un certificat delegation globale
+                match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+                    true => Ok(()),
+                    false => Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+                }
             }
-        }
-    }?;
+        }?;
+    }
 
     match m.action.as_str() {
         // Commandes standard

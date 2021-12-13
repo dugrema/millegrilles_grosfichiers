@@ -145,8 +145,8 @@ pub fn preparer_queues() -> Vec<QueueType> {
     let mut rk_volatils = Vec::new();
     //let mut rk_sauvegarder_cle = Vec::new();
 
-    // RK 2.prive, 3.protege et 4.secure
-    let requetes_protegees: Vec<&str> = vec![
+    // RK 2.prive
+    let requetes_privees: Vec<&str> = vec![
         REQUETE_ACTIVITE_RECENTE,
         REQUETE_FAVORIS,
         REQUETE_DOCUMENTS_PAR_TUUID,
@@ -154,12 +154,11 @@ pub fn preparer_queues() -> Vec<QueueType> {
         REQUETE_GET_CORBEILLE,
         REQUETE_RECHERCHE_INDEX,
     ];
-    for req in requetes_protegees {
-        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L3Protege});
+    for req in requetes_privees {
+        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L2Prive});
     }
 
     let commandes_privees: Vec<&str> = vec![
-        TRANSACTION_NOUVELLE_VERSION,
         TRANSACTION_NOUVELLE_COLLECTION,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION,
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION,
@@ -171,10 +170,11 @@ pub fn preparer_queues() -> Vec<QueueType> {
     ];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
-        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
+        // rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
     }
 
     let commandes_protegees: Vec<&str> = vec![
+        TRANSACTION_NOUVELLE_VERSION,  // fichiers
         COMMANDE_INDEXER,
         COMMANDE_COMPLETER_PREVIEWS,
         COMMANDE_CONFIRMER_FICHIER_INDEXE,
@@ -459,7 +459,7 @@ where
                 Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_fichier Erreur mapper_fichier_db : {:?}", e))?
             };
             let routage = RoutageMessageAction::builder("grosfichiers", "majFichier")
-                .exchanges(vec![Securite::L3Protege])
+                .exchanges(vec![Securite::L2Prive])
                 .build();
             middleware.emettre_evenement(routage, &fichier_mappe).await?;
         },
@@ -491,7 +491,7 @@ where
                 Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_collection Erreur mapper_fichier_db : {:?}", e))?
             };
             let routage = RoutageMessageAction::builder("grosfichiers", "majCollection")
-                .exchanges(vec![Securite::L3Protege])
+                .exchanges(vec![Securite::L2Prive])
                 .build();
             middleware.emettre_evenement(routage, &fichier_mappe).await?;
         },
