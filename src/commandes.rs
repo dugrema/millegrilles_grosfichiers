@@ -77,13 +77,16 @@ async fn commande_nouvelle_version<M>(middleware: &M, m: MessageValideAction, ge
     let commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu(None)?;
     debug!("Commande nouvelle versions parsed : {:?}", commande);
 
-    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
-    // Verifier si on a un certificat delegation globale
-    // todo Ajouter usager acces prive
-    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        true => Ok(()),
-        false => Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
-    }?;
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+
+    if role_prive && user_id.is_some() {
+        // Ok
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
