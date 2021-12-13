@@ -20,6 +20,7 @@ pub const REQUETE_DOCUMENTS_PAR_TUUID: &str = "documentsParTuuid";
 pub const REQUETE_CONTENU_COLLECTION: &str = "contenuCollection";
 pub const REQUETE_GET_CORBEILLE: &str = "getCorbeille";
 pub const REQUETE_RECHERCHE_INDEX: &str = "rechercheIndex";
+pub const REQUETE_GET_PERMISSION: &str = "getPermission";
 
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";

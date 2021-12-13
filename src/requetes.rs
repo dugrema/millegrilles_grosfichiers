@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::convert::{TryFrom, TryInto};
 use std::ops::Deref;
@@ -25,7 +25,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
-use crate::traitement_index::{ElasticSearchDao, ParametresRecherche, ResultatHits, ResultatHitsDetail};
+use crate::traitement_index::{ElasticSearchDao, ParametresGetPermission, ParametresRecherche, ResultatHits, ResultatHitsDetail};
 use crate::transactions::*;
 
 pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -56,6 +56,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
                 REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
                 REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
                 REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
+                REQUETE_GET_PERMISSION => requete_get_permission(middleware, message, gestionnaire).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
                     Ok(None)
@@ -352,6 +353,52 @@ async fn requete_recherche_index<M>(middleware: &M, m: MessageValideAction, gest
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
+async fn requete_get_permission<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    let user_id = match m.get_user_id() {
+        Some(u) => u,
+        None => return Ok(Some(middleware.formatter_reponse(json!({"err": true, "message": "user_id n'est pas dans le certificat"}), None)?))
+    };
+
+    debug!("requete_get_permission Message : {:?}", & m.message);
+    let requete: ParametresGetPermission = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_get_permission cle parsed : {:?}", requete);
+
+    let mut conditions: Vec<Document> = Vec::new();
+    if requete.tuuids.is_some() {
+        conditions.push(doc!{"tuuid": {"$in": requete.tuuids.expect("tuuids")}});
+    }
+    if requete.fuuids.is_some() {
+        conditions.push(doc!{"fuuids": {"$in": requete.fuuids.expect("fuuids")}});
+    }
+
+    let mut filtre = doc!{
+        "user_id": user_id,
+        "$or": conditions,
+    };
+    let projection = doc! {"fuuids": true, "tuuid": true};
+    let opts = FindOptions::builder().projection(projection).limit(1000).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut curseur = collection.find(filtre, Some(opts)).await?;
+
+    let mut hachage_bytes = HashSet::new();
+    while let Some(fresult) = curseur.next().await {
+        let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
+        for d in doc_mappe.fuuids {
+            hachage_bytes.insert(d);
+        }
+    }
+
+    let permission = json!({
+        "permission_hachage_bytes": hachage_bytes,
+        "permission_duree": 300
+    });
+
+    Ok(Some(middleware.formatter_reponse(&permission, None)?))
+}
+
 async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHitsDetail>)
     -> Result<Vec<ResultatDocumentRecherche>, Box<dyn Error>>
     where M: MongoDao
@@ -502,4 +549,10 @@ struct RequeteContenuCollection {
     limit: Option<i64>,
     skip: Option<u64>,
     sort_keys: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ResultatDocsPermission {
+    tuuid: String,
+    fuuids: Vec<String>,
 }

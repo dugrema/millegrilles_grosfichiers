@@ -494,6 +494,12 @@ pub struct ParametresRecherche {
     size: Option<u32>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ParametresGetPermission {
+    pub tuuids: Option<Vec<String>>,
+    pub fuuids: Option<Vec<String>>,
+}
+
 pub async fn traiter_index_manquant<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, limite: i64)
     -> Result<Vec<String>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509
