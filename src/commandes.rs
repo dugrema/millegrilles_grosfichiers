@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 
 use log::{debug, error, info, warn};
@@ -22,6 +22,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
+use crate::requetes::mapper_fichier_db;
 use crate::traitement_index::{ElasticSearchDao, emettre_commande_indexation, set_flag_indexe, traiter_index_manquant};
 use crate::traitement_media::{emettre_commande_media, traiter_media_batch};
 use crate::transactions::*;
@@ -77,9 +78,9 @@ async fn commande_nouvelle_version<M>(middleware: &M, m: MessageValideAction, ge
     let commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu(None)?;
     debug!("Commande nouvelle versions parsed : {:?}", commande);
 
+    // Autorisation: Action usager avec compte prive ou delegation globale
     let user_id = m.get_user_id();
     let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
-
     if role_prive && user_id.is_some() {
         // Ok
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
@@ -100,13 +101,16 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValideAction, ges
     let commande: TransactionDecrireFichier = m.message.get_msg().map_contenu(None)?;
     debug!("Commande decrire_fichier parsed : {:?}", commande);
 
-    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
-    // Verifier si on a un certificat delegation globale
-    // todo Ajouter usager acces prive
-    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        true => Ok(()),
-        false => Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
-    }?;
+    // Autorisation: Action usager avec compte prive ou delegation globale
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive && user_id.is_some() {
+        // Ok
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
@@ -123,20 +127,72 @@ async fn commande_nouvelle_collection<M>(middleware: &M, m: MessageValideAction,
     // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
     // Verifier si on a un certificat delegation globale
 
+    // Autorisation: Action usager avec compte prive ou delegation globale
     let user_id = m.get_user_id();
-
-    // todo Ajouter usager acces prive
-    if user_id.is_none() {
-        Err(format!("grosfichiers.commande_nouvelle_collection: Commande invalide (aucun user_id) pour message {:?}", m.correlation_id))?;
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive && user_id.is_some() {
+        let user_id_str = user_id.as_ref().expect("user_id");
+        let cuuid = commande.cuuid.as_ref();
+        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, None::<&Vec<String>>, cuuid).await?;
+        if err_reponse.is_some() {
+            return Ok(err_reponse)
+        }
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
     }
-
-    // match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-    //     true => Ok(()),
-    //     false => Err(format!("grosfichiers.commande_nouvelle_collection: Commande autorisation invalide pour message {:?}", m.correlation_id)),
-    // }?;
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
+async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuids: Option<&Vec<U>>, cuuid: Option<T>)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where
+        M: GenerateurMessages + MongoDao,
+        S: AsRef<str>, T: AsRef<str>, U: AsRef<str>
+{
+    let user_id_str = user_id.as_ref();
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    if cuuid.is_some() {
+        let cuuid_ref = cuuid.expect("cuuid");
+
+        // Verifier que la collection destination (cuuid) appartient a l'usager
+        let filtre = doc!{CHAMP_TUUID: cuuid_ref.as_ref()};
+        let doc_collection = collection.find_one(filtre, None).await?;
+        match doc_collection {
+            Some(d) => {
+                let mapping_collection: FichierDetail = mapper_fichier_db(d)?;
+                if Some(user_id_str.to_owned()) != mapping_collection.user_id {
+                    return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid n'appartient pas a l'usager"}), None)?))
+                }
+            },
+            None => return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid inconnu"}), None)?))
+        }
+    }
+
+    if tuuids.is_some() {
+        let tuuids_vec: Vec<&str> = tuuids.expect("tuuids").iter().map(|t| t.as_ref()).collect();
+        let mut tuuids_set: HashSet<&str> = HashSet::new();
+        let filtre = doc!{CHAMP_TUUID: {"$in": &tuuids_vec}, CHAMP_USER_ID: user_id_str};
+        tuuids_set.extend(&tuuids_vec);
+
+        let mut curseur_docs = collection.find(filtre, None).await?;
+        while let Some(fresult) = curseur_docs.next().await {
+            let d_result = fresult?;
+            let tuuid_doc = d_result.get_str("tuuid")?;
+            tuuids_set.remove(tuuid_doc);
+        }
+
+        if tuuids_set.len() > 0 {
+            // Certains tuuids n'appartiennent pas a l'usager
+            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "message": "tuuids n'appartiennent pas a l'usager"}), None)?))
+        }
+    }
+
+    Ok(None)
 }
 
 async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -227,13 +283,21 @@ async fn commande_changer_favoris<M>(middleware: &M, m: MessageValideAction, ges
     let commande: TransactionChangerFavoris = m.message.get_msg().map_contenu(None)?;
     debug!("Commande commande_changer_favoris versions parsed : {:?}", commande);
 
-    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
-    // Verifier si on a un certificat delegation globale
-    // todo Ajouter usager acces prive
-    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        true => Ok(()),
-        false => Err(format!("commandes.commande_changer_favoris: Commande autorisation invalide pour message {:?}", m.correlation_id)),
-    }?;
+    // Autorisation: Action usager avec compte prive ou delegation globale
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive && user_id.is_some() {
+        let user_id_str = user_id.as_ref().expect("user_id");
+        let keys: Vec<String> = commande.favoris.keys().cloned().collect();
+        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&keys), None::<String>).await?;
+        if err_reponse.is_some() {
+            return Ok(err_reponse)
+        }
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)

@@ -116,7 +116,7 @@ pub struct TransactionDecrireCollection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionNouvelleCollection {
     nom: String,
-    cuuid: Option<String>,  // Insertion dans collection destination
+    pub cuuid: Option<String>,  // Insertion dans collection destination
     securite: Option<String>,
     favoris: Option<bool>,
 }
@@ -140,7 +140,7 @@ pub struct TransactionSupprimerDocuments {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionChangerFavoris {
-    favoris: HashMap<String, bool>,
+    pub favoris: HashMap<String, bool>,
 }
 
 async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
