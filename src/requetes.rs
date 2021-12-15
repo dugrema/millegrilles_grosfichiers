@@ -183,6 +183,14 @@ async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire
     // debug!("requete_compter_cles_non_dechiffrables cle parsed : {:?}", requete);
 
     let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive && user_id.is_some() {
+        // Ok
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
 
     let projection = doc! {CHAMP_NOM: true, CHAMP_TITRE: true, CHAMP_SECURITE: true, CHAMP_TUUID: true, "_mg-creation": true};
     let filtre = doc! { CHAMP_FAVORIS: true, CHAMP_USER_ID: user_id };
@@ -253,9 +261,22 @@ async fn requete_contenu_collection<M>(middleware: &M, m: MessageValideAction, g
     let requete: RequeteContenuCollection = m.message.get_msg().map_contenu(None)?;
     debug!("requete_contenu_collection cle parsed : {:?}", requete);
 
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive && user_id.is_some() {
+        // Ok
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
+
     let skip = match requete.skip { Some(s) => s, None => 0 };
     let limit = match requete.limit { Some(l) => l, None => 50 };
-    let filtre_collection = doc! { CHAMP_TUUID: &requete.tuuid_collection, CHAMP_SUPPRIME: false };
+    let mut filtre_collection = doc! { CHAMP_TUUID: &requete.tuuid_collection, CHAMP_SUPPRIME: false };
+    if user_id.is_some() {
+        filtre_collection.insert("user_id", Bson::String(user_id.expect("user_id")));
+    }
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let mut doc_info_collection = match collection.find_one(filtre_collection, None).await? {
@@ -303,6 +324,17 @@ async fn requete_get_corbeille<M>(middleware: &M, m: MessageValideAction, gestio
     debug!("requete_get_corbeille Message : {:?}", & m.message);
     let requete: RequetePlusRecente = m.message.get_msg().map_contenu(None)?;
     debug!("requete_get_corbeille cle parsed : {:?}", requete);
+
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive && user_id.is_some() {
+        // Ok
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
+
     let limit = match requete.limit {
         Some(l) => l,
         None => 100
@@ -318,7 +350,10 @@ async fn requete_get_corbeille<M>(middleware: &M, m: MessageValideAction, gestio
         .limit(limit)
         .skip(skip)
         .build();
-    let filtre = doc!{CHAMP_SUPPRIME: true};
+    let mut filtre = doc!{CHAMP_SUPPRIME: true};
+    if user_id.is_some() {
+        filtre.insert("user_id", Bson::String(user_id.expect("user_id")));
+    }
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let mut curseur = collection.find(filtre, opts).await?;

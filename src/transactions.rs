@@ -464,7 +464,7 @@ async fn transaction_recuperer_documents<M, T>(middleware: &M, transaction: T) -
     };
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let resultat = match collection.update_one(filtre, ops, None).await {
+    let resultat = match collection.update_many(filtre, ops, None).await {
         Ok(r) => r,
         Err(e) => Err(format!("grosfichiers.transaction_recuperer_documents Erreur update_one sur transcation : {:?}", e))?
     };
