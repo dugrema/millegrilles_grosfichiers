@@ -134,7 +134,7 @@ pub struct TransactionRetirerDocumentsCollection {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TransactionSupprimerDocuments {
+pub struct TransactionListeDocuments {
     pub tuuids: Vec<String>,  // Fichiers/rep a supprimer
 }
 
@@ -412,7 +412,7 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
         T: Transaction
 {
     debug!("transaction_supprimer_documents Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionSupprimerDocuments = match transaction.clone().convertir::<TransactionSupprimerDocuments>() {
+    let transaction_collection: TransactionListeDocuments = match transaction.clone().convertir::<TransactionListeDocuments>() {
         Ok(t) => t,
         Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur conversion transaction : {:?}", e))?
     };
@@ -451,7 +451,7 @@ async fn transaction_recuperer_documents<M, T>(middleware: &M, transaction: T) -
         T: Transaction
 {
     debug!("transaction_recuperer_documents Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionSupprimerDocuments = match transaction.clone().convertir::<TransactionSupprimerDocuments>() {
+    let transaction_collection: TransactionListeDocuments = match transaction.clone().convertir::<TransactionListeDocuments>() {
         Ok(t) => t,
         Err(e) => Err(format!("grosfichiers.transaction_recuperer_documents Erreur conversion transaction : {:?}", e))?
     };

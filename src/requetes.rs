@@ -6,7 +6,7 @@ use std::ops::Deref;
 use log::{debug, error, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
 use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{doc, Document};
+use millegrilles_common_rust::bson::{Bson, doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
@@ -223,7 +223,20 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
     let requete: RequeteDocumentsParTuuids = m.message.get_msg().map_contenu(None)?;
     debug!("requete_documents_par_tuuid cle parsed : {:?}", requete);
 
-    let filtre = doc! { CHAMP_TUUID: {"$in": &requete.tuuids_documents} };
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive && user_id.is_some() {
+        // Ok
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
+
+    let mut filtre = doc! { CHAMP_TUUID: {"$in": &requete.tuuids_documents} };
+    if user_id.is_some() {
+        filtre.insert("user_id", Bson::String(user_id.expect("user_id")));
+    }
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let curseur = collection.find(filtre, None).await?;
     let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;

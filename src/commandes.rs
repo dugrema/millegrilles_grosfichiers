@@ -254,7 +254,7 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction,
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_supprimer_documents Consommer commande : {:?}", & m.message);
-    let commande: TransactionSupprimerDocuments = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionListeDocuments = m.message.get_msg().map_contenu(None)?;
     debug!("Commande commande_supprimer_documents versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
@@ -273,7 +273,6 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction,
         Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
     }
 
-
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
@@ -283,16 +282,24 @@ async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction,
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_recuperer_documents Consommer commande : {:?}", & m.message);
-    let commande: TransactionSupprimerDocuments = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionListeDocuments = m.message.get_msg().map_contenu(None)?;
     debug!("Commande commande_recuperer_documents versions parsed : {:?}", commande);
 
-    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
-    // Verifier si on a un certificat delegation globale
-    // todo Ajouter usager acces prive
-    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        true => Ok(()),
-        false => Err(format!("grosfichiers.commande_recuperer_documents: Commande autorisation invalide pour message {:?}", m.correlation_id)),
-    }?;
+    // Autorisation: Action usager avec compte prive ou delegation globale
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive && user_id.is_some() {
+        let user_id_str = user_id.as_ref().expect("user_id");
+        let tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
+        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
+        if err_reponse.is_some() {
+            return Ok(err_reponse)
+        }
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
