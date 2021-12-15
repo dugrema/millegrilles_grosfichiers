@@ -129,8 +129,8 @@ pub struct TransactionAjouterFichiersCollection {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionRetirerDocumentsCollection {
-    cuuid: String,  // Collection qui recoit les documents
-    retirer_tuuids: Vec<String>,  // Fichiers/rep a retirer de la collection
+    pub cuuid: String,  // Collection qui recoit les documents
+    pub retirer_tuuids: Vec<String>,  // Fichiers/rep a retirer de la collection
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -392,7 +392,7 @@ async fn transaction_retirer_documents_collection<M, T>(middleware: &M, transact
     };
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let resultat = match collection.update_one(filtre, ops, None).await {
+    let resultat = match collection.update_many(filtre, ops, None).await {
         Ok(r) => r,
         Err(e) => Err(format!("grosfichiers.transaction_retirer_documents_collection Erreur update_one sur transcation : {:?}", e))?
     };
