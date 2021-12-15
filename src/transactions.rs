@@ -98,7 +98,7 @@ pub struct TransactionNouvelleVersion {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionDecrireFichier {
-    tuuid: Option<String>,
+    pub tuuid: String,
     nom: Option<String>,
     titre: Option<HashMap<String, String>>,
     description: Option<HashMap<String, String>>,
@@ -106,7 +106,7 @@ pub struct TransactionDecrireFichier {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionDecrireCollection {
-    tuuid: Option<String>,
+    pub tuuid: String,
     nom: Option<String>,
     titre: Option<HashMap<String, String>>,
     description: Option<HashMap<String, String>>,
@@ -763,12 +763,8 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Res
         Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion transaction : {:?}", e))?
     };
 
-    let tuuid = match &transaction_mappee.tuuid {
-        Some(inner) => inner.to_owned(),
-        None => Err(format!("transactions.transaction_decire_fichier Tuuid fichier manquant"))?
-    };
-
-    let filtre = doc! { CHAMP_TUUID: &transaction_mappee.tuuid };
+    let tuuid = transaction_mappee.tuuid.as_str();
+    let filtre = doc! { CHAMP_TUUID: tuuid };
 
     let mut set_ops = doc! {};
 
@@ -822,12 +818,8 @@ async fn transaction_decire_collection<M, T>(middleware: &M, transaction: T) -> 
         Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion transaction : {:?}", e))?
     };
 
-    let tuuid = match &transaction_mappee.tuuid {
-        Some(inner) => inner.to_owned(),
-        None => Err(format!("transactions.transaction_decire_collection Tuuid fichier manquant"))?
-    };
-
-    let filtre = doc! { CHAMP_TUUID: &transaction_mappee.tuuid };
+    let tuuid = transaction_mappee.tuuid.as_str();
+    let filtre = doc! { CHAMP_TUUID: tuuid };
 
     let mut set_ops = doc! {};
 
