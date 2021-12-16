@@ -56,6 +56,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         TRANSACTION_NOUVELLE_VERSION => commande_nouvelle_version(middleware, m, gestionnaire).await,
         TRANSACTION_NOUVELLE_COLLECTION => commande_nouvelle_collection(middleware, m, gestionnaire).await,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION => commande_ajouter_fichiers_collection(middleware, m, gestionnaire).await,
+        TRANSACTION_DEPLACER_FICHIERS_COLLECTION => commande_deplacer_fichiers_collection(middleware, m, gestionnaire).await,
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => commande_retirer_documents_collection(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => commande_supprimer_documents(middleware, m, gestionnaire).await,
         TRANSACTION_RECUPERER_DOCUMENTS => commande_recuperer_documents(middleware, m, gestionnaire).await,
@@ -208,13 +209,53 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
     let commande: TransactionAjouterFichiersCollection = m.message.get_msg().map_contenu(None)?;
     debug!("Commande commande_ajouter_fichiers_collection versions parsed : {:?}", commande);
 
-    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
-    // Verifier si on a un certificat delegation globale
-    // todo Ajouter usager acces prive
-    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        true => Ok(()),
-        false => Err(format!("grosfichiers.commande_ajouter_fichiers_collection: Commande autorisation invalide pour message {:?}", m.correlation_id)),
-    }?;
+    // Autorisation: Action usager avec compte prive ou delegation globale
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive && user_id.is_some() {
+        let user_id_str = user_id.as_ref().expect("user_id");
+        let cuuid = commande.cuuid.as_str();
+        let tuuids: Vec<&str> = commande.inclure_tuuids.iter().map(|t| t.as_str()).collect();
+        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
+        if err_reponse.is_some() {
+            return Ok(err_reponse)
+        }
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
+
+    // Traiter la transaction
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
+async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_deplacer_fichiers_collection Consommer commande : {:?}", & m.message);
+    let commande: TransactionDeplacerFichiersCollection = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_deplacer_fichiers_collection versions parsed : {:?}", commande);
+
+    // Autorisation: Action usager avec compte prive ou delegation globale
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive && user_id.is_some() {
+        let user_id_str = user_id.as_ref().expect("user_id");
+        let cuuid = commande.cuuid_origine.as_str();
+        let cuuid_destination = commande.cuuid_destination.as_str();
+        let mut tuuids: Vec<&str> = commande.inclure_tuuids.iter().map(|t| t.as_str()).collect();
+        tuuids.push(cuuid_destination);  // Piggyback pour verifier un des 2 cuuids
+        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
+        if err_reponse.is_some() {
+            return Ok(err_reponse)
+        }
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)

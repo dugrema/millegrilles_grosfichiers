@@ -25,6 +25,7 @@ pub const REQUETE_GET_PERMISSION: &str = "getPermission";
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
 pub const TRANSACTION_AJOUTER_FICHIERS_COLLECTION: &str = "ajouterFichiersCollection";
+pub const TRANSACTION_DEPLACER_FICHIERS_COLLECTION: &str = "deplacerFichiersCollection";
 pub const TRANSACTION_RETIRER_DOCUMENTS_COLLECTION: &str = "retirerDocumentsCollection";
 pub const TRANSACTION_SUPPRIMER_DOCUMENTS: &str = "supprimerDocuments";
 pub const TRANSACTION_RECUPERER_DOCUMENTS: &str = "recupererDocuments";

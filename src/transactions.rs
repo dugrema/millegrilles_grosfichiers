@@ -36,6 +36,7 @@ where
         TRANSACTION_NOUVELLE_VERSION |
         TRANSACTION_NOUVELLE_COLLECTION |
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION |
+        TRANSACTION_DEPLACER_FICHIERS_COLLECTION |
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION |
         TRANSACTION_SUPPRIMER_DOCUMENTS |
         TRANSACTION_RECUPERER_DOCUMENTS |
@@ -72,6 +73,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_NOUVELLE_VERSION => transaction_nouvelle_version(gestionnaire, middleware, transaction).await,
         TRANSACTION_NOUVELLE_COLLECTION => transaction_nouvelle_collection(middleware, transaction).await,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION => transaction_ajouter_fichiers_collection(middleware, transaction).await,
+        TRANSACTION_DEPLACER_FICHIERS_COLLECTION => transaction_deplacer_fichiers_collection(middleware, transaction).await,
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => transaction_retirer_documents_collection(middleware, transaction).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, transaction).await,
         TRANSACTION_RECUPERER_DOCUMENTS => transaction_recuperer_documents(middleware, transaction).await,
@@ -123,8 +125,15 @@ pub struct TransactionNouvelleCollection {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionAjouterFichiersCollection {
-    cuuid: String,  // Collection qui recoit les documents
-    inclure_tuuids: Vec<String>,  // Fichiers/rep a ajouter a la collection
+    pub cuuid: String,  // Collection qui recoit les documents
+    pub inclure_tuuids: Vec<String>,  // Fichiers/rep a ajouter a la collection
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionDeplacerFichiersCollection {
+    pub cuuid_origine: String,          // Collection avec les documents (source)
+    pub cuuid_destination: String,      // Collection qui recoit les documents
+    pub inclure_tuuids: Vec<String>,    // Fichiers/rep a ajouter a la collection
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -358,11 +367,57 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, transacti
     };
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let resultat = match collection.update_one(filtre, ops, None).await {
+    let resultat = match collection.update_many(filtre, ops, None).await {
         Ok(r) => r,
         Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur update_one sur transcation : {:?}", e))?
     };
     debug!("grosfichiers.transaction_ajouter_fichiers_collection Resultat transaction update : {:?}", resultat);
+
+    for tuuid in &transaction_collection.inclure_tuuids {
+        // Emettre fichier pour que tous les clients recoivent la mise a jour
+        emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+    }
+
+    middleware.reponse_ok()
+}
+
+async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_deplacer_fichiers_collection Consommer transaction : {:?}", &transaction);
+    let transaction_collection: TransactionDeplacerFichiersCollection = match transaction.clone().convertir::<TransactionDeplacerFichiersCollection>() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Erreur conversion transaction : {:?}", e))?
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.inclure_tuuids}};
+    { // Ajouter dans la destination
+        let add_to_set = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid_destination};
+        let ops = doc! {
+            "$addToSet": &add_to_set,
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        let resultat = match collection.update_many(filtre.clone(), ops, None).await {
+            Ok(r) => r,
+            Err(e) => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Erreur update_one sur transaction : {:?}", e))?
+        };
+        debug!("grosfichiers.transaction_deplacer_fichiers_collection Resultat transaction update : {:?}", resultat);
+    }
+    { // Retirer de l'origine
+        let pull_from_array = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid_origine};
+        let ops = doc! {
+            "$pull": &pull_from_array,
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        let resultat = match collection.update_many(filtre, ops, None).await {
+            Ok(r) => r,
+            Err(e) => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Erreur update_one sur transaction : {:?}", e))?
+        };
+        debug!("grosfichiers.transaction_deplacer_fichiers_collection Resultat transaction update : {:?}", resultat);
+    }
 
     for tuuid in &transaction_collection.inclure_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
