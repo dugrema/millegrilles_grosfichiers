@@ -382,7 +382,7 @@ async fn requete_recherche_index<M>(middleware: &M, m: MessageValideAction, gest
     }
 
     // Ajouter user_id a la requete
-    requete.user_id = user_id;
+    requete.user_id = user_id.clone();
 
     let info = match gestionnaire.es_rechercher("grosfichiers", &requete).await {
         Ok(resultats) => {
@@ -391,7 +391,7 @@ async fn requete_recherche_index<M>(middleware: &M, m: MessageValideAction, gest
                     let total = inner.total.value;
                     match inner.hits {
                         Some(hits) => {
-                            let resultats = mapper_fichiers_resultat(middleware, hits).await?;
+                            let resultats = mapper_fichiers_resultat(middleware, hits, user_id).await?;
                             Some((total, resultats))
                         },
                         None => None
@@ -462,7 +462,7 @@ async fn requete_get_permission<M>(middleware: &M, m: MessageValideAction, gesti
     Ok(Some(middleware.formatter_reponse(&permission, None)?))
 }
 
-async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHitsDetail>)
+async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHitsDetail>, user_id: Option<String>)
     -> Result<Vec<ResultatDocumentRecherche>, Box<dyn Error>>
     where M: MongoDao
 {
@@ -480,7 +480,10 @@ async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHits
     debug!("requete.mapper_fichiers_resultat resultat par fuuid : {:?}", resultat_par_fuuid);
 
     let mut fichiers_par_tuuid = {
-        let filtre = doc! { CHAMP_FUUIDS: {"$in": &fuuids} };
+        let mut filtre = doc! { CHAMP_FUUIDS: {"$in": &fuuids} };
+        if user_id.is_some() {
+            filtre.insert(String::from("user_id"), user_id.expect("user_id"));
+        }
         let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
         let mut curseur = collection.find(filtre, None).await?;
 
