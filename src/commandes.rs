@@ -410,7 +410,7 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionna
     let commande: CommandeIndexerContenu = m.message.get_msg().map_contenu(None)?;
     debug!("Commande commande_reindexer parsed : {:?}", commande);
 
-    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
+    // Autorisation : doit etre un message provenant d'un usager avec delegation globale
     // Verifier si on a un certificat delegation globale
     match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         true => Ok(()),
