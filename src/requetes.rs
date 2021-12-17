@@ -371,6 +371,16 @@ async fn requete_recherche_index<M>(middleware: &M, m: MessageValideAction, gest
     let requete: ParametresRecherche = m.message.get_msg().map_contenu(None)?;
     debug!("requete_recherche_index cle parsed : {:?}", requete);
 
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive && user_id.is_some() {
+        // Ok
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.requete_recherche_index: Autorisation invalide pour message {:?}", m.correlation_id))?
+    }
+
     let info = match gestionnaire.es_rechercher("grosfichiers", &requete).await {
         Ok(resultats) => {
             match resultats.hits {
@@ -467,21 +477,44 @@ async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHits
     debug!("requete.mapper_fichiers_resultat resultat par fuuid : {:?}", resultat_par_fuuid);
 
     let mut fichiers_par_tuuid = {
-        let filtre = doc! { CHAMP_FUUID: {"$in": &fuuids} };
-        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        let filtre = doc! { CHAMP_FUUIDS: {"$in": &fuuids} };
+        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
         let mut curseur = collection.find(filtre, None).await?;
 
         let mut fichiers: HashMap<String, Vec<ResultatDocumentRecherche>> = HashMap::new();
         while let Some(c) = curseur.next().await {
-            let fichier: DBFichierVersionDetail = convertir_bson_deserializable(c?)?;
-            let fuuid = fichier.fuuid.as_ref().expect("fuuid");
+            // let fichier: DBFichierVersionDetail = convertir_bson_deserializable(c?)?;
+            let fcurseur = c?;
+            let fichier = mapper_fichier_db(fcurseur)?;
+
+            if fichier.fuuid_v_courante.is_none() {
+                warn!("Fichier tuuid={} sans fuuid_v_courante", fichier.tuuid);
+                continue  // Skip le mapping
+            }
+
+            let fuuid = match fichier.fuuid_v_courante.as_ref() {
+                Some(f) => f.to_owned(),
+                None => {
+                    warn!("mapper_fichiers_resultat Erreur mapping fichier tuuid={} sans fuuid", fichier.tuuid);
+                    continue;
+                }
+            };
+
             let resultat = resultat_par_fuuid.get(fuuid.as_str()).expect("resultat");
-            let fichier_resultat = ResultatDocumentRecherche::new(fichier, *resultat)?;
+            // let fichier_resultat = ResultatDocumentRecherche::new(fichier, *resultat)?;
+            let fichier_resultat = match ResultatDocumentRecherche::new_fichier(fichier, *resultat) {
+                Ok(fichier_resultat) => fichier_resultat,
+                Err(e) => {
+                    warn!("mapper_fichiers_resultat Erreur mapping fichier fuuid={}: {:?}", fuuid, e);
+                    continue  // Skip le mapping
+                }
+            };
             let tuuid = fichier_resultat.tuuid.clone();
             match fichiers.get_mut(&tuuid) {
-                Some(mut inner) => {inner.push(fichier_resultat);},
-                None => {fichiers.insert(tuuid, vec![fichier_resultat]);}
+                Some(mut inner) => { inner.push(fichier_resultat); },
+                None => { fichiers.insert(tuuid, vec![fichier_resultat]); }
             }
+
         }
 
         fichiers
@@ -535,13 +568,17 @@ struct ResultatDocumentRecherche {
     tuuid: String,
     fuuid: String,
     nom: String,
+    supprime: Option<bool>,
     nom_version: String,
     taille: u64,
+    mimetype: String,
     date_creation: Option<DateEpochSeconds>,
     date_modification: Option<DateEpochSeconds>,
     date_version: DateEpochSeconds,
     titre: Option<HashMap<String, String>>,
     description: Option<HashMap<String, String>>,
+
+    version_courante: Option<DBFichierVersionDetail>,
 
     // Thumbnail
     thumb_hachage_bytes: Option<String>,
@@ -570,13 +607,70 @@ impl ResultatDocumentRecherche {
             tuuid: value.tuuid.expect("tuuid"),
             fuuid: value.fuuid.expect("fuuid"),
             nom: value.nom.clone(),
+            supprime: None,
             nom_version: value.nom,
             taille: value.taille as u64,
+            mimetype: value.mimetype,
             date_creation: None,
             date_modification: None,
             date_version: value.date_fichier,
             titre: None,
             description: None,
+
+            version_courante: None,
+
+            // Thumbnail
+            thumb_hachage_bytes,
+            thumb_data,
+
+            // Info recherche
+            score: resultat.score,
+        })
+    }
+
+    fn new_fichier(value: FichierDetail, resultat: &ResultatHitsDetail) -> Result<Self, Box<dyn Error>> {
+
+        let (thumb_hachage_bytes, thumb_data, mimetype, taille) = match &value.version_courante {
+            Some(v) => {
+                let taille = v.taille as u64;
+                let mimetype = v.mimetype.to_owned();
+                match &v.images {
+                    Some(images) => {
+                        match images.get("thumb") {
+                            Some(inner) => {
+                                (Some(inner.hachage.clone()), inner.data_chiffre.clone(), mimetype, taille)
+                            },
+                            None => (None, None, mimetype, taille)
+                        }
+                    },
+                    None => (None, None, mimetype, taille)
+                }
+            },
+            None => (None, None, String::from("application/data"), 0)
+        };
+
+        let fuuid = match value.fuuid_v_courante { Some(t) => t, None => Err(format!("Resultat sans tuuid"))? };
+
+        let date_version = match value.derniere_modification {
+            Some(d) => d,
+            None => Err(format!("Resultat sans date de derniere_modification"))?
+        };
+
+        Ok(ResultatDocumentRecherche {
+            tuuid: value.tuuid,
+            fuuid,
+            nom: value.nom.clone(),
+            supprime: value.supprime,
+            nom_version: value.nom,
+            taille,
+            mimetype,
+            date_creation: value.date_creation,
+            date_modification: Some(date_version.clone()),
+            date_version,
+            titre: value.titre,
+            description: value.description,
+
+            version_courante: value.version_courante,
 
             // Thumbnail
             thumb_hachage_bytes,
