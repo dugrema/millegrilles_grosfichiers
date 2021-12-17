@@ -16,7 +16,7 @@ use millegrilles_common_rust::mongodb::options::{FindOptions, Hint};
 use millegrilles_common_rust::reqwest;
 use millegrilles_common_rust::reqwest::Url;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
-use millegrilles_common_rust::serde_json::Value;
+use millegrilles_common_rust::serde_json::{Map, Value};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
@@ -49,23 +49,28 @@ pub async fn emettre_commande_indexation<M, S, U>(gestionnaire: &GestionnaireGro
     };
 
     // Verifier si on doit chargement une version different
-    let fuuid_v_courante = match fichier.fuuid_v_courante {
-        Some(inner) => inner,
+    let fuuid_v_courante = match &fichier.fuuid_v_courante {
+        Some(inner) => inner.as_str(),
         None => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Fuuid v courante manquant"))?
     };
 
-    if fuuid_v_courante.as_str() != fuuid_str {
+    if fuuid_v_courante != fuuid_str {
         todo!("Charger version precedente du document")
     }
 
-    let version_courante = match fichier.version_courante {
-        Some(inner) => inner,
-        None => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Version courante manquante"))?
+    let mimetype = {
+        let version_courante = match &fichier.version_courante {
+            Some(inner) => inner,
+            None => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Version courante manquante"))?
+        };
+
+        version_courante.mimetype.clone()
     };
 
-    let mimetype = version_courante.mimetype.clone();
+    // let mut document_indexation: DocumentIndexation = version_courante.try_into()?;
+    // document_indexation.merge_fichier(&fichier);
+    let document_indexation: DocumentIndexation = fichier.try_into()?;
 
-    let document_indexation: DocumentIndexation = version_courante.try_into()?;
     let info_index = InfoDocumentIndexation {
         tuuid: tuuid_str.to_owned(),
         fuuid: fuuid_str.to_owned(),
@@ -139,6 +144,38 @@ pub struct DocumentIndexation {
     titre: Option<HashMap<String, String>>,          // Dictionnaire combine
     description: Option<HashMap<String, String>>,    // Dictionnaire combine
     cuuids: Option<Vec<String>>,
+    userid: Option<String>,
+}
+
+impl DocumentIndexation {
+    fn merge_fichier(&mut self, fichier: &FichierDetail) {
+        self.titre = fichier.titre.clone();
+        self.description = fichier.description.clone();
+        self.userid = fichier.user_id.clone();
+        self.cuuids = fichier.cuuids.clone();
+    }
+}
+
+impl TryFrom<FichierDetail> for DocumentIndexation {
+    type Error = String;
+
+    fn try_from(value: FichierDetail) -> Result<Self, Self::Error> {
+
+        let version_courante = match value.version_courante {
+            Some(v) => v,
+            None => Err(format!("DocumentIndexation.try_from Erreur mapping fichier, version_courante manquante"))?
+        };
+
+        Ok(DocumentIndexation {
+            nom: value.nom.clone(),
+            mimetype: version_courante.mimetype.clone(),
+            date_v_courante: version_courante.date_fichier.clone(),
+            titre: value.titre,
+            description: value.description,
+            cuuids: value.cuuids,
+            userid: value.user_id,
+        })
+    }
 }
 
 impl TryFrom<DBFichierVersionDetail> for DocumentIndexation {
@@ -152,6 +189,7 @@ impl TryFrom<DBFichierVersionDetail> for DocumentIndexation {
             titre: None,
             description: None,
             cuuids: None,
+            userid: None,
         })
     }
 }
@@ -254,6 +292,8 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
             Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur conversion json info_doc : {:?}", e))?
         };
 
+        debug!("Indexer document {:?}", doc_index);
+
         let mut url_post = match Url::parse(&self.url) {
             Ok(inner) => inner,
             Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur preparation url indexation '{}' : {:?}", self.url, e))?
@@ -290,24 +330,34 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
         url_post.set_query(Some(format!("from={}&size={}", from_idx, size).as_str()));
 
         // let url_post = format!("{}/{}/_search?from={}&size={}", self.url, nom_index.as_ref(), from_idx, size);
+        let mut bool_params = Map::new();
 
-        let query = match &params.mots_cles {
-            Some(mots_cles) => {
-                json!({
-                    "query": {
-                        "bool": {
-                            "should": [
-                                {"match": {"contenu": mots_cles}},
-                                {"match": {"nom": mots_cles}},
-                                {"match": {"titre._combine": mots_cles}},
-                                {"match": {"description._combine": mots_cles}},
-                            ]
-                        }
-                    }
-                })
-            },
-            None => json!({})
-        };
+        let must_params = json!([
+            {"term": {"userid": &params.user_id.as_ref().expect("user_id").to_ascii_lowercase()}},
+            // {"match": {"nom": "p-101_001.1080.jpg"}},
+        ]);
+        bool_params.insert("filter".into(), must_params);
+
+        if params.mots_cles.is_some() {
+            let mots_cles = params.mots_cles.as_ref().expect("mots_cles");
+            let should_params = json!([
+                {"match": {"contenu": mots_cles}},
+                {"match": {"nom": mots_cles}},
+                {"match": {"titre._combine": mots_cles}},
+                {"match": {"description._combine": mots_cles}},
+            ]);
+            bool_params.insert("should".into(), should_params);
+        }
+
+        bool_params.insert("minimum_should_match".into(), 1.into());
+
+        let query = json!({
+            "query": {
+                "bool": bool_params,
+            }
+        });
+
+        debug!("es_rechercher Query : {:?}", query);
 
         // '%s/%s/_search?from=%d&size=%d' % (self.__url, nom_index, from_idx, size),
         let response = match self.client.get(url_post.clone()).json(&query).send().await {
@@ -476,6 +526,15 @@ pub fn index_grosfichiers() -> Value {
                     "mimetype": {"type": "keyword"},
                     // "contenu": {"type": "text"},
                     "date_v_courante": {"type": "date", "format": "strict_date_optional_time||epoch_second"},
+                    "userid": {
+                        "type": "text",
+                        "fields": {
+                            "keyword": {
+                                "type": "keyword",
+                                "ignore_above": 50
+                            }
+                        }
+                    },
                 }
             },
         },
@@ -492,6 +551,7 @@ pub struct ParametresRecherche {
     mots_cles: Option<String>,
     from_idx: Option<u32>,
     size: Option<u32>,
+    pub user_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -555,7 +615,7 @@ mod test_integration_index {
             nom: String::from("dummy_nom"),
             mimetype: String::from("application/data"),
             date_v_courante: DateEpochSeconds::now(),
-            titre: None, description: None, cuuids: None,
+            titre: None, description: None, cuuids: None, user_id: None,
         };
         let info_doc = InfoDocumentIndexation {
             tuuid: String::from("tuuid-abcd-1234"),

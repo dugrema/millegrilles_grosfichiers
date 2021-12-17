@@ -368,7 +368,7 @@ async fn requete_recherche_index<M>(middleware: &M, m: MessageValideAction, gest
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_recherche_index Message : {:?}", & m.message);
-    let requete: ParametresRecherche = m.message.get_msg().map_contenu(None)?;
+    let mut requete: ParametresRecherche = m.message.get_msg().map_contenu(None)?;
     debug!("requete_recherche_index cle parsed : {:?}", requete);
 
     let user_id = m.get_user_id();
@@ -380,6 +380,9 @@ async fn requete_recherche_index<M>(middleware: &M, m: MessageValideAction, gest
     } else {
         Err(format!("grosfichiers.requete_recherche_index: Autorisation invalide pour message {:?}", m.correlation_id))?
     }
+
+    // Ajouter user_id a la requete
+    requete.user_id = user_id;
 
     let info = match gestionnaire.es_rechercher("grosfichiers", &requete).await {
         Ok(resultats) => {
