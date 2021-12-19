@@ -169,6 +169,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_CHANGER_FAVORIS,
         TRANSACTION_DECRIRE_FICHIER,
         TRANSACTION_DECRIRE_COLLECTION,
+        COMMANDE_INDEXER,
     ];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
