@@ -17,6 +17,7 @@ pub const NOM_Q_TRIGGERS: &str = "GrosFichiers/triggers";
 pub const REQUETE_ACTIVITE_RECENTE: &str = "activiteRecente";
 pub const REQUETE_FAVORIS: &str = "favoris";
 pub const REQUETE_DOCUMENTS_PAR_TUUID: &str = "documentsParTuuid";
+pub const REQUETE_DOCUMENTS_PAR_FUUID: &str = "documentsParFuuid";
 pub const REQUETE_CONTENU_COLLECTION: &str = "contenuCollection";
 pub const REQUETE_GET_CORBEILLE: &str = "getCorbeille";
 pub const REQUETE_RECHERCHE_INDEX: &str = "rechercheIndex";

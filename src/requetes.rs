@@ -38,7 +38,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
 
     if role_prive && user_id.is_some() {
         // Ok, commande usager
-    } else if message.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege]) {
+    } else if message.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
         // Autorisation : On accepte les requetes de 3.protege ou 4.secure
         // Ok
     } else if message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
@@ -53,6 +53,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
                 REQUETE_ACTIVITE_RECENTE => requete_activite_recente(middleware, message, gestionnaire).await,
                 REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
                 REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
+                REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
                 REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
                 REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
                 REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
@@ -242,6 +243,36 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
     }
 
     let mut filtre = doc! { CHAMP_TUUID: {"$in": &requete.tuuids_documents} };
+    if user_id.is_some() {
+        filtre.insert("user_id", Bson::String(user_id.expect("user_id")));
+    }
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let curseur = collection.find(filtre, None).await?;
+    let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
+
+    let reponse = json!({ "fichiers":  fichiers_mappes });
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+async fn requete_documents_par_fuuid<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_documents_par_fuuid Message : {:?}", & m.message);
+    let requete: RequeteDocumentsParFuuids = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_documents_par_fuuid cle parsed : {:?}", requete);
+
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive && user_id.is_some() {
+        // Ok
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.requete_documents_par_fuuid: Autorisation invalide pour requete {:?}", m.correlation_id))?
+    }
+
+    let mut filtre = doc! { CHAMP_FUUIDS: {"$in": &requete.fuuids_documents} };
     if user_id.is_some() {
         filtre.insert("user_id", Bson::String(user_id.expect("user_id")));
     }
@@ -691,6 +722,11 @@ impl ResultatDocumentRecherche {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RequeteDocumentsParTuuids {
     tuuids_documents: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteDocumentsParFuuids {
+    fuuids_documents: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
