@@ -11,7 +11,7 @@ use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissi
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
-use millegrilles_common_rust::generateur_messages::GenerateurMessages;
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, filtrer_doc_id, MongoDao};
 use millegrilles_common_rust::mongodb::Cursor;
@@ -57,7 +57,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
                 REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
                 REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
                 REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
-                REQUETE_GET_PERMISSION => requete_get_permission(middleware, message, gestionnaire).await,
+                REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
                 _ => {
                     error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
                     Ok(None)
@@ -447,8 +447,8 @@ async fn requete_recherche_index<M>(middleware: &M, m: MessageValideAction, gest
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
-async fn requete_get_permission<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+                                      -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     let user_id = match m.get_user_id() {
@@ -456,9 +456,18 @@ async fn requete_get_permission<M>(middleware: &M, m: MessageValideAction, gesti
         None => return Ok(Some(middleware.formatter_reponse(json!({"err": true, "message": "user_id n'est pas dans le certificat"}), None)?))
     };
 
-    debug!("requete_get_permission Message : {:?}", & m.message);
+    debug!("requete_get_cles_fichiers Message : {:?}", &m.message);
     let requete: ParametresGetPermission = m.message.get_msg().map_contenu(None)?;
-    debug!("requete_get_permission cle parsed : {:?}", requete);
+    debug!("requete_get_cles_fichiers cle parsed : {:?}", requete);
+
+    // Utiliser certificat du message client (requete) pour demande de rechiffrage
+    let pem_rechiffrage: Vec<String> = match &m.message.certificat {
+        Some(c) => {
+            let fp_certs = c.get_pem_vec();
+            fp_certs.into_iter().map(|cert| cert.pem).collect()
+        },
+        None => Err(format!(""))?
+    };
 
     let mut conditions: Vec<Document> = Vec::new();
     if requete.tuuids.is_some() {
@@ -486,11 +495,44 @@ async fn requete_get_permission<M>(middleware: &M, m: MessageValideAction, gesti
     }
 
     let permission = json!({
-        "permission_hachage_bytes": hachage_bytes,
-        "permission_duree": 300
+        "liste_hachage_bytes": hachage_bytes,
+        "certificat_rechiffrage": pem_rechiffrage,
     });
 
-    Ok(Some(middleware.formatter_reponse(&permission, None)?))
+    // Emettre requete de rechiffrage de cle, reponse acheminee directement au demandeur
+    let reply_to = match m.reply_q {
+        Some(r) => r,
+        None => Err(format!("requetes.requete_get_permission Pas de reply q pour message"))?
+    };
+    let correlation_id = match m.correlation_id {
+        Some(r) => r,
+        None => Err(format!("requetes.requete_get_permission Pas de correlation_id pour message"))?
+    };
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE)
+        .exchanges(vec![Securite::L4Secure])
+        .reply_to(reply_to)
+        .correlation_id(correlation_id)
+        .blocking(false)
+        .build();
+
+    middleware.transmettre_requete(routage, &permission).await?;
+
+    // let permission = json!({
+    //     "permission_hachage_bytes": hachage_bytes,
+    //     "permission_duree": 30
+    // });
+    //
+    // // Emettre le message de permission vers le maitre des cles, faire repondre directement
+    // // au demandeur.
+    // let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRER_CLE)
+    //     .reply_to(message.reply_q)
+    //     .correlation_id(message.correlation_id)
+    //     .blocking(false)  // La reponse ne revient pas ici
+    //     .build();
+    //
+    // middleware.transmettre_requete(routage, &permission).await?;
+
+    Ok(None)  // Aucune reponse a transmettre, c'est le maitre des cles qui va repondre
 }
 
 async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHitsDetail>, user_id: Option<String>)

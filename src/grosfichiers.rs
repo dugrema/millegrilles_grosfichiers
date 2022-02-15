@@ -154,7 +154,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         REQUETE_CONTENU_COLLECTION,
         REQUETE_GET_CORBEILLE,
         REQUETE_RECHERCHE_INDEX,
-        REQUETE_GET_PERMISSION,
+        REQUETE_GET_CLES_FICHIERS,
     ];
     for req in requetes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L2Prive});
