@@ -1033,6 +1033,8 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         fuuids_mimetype
     };
 
+    let fuuids: Vec<&String> = fuuids_mimetype.keys().collect();
+
     doc_bson_transaction.insert(CHAMP_FUUID_MIMETYPES, &fuuids_mimetype);
 
     // Retirer champ CUUID, pas utile dans l'information de version
@@ -1045,7 +1047,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
         let mut doc_version = doc_bson_transaction.clone();
         doc_version.insert(CHAMP_TUUID, &tuuid);
-        doc_version.insert(CHAMP_FUUIDS, vec![&fuuid]);
+        doc_version.insert(CHAMP_FUUIDS, &fuuids);
 
         // Information optionnelle pour accelerer indexation/traitement media
         if mimetype.starts_with("image") {
@@ -1093,7 +1095,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     doc_bson_transaction.remove(CHAMP_FUUID);
 
     let filtre = doc! {CHAMP_TUUID: &tuuid};
-    let mut add_to_set = doc!{"fuuids": &fuuid};
+    let mut add_to_set = doc!{"fuuids": {"$each": &fuuids}};
 
     // Ajouter collection
     add_to_set.insert("cuuids", cuuid);

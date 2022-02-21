@@ -481,6 +481,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
         "user_id": user_id,
         "$or": conditions,
     };
+    debug!("requete_get_cles_fichiers Filtre : {:?}", filtre);
     let projection = doc! {"fuuids": true, "tuuid": true};
     let opts = FindOptions::builder().projection(projection).limit(1000).build();
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
@@ -488,6 +489,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
 
     let mut hachage_bytes = HashSet::new();
     while let Some(fresult) = curseur.next().await {
+        debug!("requete_get_cles_fichiers document trouve pour permission cle : {:?}", fresult);
         let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
         for d in doc_mappe.fuuids {
             hachage_bytes.insert(d);
@@ -514,6 +516,8 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
         .correlation_id(correlation_id)
         .blocking(false)
         .build();
+
+    debug!("Transmettre requete permission dechiffrage cle : {:?}", permission);
 
     middleware.transmettre_requete(routage, &permission).await?;
 
