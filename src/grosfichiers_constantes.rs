@@ -35,6 +35,7 @@ pub const TRANSACTION_ASSOCIER_CONVERSIONS: &str = "associerConversions";
 pub const TRANSACTION_ASSOCIER_VIDEO: &str = "associerVideo";
 pub const TRANSACTION_DECRIRE_FICHIER: &str = "decrireFichier";
 pub const TRANSACTION_DECRIRE_COLLECTION: &str = "decrireCollection";
+pub const TRANSACTION_COPIER_FICHIER_TIERS: &str = "copierFichierTiers";
 
 pub const COMMANDE_INDEXER: &str = "indexerContenu";
 pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";

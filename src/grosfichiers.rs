@@ -170,6 +170,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_CHANGER_FAVORIS,
         TRANSACTION_DECRIRE_FICHIER,
         TRANSACTION_DECRIRE_COLLECTION,
+        TRANSACTION_COPIER_FICHIER_TIERS,
         COMMANDE_INDEXER,
     ];
     for cmd in commandes_privees {
@@ -213,6 +214,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_ASSOCIER_VIDEO,
         TRANSACTION_DECRIRE_FICHIER,
         TRANSACTION_DECRIRE_COLLECTION,
+        TRANSACTION_COPIER_FICHIER_TIERS,
     ];
     for ts in transactions_secures {
         rk_transactions.push(ConfigRoutingExchange {

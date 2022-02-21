@@ -8,14 +8,15 @@ use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
-use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
-use millegrilles_common_rust::generateur_messages::GenerateurMessages;
+use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageSerialise};
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
 use millegrilles_common_rust::mongodb::Collection;
 use millegrilles_common_rust::mongodb::options::{FindOptions, Hint, UpdateOptions};
-use millegrilles_common_rust::recepteur_messages::MessageValideAction;
+use millegrilles_common_rust::recepteur_messages::{MessageValide, MessageValideAction, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
+use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::Transaction;
 use millegrilles_common_rust::verificateur::VerificateurMessage;
@@ -26,6 +27,8 @@ use crate::requetes::mapper_fichier_db;
 use crate::traitement_index::{ElasticSearchDao, emettre_commande_indexation, set_flag_indexe, traiter_index_manquant};
 use crate::traitement_media::{emettre_commande_media, traiter_media_batch};
 use crate::transactions::*;
+
+const REQUETE_MAITREDESCLES_VERIFIER_PREUVE: &str = "verifierPreuve";
 
 pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -63,6 +66,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         TRANSACTION_CHANGER_FAVORIS => commande_changer_favoris(middleware, m, gestionnaire).await,
         TRANSACTION_DECRIRE_FICHIER => commande_decrire_fichier(middleware, m, gestionnaire).await,
         TRANSACTION_DECRIRE_COLLECTION => commande_decrire_collection(middleware, m, gestionnaire).await,
+        TRANSACTION_COPIER_FICHIER_TIERS => commande_copier_fichier_tiers(middleware, m, gestionnaire).await,
         COMMANDE_INDEXER => commande_reindexer(middleware, m, gestionnaire).await,
         COMMANDE_COMPLETER_PREVIEWS => commande_completer_previews(middleware, m, gestionnaire).await,
         COMMANDE_CONFIRMER_FICHIER_INDEXE => commande_confirmer_fichier_indexe(middleware, m, gestionnaire).await,
@@ -400,6 +404,92 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValideAction, 
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
+async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_decrire_collection Consommer commande : {:?}", & m.message);
+    let commande: CommandeCopierFichierTiers = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande decrire_collection parsed : {:?}", commande);
+    // debug!("Commande en json (DEBUG) : \n{:?}", serde_json::to_string(&commande));
+
+    // Verifier aupres du maitredescles si les cles sont valides
+    let preuve = commande.preuve;
+    let preuve_value: Value = m.message.get_msg().map_contenu(Some("preuve"))?;
+    let routage_maitrecles = RoutageMessageAction::builder(
+        DOMAINE_NOM_MAITREDESCLES, REQUETE_MAITREDESCLES_VERIFIER_PREUVE)
+        .partition(&preuve.partition)
+        .build();
+    let reponse_preuve = match middleware.transmettre_requete(routage_maitrecles, &preuve_value).await? {
+        TypeMessage::Valide(m) => {
+            match m.message.certificat.as_ref() {
+                Some(c) => {
+                    if c.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
+                        debug!("commande_copier_fichier_tiers Reponse preuve : {:?}", m);
+                        let preuve_value: ReponsePreuvePossessionCles = m.message.get_msg().map_contenu(None)?;
+                        Ok(preuve_value)
+                    } else {
+                        Err(format!("commandes.commande_copier_fichier_tiers Erreur chargement certificat de reponse verification preuve, certificat n'est pas de role maitre des cles"))
+                    }
+                },
+                None => Err(format!("commandes.commande_copier_fichier_tiers Erreur chargement certificat de reponse verification preuve, certificat inconnu"))
+            }
+        },
+        m => Err(format!("commandes.commande_copier_fichier_tiers Erreur reponse message verification cles, mauvais type : {:?}", m))
+    }?;
+    debug!("Reponse verification preuve : {:?}", reponse_preuve);
+
+    // S'assurer que tous les fuuids de la transaction sont verifies
+    let transaction_copier = commande.transaction;
+    let mut fuuids = Vec::new();
+    fuuids.push(transaction_copier.fuuid.as_str());
+    if let Some(i) = &transaction_copier.images {
+        let fuuids_image: Vec<&str> = i.values().map(|info| info.hachage.as_str()).collect();
+        fuuids.extend(fuuids_image);
+    }
+    if let Some(v) = &transaction_copier.video {
+        let fuuids_videos: Vec<&str> = v.values().map(|info| info.hachage.as_str()).collect();
+        fuuids.extend(fuuids_videos);
+    }
+
+    debug!("Fuuids fichier : {:?}", fuuids);
+    for fuuid in fuuids {
+        if let Some(confirme) = reponse_preuve.verification.get(fuuid.into()) {
+            if(!confirme) {
+                debug!("Au moins une des cles n'est pas confirmee, on abandonne la transaction");
+                return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cles invalides ou manquantes"}), None)?));
+            }
+        }
+    }
+
+    // Traiter la transaction, generer nouveau MVA pour transmettre uniquement la transaction
+    // La preuve n'est plus necessaire
+    let transaction_copier: Value = m.message.get_msg().map_contenu(Some("transaction"))?;
+    let transaction_copier_str = serde_json::to_string(&transaction_copier)?;
+    debug!("Transaction copier str : {:?}", transaction_copier_str);
+    let mut transaction_copier_message = MessageSerialise::from_str(transaction_copier_str.as_str())?;
+    transaction_copier_message.certificat = m.message.certificat.clone();
+    let mva = MessageValideAction::new(transaction_copier_message, m.q, "transaction.GrosFichiers.copierFichierTiers".into(), m.domaine, m.action, m.type_message);
+    Ok(sauvegarder_traiter_transaction(middleware, mva, gestionnaire).await?)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeCopierFichierTiers {
+    pub preuve: PreuvePossessionCles,
+    pub transaction: TransactionCopierFichierTiers,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PreuvePossessionCles {
+    pub cles: HashMap<String, String>,
+    pub partition: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReponsePreuvePossessionCles {
+    pub verification: HashMap<String, bool>,
 }
 
 async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
