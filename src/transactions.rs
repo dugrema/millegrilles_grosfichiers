@@ -1236,24 +1236,29 @@ async fn transaction_favoris_creerpath<M, T>(middleware: &M, transaction: T) -> 
                 }?;
                 match doc_path {
                     Some(d) => {
+                        debug!("grosfichiers.transaction_favoris_creerpath Mapper info collection : {:?}", d);
                         let collection_info: InformationCollection = match convertir_bson_deserializable(d) {
-                            Ok(c) => c,
-                            Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur convserion bson path {} : {:?}", path_col, e))
+                            Ok(inner_collection) => Ok(inner_collection),
+                            Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur conversion bson path {} : {:?}", path_col, e))
                         }?;
                         cuuid_courant = collection_info.tuuid.clone();
 
-                        let flag_favoris = match collection_info.favoris {
-                            Some(f) => f,
-                            None => false
-                        };
                         let flag_supprime = match collection_info.supprime {
                             Some(f) => f,
                             None => true
                         };
 
-                        if !flag_favoris || flag_supprime {
+                        if flag_supprime {
                             // MAj collection, flip flags
-                            todo!("Flip flags")
+                            let filtre = doc!{CHAMP_TUUID: &collection_info.tuuid};
+                            let ops = doc!{
+                                "$set": {CHAMP_SUPPRIME: false},
+                                "$currentDate": {CHAMP_MODIFICATION: true}
+                            };
+                            match collection.update_one(filtre, ops, None).await {
+                                Ok(_) => (),
+                                Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur flip flag supprime de tuuid={} : {:?}", &collection_info.tuuid, e))?
+                            }
                         }
                     },
                     None => {

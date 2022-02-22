@@ -629,31 +629,64 @@ async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValideAction, g
                 match &m.message.certificat {
                     Some(c) => match c.get_user_id()? {
                         Some(u) => Ok(u.to_owned()),
-                        None => Err(format!("commandes.commande_completer_previews: user_id manquant du certificat pour message {:?}", m.correlation_id))
+                        None => Err(format!("commandes.commande_favoris_creerpath: user_id manquant du certificat pour message {:?}", m.correlation_id))
                     },
-                    None => Err(format!("commandes.commande_completer_previews: Certificat non charge pour message {:?}", m.correlation_id))
+                    None => Err(format!("commandes.commande_favoris_creerpath: Certificat non charge pour message {:?}", m.correlation_id))
                 }
             }
         }
     }?;
 
-    debug!("commande_completer_previews Utiliser user_id {}", user_id);
+    debug!("commande_favoris_creerpath Utiliser user_id {}", user_id);
 
     // Verifier si le path existe deja
-    let tuuid_favoris = format!("{}_{}", commande.favoris_id, user_id);
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let tuuid_favoris = format!("{}_{}", user_id, commande.favoris_id);
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
 
-    let filtre_favoris = doc!{CHAMP_TUUID: &tuuid_favoris, CHAMP_SUPPRIME: false, CHAMP_FAVORIS: true};
+    let filtre_favoris = doc!{
+        CHAMP_USER_ID: &user_id,
+        CHAMP_TUUID: &tuuid_favoris,
+        CHAMP_SUPPRIME: false,
+        CHAMP_FAVORIS: true
+    };
+    debug!("commande_favoris_creerpath Filtre doc favoris : {:?}", filtre_favoris);
     let doc_favoris_opt = collection.find_one(filtre_favoris, None).await?;
     let mut tuuid_leaf = None;
 
+    debug!("commande_favoris_creerpath Doc_favoris_opt trouve : {:?}", doc_favoris_opt);
     match doc_favoris_opt {
         Some(doc_favoris) => {
             match commande.path_collections {
                 Some(path_collections) => {
-                    todo!("Fix me");
+                    let mut trouve = true;
+                    let mut cuuid_courant = tuuid_favoris.clone();
                     for path_col in path_collections {
+                        let filtre_info_collection = doc!{
+                            CHAMP_USER_ID: &user_id,
+                            CHAMP_CUUIDS: &cuuid_courant,
+                            CHAMP_NOM: &path_col,
+                            CHAMP_SUPPRIME: false,
+                        };
+                        let doc_info_collection = collection.find_one(filtre_info_collection, None).await?;
+                        match doc_info_collection {
+                            Some(inner_doc) => {
+                                let collection_info: InformationCollection = match convertir_bson_deserializable(inner_doc) {
+                                    Ok(inner_collection) => Ok(inner_collection),
+                                    Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur conversion bson path {} : {:?}", path_col, e))
+                                }?;
+                                cuuid_courant = collection_info.tuuid.clone();
+                            },
+                            None => {
+                                // Collection manquante, executer la transaction
+                                trouve = false;
+                                break
+                            }
+                        }
+                        debug!("transaction_favoris_creerpath Path tuuid : {:?}", cuuid_courant);
+                    }
 
+                    if trouve {
+                        tuuid_leaf = Some(cuuid_courant)
                     }
                 },
                 None => {
@@ -666,10 +699,12 @@ async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValideAction, g
 
     if tuuid_leaf.is_some() {
         // Retourner le tuuid comme reponse, aucune transaction necessaire
+        debug!("commande_favoris_creerpath Path trouve, tuuid {:?}", tuuid_leaf);
         let reponse = json!({CHAMP_TUUID: &tuuid_leaf});
         Ok(Some(middleware.formatter_reponse(reponse, None)?))
     } else {
         // Poursuivre le traitement sous forme de transaction
+        debug!("commande_favoris_creerpath Path incomplet, poursuivre avec la transaction");
         Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
     }
 }
