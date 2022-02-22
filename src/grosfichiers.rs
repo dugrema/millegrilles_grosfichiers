@@ -171,6 +171,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_DECRIRE_FICHIER,
         TRANSACTION_DECRIRE_COLLECTION,
         TRANSACTION_COPIER_FICHIER_TIERS,
+        TRANSACTION_FAVORIS_CREERPATH,
         COMMANDE_INDEXER,
     ];
     for cmd in commandes_privees {
@@ -215,6 +216,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_DECRIRE_FICHIER,
         TRANSACTION_DECRIRE_COLLECTION,
         TRANSACTION_COPIER_FICHIER_TIERS,
+        TRANSACTION_FAVORIS_CREERPATH,
     ];
     for ts in transactions_secures {
         rk_transactions.push(ConfigRoutingExchange {

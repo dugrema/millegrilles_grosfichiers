@@ -70,6 +70,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         COMMANDE_INDEXER => commande_reindexer(middleware, m, gestionnaire).await,
         COMMANDE_COMPLETER_PREVIEWS => commande_completer_previews(middleware, m, gestionnaire).await,
         COMMANDE_CONFIRMER_FICHIER_INDEXE => commande_confirmer_fichier_indexe(middleware, m, gestionnaire).await,
+        TRANSACTION_FAVORIS_CREERPATH => commande_favoris_creerpath(middleware, m, gestionnaire).await,
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
     }
@@ -598,4 +599,77 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAc
 #[derive(Clone, Debug, Deserialize)]
 struct CommandeConfirmerFichierIndexe {
     fuuid: String,
+}
+
+async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_favoris_creerpath Consommer commande : {:?}", & m.message);
+    let commande: TransactionFavorisCreerpath = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_favoris_creerpath parsed : {:?}", commande);
+
+    // Autorisation : si user_id fourni dans la commande, on verifie que le certificat est 4.secure ou delegation globale
+    let user_id = {
+        match commande.user_id {
+            Some(user_id) => {
+                // S'assurer que le certificat permet d'utiliser un user_id fourni (4.secure ou delegation globale)
+                match m.verifier_exchanges(vec![Securite::L4Secure]) {
+                    true => Ok(user_id),
+                    false => {
+                        match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+                            true => Ok(user_id),
+                            false => Err(format!("commandes.commande_completer_previews: Utilisation user_id refusee pour message {:?}", m.correlation_id))
+                        }
+                    },
+                }
+            },
+            None => {
+                // Utiliser le user_id du certificat
+                match &m.message.certificat {
+                    Some(c) => match c.get_user_id()? {
+                        Some(u) => Ok(u.to_owned()),
+                        None => Err(format!("commandes.commande_completer_previews: user_id manquant du certificat pour message {:?}", m.correlation_id))
+                    },
+                    None => Err(format!("commandes.commande_completer_previews: Certificat non charge pour message {:?}", m.correlation_id))
+                }
+            }
+        }
+    }?;
+
+    debug!("commande_completer_previews Utiliser user_id {}", user_id);
+
+    // Verifier si le path existe deja
+    let tuuid_favoris = format!("{}_{}", commande.favoris_id, user_id);
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+
+    let filtre_favoris = doc!{CHAMP_TUUID: &tuuid_favoris, CHAMP_SUPPRIME: false, CHAMP_FAVORIS: true};
+    let doc_favoris_opt = collection.find_one(filtre_favoris, None).await?;
+    let mut tuuid_leaf = None;
+
+    match doc_favoris_opt {
+        Some(doc_favoris) => {
+            match commande.path_collections {
+                Some(path_collections) => {
+                    todo!("Fix me");
+                    for path_col in path_collections {
+
+                    }
+                },
+                None => {
+                    tuuid_leaf = Some(tuuid_favoris)
+                }
+            }
+        },
+        None => ()
+    }
+
+    if tuuid_leaf.is_some() {
+        // Retourner le tuuid comme reponse, aucune transaction necessaire
+        let reponse = json!({CHAMP_TUUID: &tuuid_leaf});
+        Ok(Some(middleware.formatter_reponse(reponse, None)?))
+    } else {
+        // Poursuivre le traitement sous forme de transaction
+        Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    }
 }

@@ -13,8 +13,8 @@ use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::middleware::sauvegarder_transaction_recue;
-use millegrilles_common_rust::mongo_dao::{convertir_to_bson, MongoDao};
-use millegrilles_common_rust::mongodb::options::UpdateOptions;
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
+use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOptions, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
@@ -44,7 +44,8 @@ where
         TRANSACTION_CHANGER_FAVORIS |
         TRANSACTION_DECRIRE_FICHIER |
         TRANSACTION_DECRIRE_COLLECTION |
-        TRANSACTION_COPIER_FICHIER_TIERS => {
+        TRANSACTION_COPIER_FICHIER_TIERS |
+        TRANSACTION_FAVORIS_CREERPATH => {
             match m.verifier_exchanges(vec![Securite::L4Secure]) {
                 true => Ok(()),
                 false => Err(format!("transactions.consommer_transaction: Trigger cedule autorisation invalide (pas 4.secure)"))
@@ -85,6 +86,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_DECRIRE_FICHIER => transaction_decire_fichier(middleware, transaction).await,
         TRANSACTION_DECRIRE_COLLECTION => transaction_decire_collection(middleware, transaction).await,
         TRANSACTION_COPIER_FICHIER_TIERS => transaction_copier_fichier_tiers(gestionnaire, middleware, transaction).await,
+        TRANSACTION_FAVORIS_CREERPATH => transaction_favoris_creerpath(middleware, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), transaction.get_action())),
     }
 }
@@ -187,6 +189,13 @@ pub struct VideoInfo {
     pub width: Option<u32>,
     pub taille: Option<u64>,
     pub mimetype: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionFavorisCreerpath {
+    pub favoris_id: String,
+    pub user_id: Option<String>,
+    pub path_collections: Option<Vec<String>>,
 }
 
 async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
@@ -1144,4 +1153,153 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     emettre_evenement_maj_fichier(middleware, &tuuid).await?;
 
     middleware.reponse_ok()
+}
+
+async fn transaction_favoris_creerpath<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_favoris_creerpath Consommer transaction : {:?}", &transaction);
+    let transaction_collection: TransactionFavorisCreerpath = match transaction.clone().convertir::<TransactionFavorisCreerpath>() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur conversion transaction : {:?}", e))?
+    };
+    let uuid_transaction = transaction.get_uuid_transaction();
+
+    let user_id = match &transaction_collection.user_id {
+        Some(u) => Ok(u.to_owned()),
+        None => {
+            match transaction.get_enveloppe_certificat() {
+                Some(c) => {
+                    match c.get_user_id()? {
+                        Some(u) => Ok(u.to_owned()),
+                        None => Err(format!("grosfichiers.transaction_favoris_creerpath user_id manquant"))
+                    }
+                },
+                None => Err(format!("grosfichiers.transaction_favoris_creerpath Certificat non charge"))
+            }
+        }
+    }?;
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+    let date_courante = Utc::now();
+    let tuuid_favoris = format!("{}_{}", &user_id, &transaction_collection.favoris_id);
+
+    {
+        let ops_favoris = doc! {
+            "$setOnInsert": {
+                CHAMP_TUUID: &tuuid_favoris,
+                CHAMP_NOM: &transaction_collection.favoris_id,
+                CHAMP_CREATION: &date_courante,
+                CHAMP_MODIFICATION: &date_courante,
+                CHAMP_SECURITE: SECURITE_3_PROTEGE,
+                CHAMP_USER_ID: &user_id,
+            },
+            "$set": {
+                CHAMP_SUPPRIME: false,
+                CHAMP_FAVORIS: true,
+            }
+        };
+        let filtre_favoris = doc! {CHAMP_TUUID: &tuuid_favoris};
+        let options_favoris = FindOneAndUpdateOptions::builder()
+            .upsert(true)
+            .return_document(ReturnDocument::After)
+            .build();
+        let doc_favoris_opt = match collection.find_one_and_update(
+            filtre_favoris, ops_favoris, Some(options_favoris)).await {
+            Ok(f) => Ok(f),
+            Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur find_one_and_update doc favoris : {:?}", e))
+        }?;
+
+        if doc_favoris_opt.is_none() {
+            Err(format!("grosfichiers.transaction_favoris_creerpath Erreur creation document favoris"))?;
+        }
+    }
+
+    let mut cuuid_courant = tuuid_favoris.clone();
+    let mut idx = 0;
+    let tuuid_leaf = match transaction_collection.path_collections {
+        Some(path_collections) => {
+            for path_col in path_collections {
+                idx = idx+1;
+                // Trouver ou creer favoris
+                let filtre = doc!{
+                    CHAMP_CUUIDS: &cuuid_courant,
+                    CHAMP_USER_ID: &user_id,
+                    CHAMP_NOM: &path_col,
+                };
+                let doc_path = match collection.find_one(filtre, None).await {
+                    Ok(d) => Ok(d),
+                    Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur creation doc collection path {} : {:?}", path_col, e))
+                }?;
+                match doc_path {
+                    Some(d) => {
+                        let collection_info: InformationCollection = match convertir_bson_deserializable(d) {
+                            Ok(c) => c,
+                            Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur convserion bson path {} : {:?}", path_col, e))
+                        }?;
+                        cuuid_courant = collection_info.tuuid.clone();
+
+                        let flag_favoris = match collection_info.favoris {
+                            Some(f) => f,
+                            None => false
+                        };
+                        let flag_supprime = match collection_info.supprime {
+                            Some(f) => f,
+                            None => true
+                        };
+
+                        if !flag_favoris || flag_supprime {
+                            // MAj collection, flip flags
+                            todo!("Flip flags")
+                        }
+                    },
+                    None => {
+                        // Creer la nouvelle collection
+                        let tuuid = format!("{}_{}", uuid_transaction, idx);
+                        let collection_info = doc!{
+                            CHAMP_TUUID: &tuuid,
+                            CHAMP_NOM: &path_col,
+                            CHAMP_CREATION: &date_courante,
+                            CHAMP_MODIFICATION: &date_courante,
+                            CHAMP_SECURITE: SECURITE_3_PROTEGE,
+                            CHAMP_USER_ID: &user_id,
+                            CHAMP_SUPPRIME: false,
+                            CHAMP_FAVORIS: false,
+                            CHAMP_CUUIDS: vec![cuuid_courant]
+                        };
+                        match collection.insert_one(collection_info, None).await {
+                            Ok(_) => Ok(()),
+                            Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur insertion collection path {} : {:?}", path_col, e))
+                        }?;
+                        cuuid_courant = tuuid.clone();
+                    }
+                }
+            }
+
+            // Retourner le dernier identifcateur de collection (c'est le tuuid)
+            cuuid_courant
+        },
+        None => tuuid_favoris
+    };
+
+    // Retourner le tuuid comme reponse, aucune transaction necessaire
+    let reponse = match middleware.formatter_reponse(json!({CHAMP_TUUID: &tuuid_leaf}), None) {
+        Ok(r) => Ok(r),
+        Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
+    }?;
+
+    Ok(Some(reponse))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InformationCollection {
+    pub tuuid: String,
+    pub nom: String,
+    pub cuuids: Option<Vec<String>>,
+    pub user_id: String,
+    pub supprime: Option<bool>,
+    pub favoris: Option<bool>,
 }
