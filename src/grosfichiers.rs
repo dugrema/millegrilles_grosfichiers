@@ -161,6 +161,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     }
 
     let commandes_privees: Vec<&str> = vec![
+        TRANSACTION_NOUVELLE_VERSION,  // Emise par consignationfichiers
         TRANSACTION_NOUVELLE_COLLECTION,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION,
         TRANSACTION_DEPLACER_FICHIERS_COLLECTION,
@@ -176,11 +177,9 @@ pub fn preparer_queues() -> Vec<QueueType> {
     ];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
-        // rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
     }
 
     let commandes_protegees: Vec<&str> = vec![
-        TRANSACTION_NOUVELLE_VERSION,  // fichiers
         COMMANDE_INDEXER,
         COMMANDE_COMPLETER_PREVIEWS,
         COMMANDE_CONFIRMER_FICHIER_INDEXE,
@@ -217,23 +216,15 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_DECRIRE_COLLECTION,
         TRANSACTION_COPIER_FICHIER_TIERS,
         TRANSACTION_FAVORIS_CREERPATH,
+
+        // Transaction emise par media
+        TRANSACTION_ASSOCIER_CONVERSIONS,
+        TRANSACTION_ASSOCIER_VIDEO,
     ];
     for ts in transactions_secures {
         rk_transactions.push(ConfigRoutingExchange {
             routing_key: format!("transaction.{}.{}", DOMAINE_NOM, ts).into(),
             exchange: Securite::L4Secure
-        });
-    }
-
-    // RK protege
-    let transactions_protegees = vec![
-        TRANSACTION_ASSOCIER_CONVERSIONS,
-        TRANSACTION_ASSOCIER_VIDEO,
-    ];
-    for t in transactions_protegees {
-        rk_transactions.push(ConfigRoutingExchange {
-            routing_key: format!("transaction.{}.{}", DOMAINE_NOM, t).into(),
-            exchange: Securite::L3Protege
         });
     }
 
