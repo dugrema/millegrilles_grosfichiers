@@ -7,7 +7,9 @@ ENV APP_FOLDER=/usr/src/app \
     CAFILE=/run/secrets/millegrille.cert.pem \
     KEYFILE=/run/secrets/key.pem \
     CERTFILE=/run/secrets/cert.pem \
-    MG_FICHIERS_URL=https://fichiers:443
+    MG_FICHIERS_URL=https://fichiers:443 \
+    MG_REDIS_URL=rediss://client_rust@redis:6379#insecure \
+    MG_REDIS_PASSWORD_FILE=/run/secrets/passwd.redis.txt
 
 # MG_NOEUD_ID=43eee47d-fc23-4cf5-b359-70069cf06600
 
