@@ -13,7 +13,7 @@ use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::middleware::sauvegarder_transaction_recue;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao, verifier_erreur_duplication_mongo};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOptions, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
@@ -239,6 +239,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
     doc_bson_transaction.remove(CHAMP_CUUID);
 
     let mut flag_media = false;
+    let mut flag_duplication = false;
 
     // Inserer document de version
     {
@@ -265,7 +266,15 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
 
         match collection.insert_one(doc_version, None).await {
             Ok(_) => (),
-            Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur insertion nouvelle version {} : {:?}", fuuid, e))?
+            Err(e) => {
+                flag_duplication = verifier_erreur_duplication_mongo(&*e.kind);
+                if(flag_duplication) {
+                    // Ok, on va traiter la version meme si elle est deja conservee (idempotent)
+                    ()
+                } else {
+                    Err(format!("grosfichiers.transaction_nouvelle_version Erreur insertion nouvelle version {} : {:?}", fuuid, e))?
+                }
+            }
         }
     }
 
@@ -305,22 +314,25 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
     };
     debug!("nouveau fichier Resultat transaction update : {:?}", resultat);
 
-    if flag_media == true {
-        debug!("Emettre une commande de conversion pour media {}", fuuid);
-        match emettre_commande_media(middleware, &tuuid, &fuuid, &mimetype).await {
+    if flag_duplication == false {
+        // On emet les messages de traitement uniquement si la transaction est nouvelle
+        if flag_media == true {
+            debug!("Emettre une commande de conversion pour media {}", fuuid);
+            match emettre_commande_media(middleware, &tuuid, &fuuid, &mimetype).await {
+                Ok(()) => (),
+                Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
+            }
+        }
+
+        debug!("Emettre une commande d'indexation pour {}", fuuid);
+        match emettre_commande_indexation(gestionnaire, middleware, &tuuid, &fuuid).await {
             Ok(()) => (),
             Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
         }
-    }
 
-    debug!("Emettre une commande d'indexation pour {}", fuuid);
-    match emettre_commande_indexation(gestionnaire, middleware, &tuuid, &fuuid).await {
-        Ok(()) => (),
-        Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
+        // Emettre fichier pour que tous les clients recoivent la mise a jour
+        emettre_evenement_maj_fichier(middleware, &tuuid).await?;
     }
-
-    // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_fichier(middleware, &tuuid).await?;
 
     middleware.reponse_ok()
 }

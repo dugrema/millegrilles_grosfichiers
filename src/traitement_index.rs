@@ -591,65 +591,65 @@ pub async fn traiter_index_manquant<M>(middleware: &M, gestionnaire: &Gestionnai
     Ok(tuuids)
 }
 
-#[cfg(test)]
-mod test_integration_index {
-    use millegrilles_common_rust::tokio as tokio;
-
-    use crate::test_setup::setup;
-
-    use super::*;
-
-    #[tokio::test]
-    async fn test_creation_index() {
-        setup("test_creation_index");
-        let dao = ElasticSearchDaoImpl::new("http://192.168.2.131:9200").expect("dao");
-        debug!("Test preparer index");
-        dao.es_preparer().await.expect("pret");
-    }
-
-    #[tokio::test]
-    async fn test_indexer() {
-        setup("test_indexer");
-        let dao = ElasticSearchDaoImpl::new("http://192.168.2.131:9200").expect("dao");
-        let document_index = DocumentIndexation {
-            nom: String::from("dummy_nom"),
-            mimetype: String::from("application/data"),
-            date_v_courante: DateEpochSeconds::now(),
-            titre: None, description: None, cuuids: None, user_id: None,
-        };
-        let info_doc = InfoDocumentIndexation {
-            tuuid: String::from("tuuid-abcd-1234"),
-            fuuid: String::from("fuuid-abcd-1234"),
-            doc: document_index,
-            permission_hachage_bytes: None, permission_duree: None,
-        };
-        dao.es_indexer("grosfichiers", info_doc.fuuid.clone(), info_doc).await.expect("indexer");
-    }
-
-    #[tokio::test]
-    async fn test_search() {
-        setup("test_search");
-        let dao = ElasticSearchDaoImpl::new("http://192.168.2.131:9200").expect("dao");
-
-        let params = ParametresRecherche {
-            mots_cles: Some(String::from("dadada")),
-            from_idx: Some(0),
-            size: Some(20),
-        };
-        let resultat = dao.es_rechercher("grosfichiers", &params).await.expect("search");
-        debug!("Resultat 1 test_search : {:?}", resultat);
-        assert_eq!(0, resultat.hits.expect("hits").total.value);
-
-        let params = ParametresRecherche {
-            mots_cles: Some(String::from("dummy_nom")),
-            from_idx: Some(0),
-            size: Some(20),
-        };
-        let resultat = dao.es_rechercher("grosfichiers", &params).await.expect("search");
-        debug!("Resultat 2 test_search : {:?}", resultat);
-        assert_eq!(1, resultat.hits.expect("hits").total.value);
-
-    }
-
-}
+// #[cfg(test)]
+// mod test_integration_index {
+//     use millegrilles_common_rust::tokio as tokio;
+//
+//     use crate::test_setup::setup;
+//
+//     use super::*;
+//
+//     #[tokio::test]
+//     async fn test_creation_index() {
+//         setup("test_creation_index");
+//         let dao = ElasticSearchDaoImpl::new("http://192.168.2.131:9200").expect("dao");
+//         debug!("Test preparer index");
+//         dao.es_preparer().await.expect("pret");
+//     }
+//
+//     #[tokio::test]
+//     async fn test_indexer() {
+//         setup("test_indexer");
+//         let dao = ElasticSearchDaoImpl::new("http://192.168.2.131:9200").expect("dao");
+//         let document_index = DocumentIndexation {
+//             nom: String::from("dummy_nom"),
+//             mimetype: String::from("application/data"),
+//             date_v_courante: DateEpochSeconds::now(),
+//             titre: None, description: None, cuuids: None, user_id: None,
+//         };
+//         let info_doc = InfoDocumentIndexation {
+//             tuuid: String::from("tuuid-abcd-1234"),
+//             fuuid: String::from("fuuid-abcd-1234"),
+//             doc: document_index,
+//             permission_hachage_bytes: None, permission_duree: None,
+//         };
+//         dao.es_indexer("grosfichiers", info_doc.fuuid.clone(), info_doc).await.expect("indexer");
+//     }
+//
+//     #[tokio::test]
+//     async fn test_search() {
+//         setup("test_search");
+//         let dao = ElasticSearchDaoImpl::new("http://192.168.2.131:9200").expect("dao");
+//
+//         let params = ParametresRecherche {
+//             mots_cles: Some(String::from("dadada")),
+//             from_idx: Some(0),
+//             size: Some(20),
+//         };
+//         let resultat = dao.es_rechercher("grosfichiers", &params).await.expect("search");
+//         debug!("Resultat 1 test_search : {:?}", resultat);
+//         assert_eq!(0, resultat.hits.expect("hits").total.value);
+//
+//         let params = ParametresRecherche {
+//             mots_cles: Some(String::from("dummy_nom")),
+//             from_idx: Some(0),
+//             size: Some(20),
+//         };
+//         let resultat = dao.es_rechercher("grosfichiers", &params).await.expect("search");
+//         debug!("Resultat 2 test_search : {:?}", resultat);
+//         assert_eq!(1, resultat.hits.expect("hits").total.value);
+//
+//     }
+//
+// }
 
