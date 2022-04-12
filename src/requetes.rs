@@ -320,7 +320,12 @@ async fn requete_contenu_collection<M>(middleware: &M, m: MessageValideAction, g
         Some(s) => {
             let mut doc_sort = doc!();
             for k in s {
-                doc_sort.insert(k, 1);
+                let colonne = k.colonne;
+                let direction = match k.ordre {
+                    Some(d) => d,
+                    None => 1,
+                };
+                doc_sort.insert(colonne, direction);
             }
             doc_sort
         },
@@ -339,11 +344,6 @@ async fn requete_contenu_collection<M>(middleware: &M, m: MessageValideAction, g
         "collection": doc_info_collection,
         "documents": fichiers_reps,
     });
-
-    // if permission is not None:
-    //     permission[ConstantesMaitreDesCles.TRANSACTION_CHAMP_LISTE_HACHAGE_BYTES] = extra_out[ConstantesGrosFichiers.DOCUMENT_LISTE_FUUIDS]
-    //     permission = self.generateur_transactions.preparer_enveloppe(permission, ConstantesMaitreDesCles.REQUETE_PERMISSION)
-    //     reponse['permission'] = permission
 
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
@@ -780,7 +780,13 @@ struct RequeteContenuCollection {
     tuuid_collection: String,
     limit: Option<i64>,
     skip: Option<u64>,
-    sort_keys: Option<Vec<String>>,
+    sort_keys: Option<Vec<SortKey>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SortKey {
+    colonne: String,
+    ordre: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
