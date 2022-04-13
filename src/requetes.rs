@@ -10,6 +10,7 @@ use millegrilles_common_rust::bson::{Bson, doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
@@ -36,39 +37,73 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
     let user_id = message.get_user_id();
     let role_prive = message.verifier_roles(vec![RolesCertificats::ComptePrive]);
 
+    // if role_prive && user_id.is_some() {
+    //     // Ok, commande usager
+    // } else if message.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
+    //     // Autorisation : On accepte les requetes de 3.protege ou 4.secure
+    //     // Ok
+    // } else if message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    //     // Ok
+    // } else {
+    //     Err(format!("consommer_requete autorisation invalide (pas d'un exchange reconnu)"))?
+    // }
+
+    let domaine = message.domaine.as_str();
+    if domaine != DOMAINE_NOM {
+        error!("Message requete/domaine inconnu : '{}'. Message dropped.", message.domaine);
+        return Ok(None)
+    }
+
     if role_prive && user_id.is_some() {
-        // Ok, commande usager
-    } else if message.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
-        // Autorisation : On accepte les requetes de 3.protege ou 4.secure
-        // Ok
+        match message.action.as_str() {
+            REQUETE_ACTIVITE_RECENTE => requete_activite_recente(middleware, message, gestionnaire).await,
+            REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
+            REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
+            REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
+            REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
+            REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
+            REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
+            REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
+            _ => {
+                error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
+                Ok(None)
+            }
+        }
+    } else if message.verifier_exchanges(vec![Securite::L2Prive]) {
+        match message.action.as_str() {
+            REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
+            _ => {
+                error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
+                Ok(None)
+            }
+        }
+    } else if message.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+        match message.action.as_str() {
+            REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
+            _ => {
+                error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
+                Ok(None)
+            }
+        }
     } else if message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        // Ok
+        match message.action.as_str() {
+            REQUETE_ACTIVITE_RECENTE => requete_activite_recente(middleware, message, gestionnaire).await,
+            REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
+            REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
+            REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
+            REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
+            REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
+            REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
+            REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
+            _ => {
+                error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
+                Ok(None)
+            }
+        }
     } else {
         Err(format!("consommer_requete autorisation invalide (pas d'un exchange reconnu)"))?
     }
 
-    match message.domaine.as_str() {
-        DOMAINE_NOM => {
-            match message.action.as_str() {
-                REQUETE_ACTIVITE_RECENTE => requete_activite_recente(middleware, message, gestionnaire).await,
-                REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
-                REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
-                REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
-                REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
-                REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
-                REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
-                REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
-                _ => {
-                    error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
-                    Ok(None)
-                },
-            }
-        },
-        _ => {
-            error!("Message requete/domaine inconnu : '{}'. Message dropped.", message.domaine);
-            Ok(None)
-        },
-    }
 }
 
 async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -793,4 +828,70 @@ struct SortKey {
 struct ResultatDocsPermission {
     tuuid: String,
     fuuids: Vec<String>,
+}
+
+async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    let uuid_transaction = m.correlation_id.clone();
+
+    if ! m.verifier_exchanges(vec![L2Prive, L3Protege, L4Secure]) {
+        error!("requetes.requete_confirmer_etat_fuuids Acces refuse, certificat n'est pas d'un exchange L2+ : {:?}", uuid_transaction);
+        return Ok(None)
+    }
+
+    debug!("requete_confirmer_etat_fuuids Message : {:?}", & m.message);
+    let requete: RequeteConfirmerEtatFuuids = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_confirmer_etat_fuuids cle parsed : {:?}", requete);
+
+    let fuuids = requete.fuuids;
+
+    let projection = doc! {
+        "fuuids": 1,
+        "supprime": 1,
+    };
+
+    let opts = FindOptions::builder()
+        .hint(Hint::Name(String::from("fichiers_fuuid")))
+        .build();
+    let mut filtre = doc!{"fuuids": {"$in": &fuuids}};
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut fichiers_confirmation = Vec::new();
+    let mut curseur = collection.find(filtre, opts).await?;
+    while let Some(d) = curseur.next().await {
+        let record: RowEtatFuuid = convertir_bson_deserializable(d?)?;
+        for fuuid in record.fuuids.into_iter() {
+            if fuuids.contains(&fuuid) {
+                fichiers_confirmation.push( ConfirmationEtatFuuid { fuuid, supprime: record.supprime } )
+            }
+        }
+    }
+
+    let confirmation = ReponseConfirmerEtatFuuids { fichiers: fichiers_confirmation };
+    let reponse = json!({ "confirmation": confirmation });
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteConfirmerEtatFuuids {
+    fuuids: Vec<String>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ReponseConfirmerEtatFuuids {
+    fichiers: Vec<ConfirmationEtatFuuid>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RowEtatFuuid {
+    fuuids: Vec<String>,
+    supprime: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ConfirmationEtatFuuid {
+    fuuid: String,
+    supprime: bool,
 }
