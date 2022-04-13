@@ -1,6 +1,8 @@
+use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::error::Error;
+use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
 use log::{debug, error, warn};
@@ -497,6 +499,65 @@ where
         },
         None => Err(format!("grosfichiers.emettre_evenement_maj_collection Collection {} introuvable", tuuid_str))?
     };
+
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EvenementContenuCollection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cuuid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fichiers_ajoutes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fichiers_modifies: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collections_ajoutees: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collections_modifiees: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retires: Option<Vec<String>>,
+}
+
+impl EvenementContenuCollection {
+    pub fn new() -> Self {
+        Self {
+            cuuid: None,
+            fichiers_ajoutes: None,
+            fichiers_modifies: None,
+            collections_ajoutees: None,
+            collections_modifiees: None,
+            retires: None,
+        }
+    }
+}
+
+pub async fn emettre_evenement_contenu_collection<M,E>(middleware: &M, evenement: E)
+    -> Result<(), String>
+where
+    M: GenerateurMessages + MongoDao,
+    E: Borrow<EvenementContenuCollection> + Debug
+{
+    debug!("grosfichiers.emettre_evenement_contenu_collection Emettre evenement maj pour collection {:?}", evenement);
+
+    let evenement_ref = evenement.borrow();
+
+    let routage = {
+        let mut routage_builder = RoutageMessageAction::builder("grosfichiers", "majContenuCollection")
+            .exchanges(vec![Securite::L2Prive]);
+        if let Some(cuuid) = evenement_ref.cuuid.as_ref() {
+            routage_builder = routage_builder.partition(cuuid.clone());
+        }
+        routage_builder.build()
+    };
+
+    // let contenu = json!({
+    //     "cuuid": tuuid_str,
+    //     "fichiers_ajoutes": fichiers_ajoutes,
+    //     "collections_ajoutees": collections_ajoutees,
+    //     "tuuids_retires": tuuids_retires,
+    // });
+    middleware.emettre_evenement(routage, evenement_ref).await?;
 
     Ok(())
 }

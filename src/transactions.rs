@@ -19,7 +19,7 @@ use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::transactions::Transaction;
-use crate::grosfichiers::{emettre_evenement_maj_collection, emettre_evenement_maj_fichier, GestionnaireGrosFichiers};
+use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 
 use crate::grosfichiers_constantes::*;
 use crate::traitement_media::emettre_commande_media;
@@ -285,7 +285,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
     let filtre = doc! {CHAMP_TUUID: &tuuid};
     let mut add_to_set = doc!{"fuuids": &fuuid};
     // Ajouter collection au besoin
-    if let Some(c) = cuuid {
+    if let Some(c) = cuuid.as_ref() {
         add_to_set.insert("cuuids", c);
     }
 
@@ -332,6 +332,13 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
 
         // Emettre fichier pour que tous les clients recoivent la mise a jour
         emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+
+        if let Some(cuuid) = cuuid.as_ref() {
+            let mut evenement_contenu = EvenementContenuCollection::new();
+            evenement_contenu.cuuid = Some(cuuid.clone());
+            evenement_contenu.fichiers_ajoutes = Some(vec![tuuid.clone()]);
+            emettre_evenement_contenu_collection(middleware, evenement_contenu).await?;
+        }
     }
 
     middleware.reponse_ok()
@@ -379,16 +386,16 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
         CHAMP_CREATION: &date_courante,
         CHAMP_MODIFICATION: &date_courante,
         CHAMP_SECURITE: &securite,
-        CHAMP_USER_ID: user_id,
+        CHAMP_USER_ID: &user_id,
         CHAMP_SUPPRIME: false,
         CHAMP_FAVORIS: favoris,
     };
     debug!("grosfichiers.transaction_nouvelle_collection Ajouter nouvelle collection doc : {:?}", doc_collection);
 
     // Ajouter collection parent au besoin
-    if let Some(c) = cuuid {
+    if let Some(c) = cuuid.as_ref() {
         let mut arr = millegrilles_common_rust::bson::Array::new();
-        arr.push(millegrilles_common_rust::bson::Bson::String(c));
+        arr.push(millegrilles_common_rust::bson::Bson::String(c.clone()));
         doc_collection.insert("cuuids", arr);
     }
 
@@ -401,6 +408,15 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
     emettre_evenement_maj_collection(middleware, &tuuid).await?;
+    {
+        let mut evenement_contenu = EvenementContenuCollection::new();
+        match cuuid.as_ref() {
+            Some(cuuid) => evenement_contenu.cuuid = Some(cuuid.clone()),
+            None => evenement_contenu.cuuid = user_id.clone()
+        }
+        evenement_contenu.collections_ajoutees = Some(vec![tuuid.clone()]);
+        emettre_evenement_contenu_collection(middleware, evenement_contenu).await?;
+    }
 
     middleware.reponse_ok()
 }
@@ -434,6 +450,13 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, transacti
     for tuuid in &transaction_collection.inclure_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
         emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+    }
+
+    {
+        let mut evenement_contenu = EvenementContenuCollection::new();
+        evenement_contenu.cuuid = Some(transaction_collection.cuuid.clone());
+        evenement_contenu.fichiers_ajoutes = Some(transaction_collection.inclure_tuuids.clone());
+        emettre_evenement_contenu_collection(middleware, evenement_contenu).await?;
     }
 
     middleware.reponse_ok()
@@ -482,6 +505,18 @@ async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, transact
         emettre_evenement_maj_fichier(middleware, &tuuid).await?;
     }
 
+    {
+        let mut evenement_source = EvenementContenuCollection::new();
+        evenement_source.cuuid = Some(transaction_collection.cuuid_origine.clone());
+        evenement_source.retires = Some(transaction_collection.inclure_tuuids.clone());
+        emettre_evenement_contenu_collection(middleware, evenement_source).await?;
+
+        let mut evenement_destination = EvenementContenuCollection::new();
+        evenement_destination.cuuid = Some(transaction_collection.cuuid_destination.clone());
+        evenement_destination.fichiers_ajoutes = Some(transaction_collection.inclure_tuuids.clone());
+        emettre_evenement_contenu_collection(middleware, evenement_destination).await?;
+    }
+
     middleware.reponse_ok()
 }
 
@@ -514,6 +549,13 @@ async fn transaction_retirer_documents_collection<M, T>(middleware: &M, transact
     for tuuid in &transaction_collection.retirer_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
         emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+    }
+
+    {
+        let mut evenement_contenu = EvenementContenuCollection::new();
+        evenement_contenu.cuuid = Some(transaction_collection.cuuid.clone());
+        evenement_contenu.retires = Some(transaction_collection.retirer_tuuids.clone());
+        emettre_evenement_contenu_collection(middleware, evenement_contenu).await?;
     }
 
     middleware.reponse_ok()
