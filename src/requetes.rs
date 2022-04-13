@@ -845,7 +845,10 @@ async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction
     let requete: RequeteConfirmerEtatFuuids = m.message.get_msg().map_contenu(None)?;
     debug!("requete_confirmer_etat_fuuids cle parsed : {:?}", requete);
 
-    let fuuids = requete.fuuids;
+    let mut fuuids = HashSet::new();
+    for fuuid in requete.fuuids.iter() {
+        fuuids.insert(fuuid.clone());
+    }
 
     let projection = doc! {
         "fuuids": 1,
@@ -855,7 +858,7 @@ async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction
     let opts = FindOptions::builder()
         .hint(Hint::Name(String::from("fichiers_fuuid")))
         .build();
-    let mut filtre = doc!{"fuuids": {"$in": &fuuids}};
+    let mut filtre = doc!{"fuuids": {"$in": requete.fuuids}};
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let mut fichiers_confirmation = Vec::new();
@@ -864,9 +867,16 @@ async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction
         let record: RowEtatFuuid = convertir_bson_deserializable(d?)?;
         for fuuid in record.fuuids.into_iter() {
             if fuuids.contains(&fuuid) {
-                fichiers_confirmation.push( ConfirmationEtatFuuid { fuuid, supprime: record.supprime } )
+                fuuids.remove(&fuuid);
+                fichiers_confirmation.push( ConfirmationEtatFuuid { fuuid, supprime: record.supprime } );
             }
         }
+    }
+
+    // Ajouter tous les fuuids manquants (encore dans le set)
+    // Ces fichiers sont inconnus et presumes supprimes
+    for fuuid in fuuids.into_iter() {
+        fichiers_confirmation.push( ConfirmationEtatFuuid { fuuid, supprime: true } );
     }
 
     let confirmation = ReponseConfirmerEtatFuuids { fichiers: fichiers_confirmation };
