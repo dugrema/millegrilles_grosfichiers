@@ -114,8 +114,8 @@ pub struct TransactionAssocierConversions {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionAssocierVideo {
-    pub tuuid: String,
-    pub fuuid: String,
+    pub tuuid: Option<String>,
+    pub fuuid: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub mimetype: String,

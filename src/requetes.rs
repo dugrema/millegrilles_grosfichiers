@@ -166,6 +166,7 @@ struct RequetePlusRecente {
 pub fn mapper_fichier_db(fichier: Document) -> Result<FichierDetail, Box<dyn Error>> {
     let date_creation = fichier.get_datetime(CHAMP_CREATION)?.clone();
     let date_modification = fichier.get_datetime(CHAMP_MODIFICATION)?.clone();
+    debug!("Ficher charge : {:?}", fichier);
     let mut fichier_mappe: FichierDetail = convertir_bson_deserializable(fichier)?;
     fichier_mappe.date_creation = Some(DateEpochSeconds::from(date_creation.to_chrono()));
     fichier_mappe.derniere_modification = Some(DateEpochSeconds::from(date_modification.to_chrono()));

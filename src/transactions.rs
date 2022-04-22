@@ -183,12 +183,16 @@ pub struct ImageInfo {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VideoInfo {
-    pub hachage: String,
+    pub fuuid: String,
+    pub tuuid: String,
+    pub fuuid_video: String,
     pub resolution: Option<u32>,
     pub height: Option<u32>,
     pub width: Option<u32>,
-    pub taille: Option<u64>,
-    pub mimetype: Option<String>,
+    pub taille_fichier: Option<u64>,
+    pub mimetype: String,
+    pub codec: String,
+    pub bitrate: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -902,7 +906,9 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+    if let Some(t) = tuuid.as_ref() {
+        emettre_evenement_maj_fichier(middleware, t).await?;
+    }
 
     middleware.reponse_ok()
 }
@@ -1085,11 +1091,9 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
 
         if let Some(videos) = transaction_fichier.video {
             for vid in videos.values() {
-                let mimetype = vid.mimetype.as_ref();
-                let fuuid = &vid.hachage;
-                if let Some(mt) = mimetype {
-                    fuuids_mimetype.insert(fuuid.to_owned(), mt.to_owned());
-                }
+                let mimetype = vid.mimetype.as_str();
+                let fuuid = &vid.fuuid_video;
+                fuuids_mimetype.insert(fuuid.to_owned(), mimetype.to_owned());
             }
         }
 

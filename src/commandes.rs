@@ -451,7 +451,7 @@ async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction
         fuuids.extend(fuuids_image);
     }
     if let Some(v) = &transaction_copier.video {
-        let fuuids_videos: Vec<&str> = v.values().map(|info| info.hachage.as_str()).collect();
+        let fuuids_videos: Vec<&str> = v.values().map(|info| info.fuuid_video.as_str()).collect();
         fuuids.extend(fuuids_videos);
     }
 
