@@ -18,6 +18,7 @@ use crate::grosfichiers_constantes::*;
 
 const ACTION_GENERER_POSTER_IMAGE: &str = "genererPosterImage";
 const ACTION_GENERER_POSTER_VIDEO: &str = "genererPosterVideo";
+const ACTION_TRANSCODER_VIDEO: &str = "transcoderVideo";
 
 pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid: S, mimetype: T)
     -> Result<(), String>
@@ -37,8 +38,8 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
         "mimetype": mimetype_str,
 
         // Section permission de dechiffrage
-        "permission_hachage_bytes": [fuuid_str],
-        "permission_duree": 300,  // 300 secondes a partir de la signature de la commande
+        //"permission_hachage_bytes": [fuuid_str],
+        //"permission_duree": 300,  // 300 secondes a partir de la signature de la commande
     });
 
     let action = match mimetype_str {
@@ -49,7 +50,37 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
                 None => Err(format!("traitement_media.emettre_commande_media Mimetype {}, subtype non identifiable", mimetype_str))?
             };
             match subtype {
-                "video" => ACTION_GENERER_POSTER_VIDEO,
+                "video" => {
+                    // Demarrer transcodate versions 240p mp4 et vp9
+                    let routage_video = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, ACTION_TRANSCODER_VIDEO)
+                        .exchanges(vec![Securite::L3Protege])
+                        .build();
+                    let commande_mp4 = json!({
+                        "tuuid": tuuid_str,
+                        "fuuid": fuuid_str,
+                        "codecVideo": "h264",
+                        "codecAudio": "aac",
+                        "mimetype": "video/mp4",
+                        "resolutionVideo": 240,
+                        "bitrateVideo": 250000,
+                        "bitrateAudio": 64000,
+                    });
+                    let commande_vp9 = json!({
+                        "tuuid": tuuid_str,
+                        "fuuid": fuuid_str,
+                        "codecVideo": "vp9",
+                        "codecAudio": "opus",
+                        "mimetype": "video/webm",
+                        "resolutionVideo": 240,
+                        "bitrateVideo": 250000,
+                        "bitrateAudio": 64000,
+                    });
+                    middleware.transmettre_commande(routage_video.clone(), &commande_mp4, false).await?;
+                    middleware.transmettre_commande(routage_video, &commande_vp9, false).await?;
+
+                    // Faire generer le poster
+                    ACTION_GENERER_POSTER_VIDEO
+                },
                 "image" => ACTION_GENERER_POSTER_IMAGE,
                 _ => Err(format!("traitement_media.emettre_commande_media Mimetype {}, subtype non supporte", mimetype_str))?
             }
