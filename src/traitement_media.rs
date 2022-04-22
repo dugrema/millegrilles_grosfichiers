@@ -58,8 +58,8 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
                     let commande_mp4 = json!({
                         "tuuid": tuuid_str,
                         "fuuid": fuuid_str,
-                        "codecVideo": "h264",
-                        "codecAudio": "aac",
+                        // "codecVideo": "h264",
+                        // "codecAudio": "aac",
                         "mimetype": "video/mp4",
                         "resolutionVideo": 240,
                         "bitrateVideo": 250000,
@@ -68,10 +68,10 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
                     let commande_vp9 = json!({
                         "tuuid": tuuid_str,
                         "fuuid": fuuid_str,
-                        "codecVideo": "vp9",
-                        "codecAudio": "opus",
+                        // "codecVideo": "vp9",
+                        // "codecAudio": "opus",
                         "mimetype": "video/webm",
-                        "resolutionVideo": 240,
+                        "resolutionVideo": 320,
                         "bitrateVideo": 250000,
                         "bitrateAudio": 64000,
                     });
