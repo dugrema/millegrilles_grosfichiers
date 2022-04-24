@@ -51,10 +51,10 @@ where
                 false => Err(format!("transactions.consommer_transaction: Trigger cedule autorisation invalide (pas 4.secure)"))
             }?;
         },
-        // 3.protege ou 4.secure
+        // 4.secure
         TRANSACTION_ASSOCIER_CONVERSIONS |
         TRANSACTION_ASSOCIER_VIDEO => {
-            match m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+            match m.verifier_exchanges(vec![Securite::L4Secure]) {
                 true => Ok(()),
                 false => Err(format!("transactions.consommer_transaction: Trigger cedule autorisation invalide (pas 4.secure)")),
             }?;
@@ -739,10 +739,21 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
     // MAJ de la version du fichier
     {
         let filtre = doc! { CHAMP_FUUID: &transaction_mappee.fuuid };
-        let mut set_ops = doc! {
-            "images": &doc_images,
-            "flag_media_traite": true,
+        let mut set_ops = doc! {};
+
+        // Si on a le thumbnail, on va marquer media_traite
+        debug!("Traiter images : {:?}", transaction_mappee.images);
+        if transaction_mappee.images.contains_key("thumb") {
+            set_ops.insert("flag_media_traite", true);
+        }
+
+        // Inserer images par cle dans set_ops
+        for (k, v) in &doc_images {
+            debug!("Traiter image {} : {:?}", k, v);
+            let cle_image = format!("images.{}", k);
+            set_ops.insert(cle_image, v.to_owned());
         };
+
         if let Some(inner) = transaction_mappee.anime {
             set_ops.insert("anime", inner);
         }
@@ -766,6 +777,7 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
             "$addToSet": add_to_set,
             "$currentDate": { CHAMP_MODIFICATION: true }
         };
+        debug!("transactions.transaction_associer_conversions set ops versions : {:?}", ops);
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
         match collection.update_one(filtre, ops, None).await {
             Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
@@ -780,9 +792,14 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
             CHAMP_FUUID_V_COURANTE: &transaction_mappee.fuuid,
         };
 
-        let mut set_ops = doc! {
-            "version_courante.images": &doc_images,
+        let mut set_ops = doc! {};
+
+        // Inserer images par cle dans set_ops
+        for (k, v) in doc_images {
+            let cle_image = format!("version_courante.images.{}", k);
+            set_ops.insert(cle_image, v);
         };
+
         if let Some(inner) = &transaction_mappee.anime {
             set_ops.insert("version_courante.anime", inner);
         }

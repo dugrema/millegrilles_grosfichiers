@@ -176,6 +176,8 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_DECRIRE_COLLECTION,
         TRANSACTION_COPIER_FICHIER_TIERS,
         TRANSACTION_FAVORIS_CREERPATH,
+        TRANSACTION_ASSOCIER_CONVERSIONS,
+        TRANSACTION_ASSOCIER_VIDEO,
         COMMANDE_INDEXER,
     ];
     for cmd in commandes_privees {

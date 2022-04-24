@@ -8,6 +8,7 @@ use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::constantes::Securite::{L2Prive, L4Secure};
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageSerialise};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
@@ -58,6 +59,8 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         // Commandes standard
         TRANSACTION_NOUVELLE_VERSION => commande_nouvelle_version(middleware, m, gestionnaire).await,
         TRANSACTION_NOUVELLE_COLLECTION => commande_nouvelle_collection(middleware, m, gestionnaire).await,
+        TRANSACTION_ASSOCIER_CONVERSIONS => commande_associer_conversions(middleware, m, gestionnaire).await,
+        TRANSACTION_ASSOCIER_VIDEO => commande_associer_video(middleware, m, gestionnaire).await,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION => commande_ajouter_fichiers_collection(middleware, m, gestionnaire).await,
         TRANSACTION_DEPLACER_FICHIERS_COLLECTION => commande_deplacer_fichiers_collection(middleware, m, gestionnaire).await,
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => commande_retirer_documents_collection(middleware, m, gestionnaire).await,
@@ -152,6 +155,46 @@ async fn commande_nouvelle_collection<M>(middleware: &M, m: MessageValideAction,
         // Ok
     } else {
         Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
+
+    // Traiter la transaction
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
+async fn commande_associer_conversions<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_associer_conversions Consommer commande : {:?}", & m.message);
+    let commande: TransactionAssocierConversions = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_associer_conversions versions parsed : {:?}", commande);
+
+    if ! m.verifier_exchanges(vec![L4Secure]) {
+        Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas L4Secure) pour message {:?}", m.correlation_id))?
+    }
+    if ! m.verifier_roles(vec![RolesCertificats::Media]) {
+        Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas media) pour message {:?}", m.correlation_id))?
+    }
+
+    // Autorisation - doit etre signe par media
+
+
+
+    // Traiter la transaction
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
+async fn commande_associer_video<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_associer_video Consommer commande : {:?}", & m.message);
+    let commande: TransactionAssocierVideo = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_associer_video versions parsed : {:?}", commande);
+
+    // Autorisation
+    if ! m.verifier_exchanges(vec![L2Prive]) {
+        Err(format!("grosfichiers.commande_associer_video: Autorisation invalide pour message {:?}", m.correlation_id))?
     }
 
     // Traiter la transaction
