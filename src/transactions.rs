@@ -335,7 +335,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         }
 
         // Emettre fichier pour que tous les clients recoivent la mise a jour
-        emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
 
         if let Some(cuuid) = cuuid.as_ref() {
             let mut evenement_contenu = EvenementContenuCollection::new();
@@ -453,7 +453,7 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, transacti
 
     for tuuid in &transaction_collection.inclure_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
-        emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION).await?;
     }
 
     {
@@ -506,7 +506,7 @@ async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, transact
 
     for tuuid in &transaction_collection.inclure_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
-        emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_DEPLACER_FICHIER_COLLECTION).await?;
     }
 
     {
@@ -552,7 +552,7 @@ async fn transaction_retirer_documents_collection<M, T>(middleware: &M, transact
 
     for tuuid in &transaction_collection.retirer_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
-        emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_RETIRER_COLLECTION).await?;
     }
 
     {
@@ -592,11 +592,11 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
 
     for tuuid in &transaction_collection.tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
-        match emettre_evenement_maj_fichier(middleware, &tuuid).await {
+        match emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_SUPPRIMER_DOCUMENT).await {
             Ok(()) => (),
             Err(e) => {
                 // Peut-etre une collection
-                emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+                emettre_evenement_maj_collection(middleware, &tuuid).await?;
             }
         }
     }
@@ -631,7 +631,7 @@ async fn transaction_recuperer_documents<M, T>(middleware: &M, transaction: T) -
 
     for tuuid in &transaction_collection.tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
-        emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_RECUPERER).await?;
     }
 
     middleware.reponse_ok()
@@ -832,7 +832,7 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+    emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION).await?;
 
     middleware.reponse_ok()
 }
@@ -924,7 +924,7 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
     if let Some(t) = tuuid.as_ref() {
-        emettre_evenement_maj_fichier(middleware, t).await?;
+        emettre_evenement_maj_fichier(middleware, t, EVENEMENT_FUUID_ASSOCIER_VIDEO).await?;
     }
 
     middleware.reponse_ok()
@@ -980,7 +980,7 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Res
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+    emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_DECRIRE_FICHIER).await?;
 
     middleware.reponse_ok()
 }
@@ -1225,7 +1225,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_fichier(middleware, &tuuid).await?;
+    emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_COPIER_FICHIER_TIERS).await?;
 
     middleware.reponse_ok()
 }

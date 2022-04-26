@@ -442,12 +442,14 @@ where
     }
 }
 
-pub async fn emettre_evenement_maj_fichier<M, S>(middleware: &M, tuuid: S) -> Result<(), String>
+pub async fn emettre_evenement_maj_fichier<M, S, T>(middleware: &M, tuuid: S, action: T) -> Result<(), String>
 where
     M: GenerateurMessages + MongoDao,
-    S: AsRef<str>
+    S: AsRef<str>,
+    T: AsRef<str>
 {
     let tuuid_str = tuuid.as_ref();
+    let action_str = action.as_ref();
     debug!("grosfichiers.emettre_evenement_maj_fichier Emettre evenement maj pour fichier {}", tuuid_str);
 
     // Charger fichier
@@ -459,11 +461,23 @@ where
     };
     match doc_fichier {
         Some(inner) => {
+            // Extraire liste de fuuids directement
+            let routage_action = RoutageMessageAction::builder("grosfichiers", action_str)
+                .exchanges(vec![Securite::L2Prive])
+                .build();
+
+            match inner.get_array("fuuids") {
+                Ok(fuuids) => {
+                    middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: fuuids})).await?;
+                },
+                Err(_) => ()
+            };
+
             let fichier_mappe = match mapper_fichier_db(inner) {
                 Ok(inner) => inner,
                 Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_fichier Erreur mapper_fichier_db : {:?}", e))?
             };
-            let routage = RoutageMessageAction::builder("grosfichiers", "majFichier")
+            let routage = RoutageMessageAction::builder("grosfichiers", EVENEMENT_MAJ_FICHIER)
                 .exchanges(vec![Securite::L2Prive])
                 .build();
             middleware.emettre_evenement(routage, &fichier_mappe).await?;
