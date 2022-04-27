@@ -110,6 +110,9 @@ pub async fn traiter_media_batch<M>(middleware: &M, limite: i64) -> Result<Vec<S
     let mut curseur = collection.find(filtre, Some(opts)).await?;
     let mut tuuids = Vec::new();
 
+    let mut fuuids_media = Vec::new();
+    let mut fuuids_retry_expire = Vec::new();
+
     while let Some(d) = curseur.next().await {
         let doc_version = d?;
         let version_mappe: DBFichierVersionDetail = convertir_bson_deserializable(doc_version)?;
@@ -118,10 +121,41 @@ pub async fn traiter_media_batch<M>(middleware: &M, limite: i64) -> Result<Vec<S
         let mimteype = version_mappe.mimetype;
         if let Some(t) = tuuid {
             if let Some(f) = fuuid {
+                if let Some(retry_count) = version_mappe.flag_media_retry {
+                    if retry_count > MEDIA_RETRY_LIMIT {
+                        fuuids_retry_expire.push(f.clone());
+                    }
+                }
+                fuuids_media.push(f.clone());
                 emettre_commande_media(middleware, &t, &f, &mimteype).await?;
                 tuuids.push(t);
             }
         }
+    }
+
+    // Desactive apres trop d'echecs de retry
+    if fuuids_retry_expire.len() > 0 {
+        let filtre_retry = doc!{CHAMP_FUUID: {"$in": fuuids_retry_expire}};
+        let ops = doc!{
+            "$set": {
+                CHAMP_FLAG_MEDIA_TRAITE: true,
+                CHAMP_FLAG_MEDIA_ERREUR: ERREUR_MEDIA_TOOMANYRETRIES,
+            },
+            "$currentDate": {CHAMP_MODIFICATION: true},
+        };
+        collection.update_many(filtre_retry, ops, None).await?;
+    }
+
+    // Maj le retry count
+    if fuuids_media.len() > 0 {
+        let filtre_retry = doc!{CHAMP_FUUID: {"$in": fuuids_media}};
+        let ops = doc!{
+            "$inc": {
+                CHAMP_FLAG_MEDIA_RETRY: 1,
+            },
+            "$currentDate": {CHAMP_MODIFICATION: true},
+        };
+        collection.update_many(filtre_retry, ops, None).await?;
     }
 
     Ok(tuuids)

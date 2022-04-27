@@ -71,7 +71,13 @@ pub const CHAMP_FUUID_MIMETYPES: &str = "fuuidMimetypes";
 pub const CHAMP_FLAG_INDEXE: &str = "flag_indexe";
 pub const CHAMP_FLAG_MEDIA: &str = "flag_media";
 pub const CHAMP_FLAG_MEDIA_TRAITE: &str = "flag_media_traite";
+pub const CHAMP_FLAG_MEDIA_RETRY: &str = "flag_media_retry";
+pub const CHAMP_FLAG_MEDIA_ERREUR: &str = "flag_media_erreur";
 pub const CHAMP_USER_ID: &str = "user_id";
+
+pub const ERREUR_MEDIA_TOOMANYRETRIES: i32 = 1;
+
+pub const MEDIA_RETRY_LIMIT: i32 = 5;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FichierDetail {
@@ -111,6 +117,8 @@ pub struct DBFichierVersionDetail {
     pub anime: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub video: Option<HashMap<String, TransactionAssocierVideo>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_media_retry: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
