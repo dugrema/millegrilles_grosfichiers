@@ -42,6 +42,7 @@ pub const TRANSACTION_FAVORIS_CREERPATH: &str = "favorisCreerPath";
 pub const COMMANDE_INDEXER: &str = "indexerContenu";
 pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";
 pub const COMMANDE_CONFIRMER_FICHIER_INDEXE: &str = "confirmerFichierIndexe";
+pub const COMMANDE_NOUVEAU_FICHIER: &str = "commandeNouveauFichier";
 
 pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
 pub const EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION: &str = "fuuidAjouterFichierCollection";
@@ -54,6 +55,7 @@ pub const EVENEMENT_FUUID_NOUVELLE_VERSION: &str = "fuuidNouvelleVersion";
 pub const EVENEMENT_FUUID_RECUPERER: &str = "fuuidRecuperer";
 pub const EVENEMENT_FUUID_RETIRER_COLLECTION: &str = "fuuidRetirerCollection";
 pub const EVENEMENT_FUUID_SUPPRIMER_DOCUMENT: &str = "fuuidSupprimerDocument";
+pub const EVENEMENT_AJOUTER_FICHIER: &str = "fuuidNouvelleVersion";
 
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 pub const CHAMP_FUUIDS: &str = "fuuids";
@@ -89,6 +91,7 @@ pub struct FichierDetail {
     pub description: Option<HashMap<String, String>>,
     pub securite: Option<String>,  // Collection seulement
     pub user_id: Option<String>,
+    pub mimetype: Option<String>,
 
     pub fuuid_v_courante: Option<String>,
     pub version_courante: Option<DBFichierVersionDetail>,

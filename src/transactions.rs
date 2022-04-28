@@ -93,14 +93,14 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionNouvelleVersion {
-    fuuid: String,
-    cuuid: Option<String>,
-    tuuid: Option<String>,  // uuid de la premiere commande/transaction comme collateur de versions
-    nom: String,
-    mimetype: String,
-    taille: u64,
+    pub fuuid: String,
+    pub cuuid: Option<String>,
+    pub tuuid: Option<String>,  // uuid de la premiere commande/transaction comme collateur de versions
+    pub nom: String,
+    pub mimetype: String,
+    pub taille: u64,
     #[serde(rename="dateFichier")]
-    date_fichier: DateEpochSeconds,
+    pub date_fichier: DateEpochSeconds,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

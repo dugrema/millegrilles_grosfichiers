@@ -22,7 +22,7 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::Transaction;
 use millegrilles_common_rust::verificateur::VerificateurMessage;
 
-use crate::grosfichiers::GestionnaireGrosFichiers;
+use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 use crate::grosfichiers_constantes::*;
 use crate::requetes::mapper_fichier_db;
 use crate::traitement_index::{ElasticSearchDao, emettre_commande_indexation, set_flag_indexe, traiter_index_manquant};
@@ -70,10 +70,13 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         TRANSACTION_DECRIRE_FICHIER => commande_decrire_fichier(middleware, m, gestionnaire).await,
         TRANSACTION_DECRIRE_COLLECTION => commande_decrire_collection(middleware, m, gestionnaire).await,
         TRANSACTION_COPIER_FICHIER_TIERS => commande_copier_fichier_tiers(middleware, m, gestionnaire).await,
+        TRANSACTION_FAVORIS_CREERPATH => commande_favoris_creerpath(middleware, m, gestionnaire).await,
+
         COMMANDE_INDEXER => commande_reindexer(middleware, m, gestionnaire).await,
         COMMANDE_COMPLETER_PREVIEWS => commande_completer_previews(middleware, m, gestionnaire).await,
         COMMANDE_CONFIRMER_FICHIER_INDEXE => commande_confirmer_fichier_indexe(middleware, m, gestionnaire).await,
-        TRANSACTION_FAVORIS_CREERPATH => commande_favoris_creerpath(middleware, m, gestionnaire).await,
+        COMMANDE_NOUVEAU_FICHIER => commande_nouveau_fichier(middleware, m, gestionnaire).await,
+
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
     }
@@ -642,6 +645,81 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAc
 #[derive(Clone, Debug, Deserialize)]
 struct CommandeConfirmerFichierIndexe {
     fuuid: String,
+}
+
+/// Commande qui indique la creation _en cours_ d'un nouveau fichier. Permet de creer un
+/// placeholder a l'ecran en attendant le traitement du fichier.
+async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_nouveau_fichier Consommer commande : {:?}", & m.message);
+    let commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_nouveau_fichier parsed : {:?}", commande);
+
+    // Autorisation: Action usager avec compte prive ou delegation globale
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let delegation_proprietaire = m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE);
+    if ! (role_prive || delegation_proprietaire) && user_id.is_none() {
+        let reponse = json!({"ok": false, "err": "Non autorise"});
+        return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
+    }
+
+    let fuuid = commande.fuuid;
+    let mimetype = commande.mimetype;
+    let tuuid = match commande.tuuid {
+        Some(t) => t,
+        None => {
+            let reponse = json!({"ok": false, "err": "tuuid manquant"});
+            return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
+        }
+    };
+    let cuuid = commande.cuuid;
+    let nom_fichier = commande.nom;
+
+    let filtre = doc! {CHAMP_TUUID: &tuuid};
+    let mut add_to_set = doc!{"fuuids": &fuuid};
+    // Ajouter collection au besoin
+    if let Some(c) = cuuid.as_ref() {
+        add_to_set.insert("cuuids", c);
+    }
+
+    let ops = doc! {
+        "$set": {
+            CHAMP_FUUID_V_COURANTE: &fuuid,
+            CHAMP_MIMETYPE: &mimetype,
+            CHAMP_SUPPRIME: false,
+        },
+        "$addToSet": add_to_set,
+        "$setOnInsert": {
+            "nom": &nom_fichier,
+            "tuuid": &tuuid,
+            CHAMP_CREATION: Utc::now(),
+            CHAMP_USER_ID: &user_id,
+        },
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    let opts = UpdateOptions::builder().upsert(true).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    debug!("commande_nouveau_fichier update ops : {:?}", ops);
+    let resultat = match collection.update_one(filtre, ops, opts).await {
+        Ok(r) => r,
+        Err(e) => Err(format!("commande_nouveau_fichier.transaction_cle Erreur update_one sur transcation : {:?}", e))?
+    };
+    debug!("commande_nouveau_fichier Resultat transaction update : {:?}", resultat);
+
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    emettre_evenement_maj_fichier(middleware, tuuid.as_str(), EVENEMENT_AJOUTER_FICHIER).await?;
+    if let Some(c) = cuuid.as_ref() {
+        let mut event = EvenementContenuCollection::new();
+        let fichiers_ajoutes = vec![tuuid.to_owned()];
+        event.cuuid = cuuid.clone();
+        event.fichiers_ajoutes = Some(fichiers_ajoutes);
+        emettre_evenement_contenu_collection(middleware, event).await?;
+    }
+
+    Ok(middleware.reponse_ok()?)
 }
 
 async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
