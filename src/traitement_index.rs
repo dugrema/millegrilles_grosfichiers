@@ -1,6 +1,8 @@
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::error::Error;
+use std::ops::Deref;
 use std::sync::Mutex;
 
 use log::{debug, error, info, warn};
@@ -285,6 +287,11 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
         -> Result<(), String>
         where S: AsRef<str> + Send, T: AsRef<str> + Send
     {
+        if ! self.es_est_pret() {
+            debug!("es_indexer search n'est pas disponible, rien a faire");
+            return Ok(());
+        }
+
         let id_doc_str = id_doc.as_ref();
 
         let doc_index = match serde_json::to_value(info_doc.doc) {
@@ -319,6 +326,11 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
         -> Result<ResultatRecherche, String>
         where S: AsRef<str> + Send
     {
+        if ! self.es_est_pret() {
+            debug!("es_rechercher search n'est pas disponible, rien a faire");
+            return Err(format!("ElasticSearch n'est pas disponible"));
+        }
+
         let from_idx = match params.from_idx { Some(inner) => inner, None => 0 };
         let size = match params.size { Some(inner) => inner, None => 20 };
 
@@ -386,6 +398,12 @@ impl ElasticSearchDao for ElasticSearchDaoImpl {
     }
 
     async fn es_reset_index(&self) -> Result<(), String> {
+
+        if ! self.es_est_pret() {
+            debug!("es_reset_index search n'est pas disponible, rien a faire");
+            return Ok(());
+        }
+
         info!("Reset index fichiers");
         let url_post = format!("{}/_index_template/grosfichiers", self.url);
         match self.client.delete(&url_post).send().await {
@@ -564,6 +582,11 @@ pub async fn traiter_index_manquant<M>(middleware: &M, gestionnaire: &Gestionnai
     -> Result<Vec<String>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
+    if ! gestionnaire.es_est_pret() {
+        debug!("traiter_index_manquantElastic search n'est pas disponible, rien a faire");
+        return Ok(vec![]);
+    }
+
     let opts = FindOptions::builder()
         .hint(Hint::Name(String::from("flag_indexe")))
         .sort(doc! {CHAMP_FLAG_INDEXE: 1, CHAMP_CREATION: 1})
