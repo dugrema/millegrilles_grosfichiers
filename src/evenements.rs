@@ -68,11 +68,6 @@ async fn repondre_fuuids<M>(middleware: &M, evenement_fuuids: &Vec<String>)
         fuuids.insert(fuuid.clone());
     }
 
-    let projection = doc! {
-        "fuuids": 1,
-        "supprime": 1,
-    };
-
     let opts = FindOptions::builder()
         .hint(Hint::Name(String::from("fichiers_fuuid")))
         .build();
@@ -86,7 +81,11 @@ async fn repondre_fuuids<M>(middleware: &M, evenement_fuuids: &Vec<String>)
         for fuuid in record.fuuids.into_iter() {
             if fuuids.contains(&fuuid) {
                 fuuids.remove(&fuuid);
-                fichiers_confirmation.push( ConfirmationEtatFuuid { fuuid, supprime: record.supprime } );
+                // Note: on ignore les fichiers supprimes == true, on va laisser la chance a
+                //       un autre module d'en garder possession.
+                if record.supprime == false {
+                    fichiers_confirmation.push(ConfirmationEtatFuuid { fuuid, supprime: record.supprime });
+                }
             }
         }
     }
