@@ -43,6 +43,7 @@ pub const COMMANDE_INDEXER: &str = "indexerContenu";
 pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";
 pub const COMMANDE_CONFIRMER_FICHIER_INDEXE: &str = "confirmerFichierIndexe";
 pub const COMMANDE_NOUVEAU_FICHIER: &str = "commandeNouveauFichier";
+pub const COMMANDE_ACTIVITE_FUUIDS: &str = "confirmerActiviteFuuids";
 
 pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
 pub const EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION: &str = "fuuidAjouterFichierCollection";
@@ -56,6 +57,7 @@ pub const EVENEMENT_FUUID_RECUPERER: &str = "fuuidRecuperer";
 pub const EVENEMENT_FUUID_RETIRER_COLLECTION: &str = "fuuidRetirerCollection";
 pub const EVENEMENT_FUUID_SUPPRIMER_DOCUMENT: &str = "fuuidSupprimerDocument";
 pub const EVENEMENT_AJOUTER_FICHIER: &str = "fuuidNouvelleVersion";
+pub const EVENEMENT_CONFIRMER_ETAT_FUUIDS: &str = "confirmerEtatFuuids";
 
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 pub const CHAMP_FUUIDS: &str = "fuuids";

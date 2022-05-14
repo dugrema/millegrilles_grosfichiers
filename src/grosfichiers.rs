@@ -32,6 +32,7 @@ use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction, Tr
 use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::commandes::consommer_commande;
+use crate::evenements::consommer_evenement;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{consommer_requete, mapper_fichier_db};
 use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl, InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche, traiter_index_manquant};
@@ -193,6 +194,8 @@ pub fn preparer_queues() -> Vec<QueueType> {
     for cmd in commandes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
     }
+
+    rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_CONFIRMER_ETAT_FUUIDS), exchange: Securite::L2Prive});
 
     let mut queues = Vec::new();
 
@@ -420,27 +423,6 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
     }
 
     Ok(())
-}
-
-async fn consommer_evenement<M>(middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-where
-    M: ValidateurX509 + GenerateurMessages + MongoDao,
-{
-    debug!("grosfichiers.consommer_evenement Consommer evenement : {:?}", &m.message);
-
-    // Autorisation : doit etre de niveau 3.protege ou 4.secure
-    match m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
-        true => Ok(()),
-        false => Err(format!("grosfichiers.consommer_evenement: Evenement invalide (pas 3.protege ou 4.secure)")),
-    }?;
-
-    match m.action.as_str() {
-        // EVENEMENT_CLES_MANQUANTES_PARTITION => {
-        //     evenement_cle_manquante(middleware, &m).await?;
-        //     Ok(None)
-        // },
-        _ => Err(format!("grosfichiers.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
-    }
 }
 
 pub async fn emettre_evenement_maj_fichier<M, S, T>(middleware: &M, tuuid: S, action: T) -> Result<(), String>
