@@ -96,6 +96,11 @@ async fn repondre_fuuids<M>(middleware: &M, evenement_fuuids: &Vec<String>)
     //     fichiers_confirmation.push( ConfirmationEtatFuuid { fuuid, supprime: true } );
     // }
 
+    if fichiers_confirmation.is_empty() {
+        debug!("repondre_fuuids Aucuns fuuids connus, on ne repond pas");
+        return Ok(());
+    }
+
     let confirmation = ReponseConfirmerEtatFuuids { fuuids: fichiers_confirmation };
     let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, COMMANDE_ACTIVITE_FUUIDS)
         .exchanges(vec![L2Prive])
