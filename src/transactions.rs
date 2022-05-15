@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::convert::TryInto;
 
-use log::{debug, error, warn};
+use log::{debug, info, error, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::{bson, bson::{doc, Document}};
@@ -274,9 +274,10 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
                 flag_duplication = verifier_erreur_duplication_mongo(&*e.kind);
                 if(flag_duplication) {
                     // Ok, on va traiter la version meme si elle est deja conservee (idempotent)
+                    info!("transaction_nouvelle_version Recu transaction deja presente dans versionsFichiers (fuuid: {}), on traite sans inserer", fuuid);
                     ()
                 } else {
-                    Err(format!("grosfichiers.transaction_nouvelle_version Erreur insertion nouvelle version {} : {:?}", fuuid, e))?
+                    Err(format!("transaction_nouvelle_version Erreur insertion nouvelle version {} : {:?}", fuuid, e))?
                 }
             }
         }
