@@ -72,16 +72,18 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
     } else if message.verifier_exchanges(vec![Securite::L2Prive]) {
         match message.action.as_str() {
             REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
+            REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             _ => {
-                error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
+                error!("Message requete/action inconnue pour exchange 2.prive : '{}'. Message dropped.", message.action);
                 Ok(None)
             }
         }
     } else if message.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
         match message.action.as_str() {
             REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
+            REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             _ => {
-                error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
+                error!("Message requete/action inconnue pour exchanges 3.protege/4.secure : '{}'. Message dropped.", message.action);
                 Ok(None)
             }
         }
@@ -303,6 +305,8 @@ async fn requete_documents_par_fuuid<M>(middleware: &M, m: MessageValideAction, 
     if role_prive && user_id.is_some() {
         // Ok
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else if m.verifier_exchanges(vec![Securite::L2Prive]) {
         // Ok
     } else {
         Err(format!("grosfichiers.requete_documents_par_fuuid: Autorisation invalide pour requete {:?}", m.correlation_id))?
