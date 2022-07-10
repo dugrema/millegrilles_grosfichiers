@@ -23,6 +23,7 @@ pub const REQUETE_GET_CORBEILLE: &str = "getCorbeille";
 pub const REQUETE_RECHERCHE_INDEX: &str = "rechercheIndex";
 pub const REQUETE_GET_CLES_FICHIERS: &str = "getClesFichiers";
 pub const REQUETE_CONFIRMER_ETAT_FUUIDS: &str = "confirmerEtatFuuids";
+pub const REQUETE_VERIFIER_ACCES_FUUIDS: &str = "verifierAccesFuuids";
 
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";

@@ -73,6 +73,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
         match message.action.as_str() {
             REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
+            REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue pour exchange 2.prive : '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -321,6 +322,41 @@ async fn requete_documents_par_fuuid<M>(middleware: &M, m: MessageValideAction, 
     let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
 
     let reponse = json!({ "fichiers":  fichiers_mappes });
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_verifier_acces_fuuids Message : {:?}", & m.message);
+    let requete: RequeteVerifierAccesFuuids = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_verifier_acces_fuuids cle parsed : {:?}", requete);
+
+    let mut filtre = doc! {
+        CHAMP_USER_ID: &requete.user_id,
+        CHAMP_FUUIDS: {"$in": &requete.fuuids},
+        CHAMP_SUPPRIME: false,
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let options = FindOptions::builder().projection(doc!{CHAMP_FUUIDS: 1, CHAMP_SUPPRIME: 1}).build();
+    let mut curseur = collection.find(filtre, Some(options)).await?;
+
+    let mut fuuids_acces = HashSet::new();
+
+    while let Some(row) = curseur.next().await {
+        let doc_row = row?;
+        let doc_map: RowEtatFuuid = convertir_bson_deserializable(doc_row)?;
+        fuuids_acces.extend(doc_map.fuuids);
+    }
+
+    let hashset_requete = HashSet::from_iter(requete.fuuids);
+
+    let resultat: Vec<&String> = fuuids_acces.intersection(&hashset_requete).collect();
+    let acces_tous = resultat.len() == hashset_requete.len();
+
+    let reponse = json!({ "fuuids_acces":  resultat , "acces_tous": acces_tous });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
@@ -813,6 +849,12 @@ struct RequeteDocumentsParTuuids {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RequeteDocumentsParFuuids {
     fuuids_documents: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteVerifierAccesFuuids {
+    user_id: String,
+    fuuids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
