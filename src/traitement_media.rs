@@ -53,14 +53,14 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
             match subtype {
                 "video" => {
                     // Demarrer transcodate versions 240p mp4 et vp9
-                    let routage_video = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, ACTION_TRANSCODER_VIDEO)
-                        .exchanges(vec![Securite::L3Protege])
+                    let routage_video = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_VIDEO_TRANSCODER)
+                        .exchanges(vec![Securite::L2Prive])
                         .build();
                     let commande_mp4 = json!({
                         "tuuid": tuuid_str,
                         "fuuid": fuuid_str,
-                        // "codecVideo": "h264",
-                        // "codecAudio": "aac",
+                        "codecVideo": "h264",
+                        "codecAudio": "aac",
                         "mimetype": "video/mp4",
                         "resolutionVideo": 240,
                         "bitrateVideo": 250000,
@@ -69,8 +69,8 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
                     let commande_vp9 = json!({
                         "tuuid": tuuid_str,
                         "fuuid": fuuid_str,
-                        // "codecVideo": "vp9",
-                        // "codecAudio": "opus",
+                        "codecVideo": "vp9",
+                        "codecAudio": "opus",
                         "mimetype": "video/webm",
                         "resolutionVideo": 320,
                         "bitrateVideo": 250000,
