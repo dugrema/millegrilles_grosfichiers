@@ -391,19 +391,34 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         Some(options_index_media_traite)
     ).await?;
 
-    // Index flag indexe
+    // Index conversion video cles
     let options_fuuids_params = IndexOptions {
         nom_index: Some(format!("fuuid_params")),
         unique: true
     };
     let champs_fuuids_params = vec!(
         ChampIndex {nom_champ: String::from(CHAMP_FUUID), direction: 1},
-        ChampIndex {nom_champ: String::from("cle_conversion"), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_CLE_CONVERSION), direction: 1},
     );
     middleware.create_index(
         NOM_COLLECTION_VIDEO_JOBS,
         champs_fuuids_params,
         Some(options_fuuids_params)
+    ).await?;
+
+    // Index conversion video getJob
+    let options_jobs_params = IndexOptions {
+        nom_index: Some(format!("etat_jobs")),
+        unique: true
+    };
+    let champs_jobs_params = vec!(
+        ChampIndex {nom_champ: String::from("etat"), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_MODIFICATION), direction: 1},
+    );
+    middleware.create_index(
+        NOM_COLLECTION_VIDEO_JOBS,
+        champs_jobs_params,
+        Some(options_jobs_params)
     ).await?;
 
     Ok(())

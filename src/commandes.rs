@@ -14,7 +14,7 @@ use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageM
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
 use millegrilles_common_rust::mongodb::Collection;
-use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::{MessageValide, MessageValideAction, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
@@ -903,11 +903,11 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
         "tuuid": commande.tuuid,
         CHAMP_FUUID: fuuid,
         CHAMP_MIMETYPE: commande.mimetype,
-        "codec_video": commande.codec_video,
-        "codec_audio": commande.codec_audio,
-        "resolution_video": commande.resolution_video,
-        "bitrate_video": commande.bitrate_video,
-        "bitrate_audio": commande.bitrate_audio,
+        "codecVideo": commande.codec_video,
+        "codecAudio": commande.codec_audio,
+        "resolutionVideo": commande.resolution_video,
+        "bitrateVideo": commande.bitrate_video,
+        "bitrateAudio": commande.bitrate_audio,
         "etat": 1,  // Pending
     };
     let set_ops = doc! {
@@ -961,5 +961,104 @@ async fn commande_video_get_job<M>(middleware: &M, m: MessageValideAction, gesti
     let commande: CommandeVideoGetJob = m.message.get_msg().map_contenu(None)?;
     debug!("Commande commande_video_get_job parsed : {:?}", commande);
 
-    todo!("fix me")
+    // Verifier autorisation
+    if ! m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
+        info!("commande_video_get_job Exchange n'est pas de niveau 2,3,4");
+        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
+    }
+    if ! m.verifier_roles(vec![RolesCertificats::Media]) {
+        info!("commande_video_get_job Role n'est pas media");
+        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre media)"}), None)?))
+    }
+
+    let prochaine_job = match commande.fuuid {
+        Some(fuuid) => match commande.cle_conversion {
+            Some(cle) => trouver_prochaine_job(middleware, Some(fuuid), Some(cle)).await?,
+            None => trouver_prochaine_job(middleware, None::<&str>, None::<&str>).await?
+        },
+        None => trouver_prochaine_job(middleware, None::<&str>, None::<&str>).await?
+    };
+
+    debug!("commande_video_get_job Prochaine job : {:?}", prochaine_job);
+
+    match prochaine_job {
+        Some(job) => {
+            let reponse_job = middleware.formatter_reponse(&job, None)?;
+            debug!("Reponse job : {:?}", reponse_job);
+            Ok(Some(reponse_job))
+        },
+        None => {
+            Ok(Some(middleware.formatter_reponse(&json!({"ok": true, "message": "Aucune job disponible"}), None)?))
+        }
+    }
+}
+
+async fn trouver_prochaine_job<M,S,T>(middleware: &M, fuuid: Option<S>, cle: Option<T>)
+    -> Result<Option<JobVideo>, Box<dyn Error>>
+    where
+        M: GenerateurMessages + MongoDao + ValidateurX509,
+        S: AsRef<str>,
+        T: AsRef<str>
+{
+    let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+
+    // Verifier si la job qui correspond au parametres est diponible
+    let job: Option<JobVideo> = match fuuid {
+        Some(f) => match cle {
+            Some(c) => {
+                let fuuid_ = f.as_ref();
+                let cle_ = c.as_ref();
+                debug!("trouver_prochaine_job Utiliser fuuid: {}, cle: {}", fuuid_, cle_);
+                let filtre = doc!{CHAMP_FUUID: fuuid_, CHAMP_CLE_CONVERSION: cle_};
+                match collection.find_one(filtre, None).await? {
+                    Some(r) => {
+                        debug!("trouver_prochaine_job (1) Charger job : {:?}", r);
+                        let job: JobVideo = convertir_bson_deserializable(r)?;
+                        // Verifier si la job est disponible
+                        if job.etat == VIDEO_CONVERSION_ETAT_PENDING {
+                            Some(job)
+                        } else {
+                            debug!("Job demandee ({}, {}) n'est pas pending", fuuid_, cle_);
+                            None
+                        }
+                    },
+                    None => None
+                }
+            },
+            None => None
+        },
+        None => None
+    };
+
+    let job: Option<JobVideo> = match job {
+        Some(j) => Some(j),
+        None => {
+            // Tenter de trouver la prochaine job disponible
+            let filtre = doc! {"etat": VIDEO_CONVERSION_ETAT_PENDING};
+            let hint = Some(Hint::Name("etat_jobs".into()));
+            let options = FindOneOptions::builder().hint(hint).build();
+            match collection.find_one(filtre, options).await? {
+                Some(d) => {
+                    debug!("trouver_prochaine_job (2) Charger job : {:?}", d);
+                    Some(convertir_bson_deserializable(d)?)
+                },
+                None => None
+            }
+        }
+    };
+
+    match &job {
+        Some(j) => {
+            // Marquer la job comme running
+            let filtre = doc!{CHAMP_FUUID: &j.fuuid, CHAMP_CLE_CONVERSION: &j.cle_conversion};
+            let ops = doc! {
+                "$set": {"etat": VIDEO_CONVERSION_ETAT_RUNNING},
+                "$currentDate": {CHAMP_MODIFICATION: true}
+            };
+            collection.update_one(filtre, ops, None).await?;
+        },
+        None => ()
+    }
+
+    Ok(job)
 }

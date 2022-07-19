@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use millegrilles_common_rust::formatteur_messages::DateEpochSeconds;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
+use millegrilles_common_rust::serde_json::Value;
 
 pub const DOMAINE_NOM: &str = "GrosFichiers";
 pub const NOM_COLLECTION_TRANSACTIONS: &str = "GrosFichiers";
@@ -207,4 +208,26 @@ pub struct CommandeVideoGetJob {
     pub fuuid: Option<String>,
     #[serde(rename="cleConversion")]
     pub cle_conversion: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JobVideo {
+    pub tuuid: String,
+    pub fuuid: String,
+    pub cle_conversion: String,
+    pub mimetype: String,
+    #[serde(rename="codecVideo")]
+    pub codec_video: String,
+    #[serde(rename="codecAudio")]
+    pub codec_audio: String,
+    #[serde(rename="resolutionVideo")]
+    pub resolution_video: u32,
+    #[serde(rename="bitrateVideo")]
+    pub bitrate_video: u32,
+    #[serde(rename="bitrateAudio")]
+    pub bitrate_audio: u32,
+    pub etat: i32,
+    #[serde(rename="_mg-derniere-modification", skip_serializing)]
+    pub date_modification: Value,
+    pub flag_media_retry: i32,
 }
