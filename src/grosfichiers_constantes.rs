@@ -7,6 +7,7 @@ pub const NOM_COLLECTION_TRANSACTIONS: &str = "GrosFichiers";
 pub const NOM_COLLECTION_FICHIERS_REP: &str = "GrosFichiers/fichiersRep";
 pub const NOM_COLLECTION_VERSIONS: &str = "GrosFichiers/versionsFichiers";
 pub const NOM_COLLECTION_DOCUMENTS: &str = "GrosFichiers/documents";
+pub const NOM_COLLECTION_VIDEO_JOBS: &str = "GrosFichiers/videoJobs";
 
 pub const DOMAINE_FICHIERS_NOM: &str = "fichiers";
 
@@ -45,6 +46,10 @@ pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";
 pub const COMMANDE_CONFIRMER_FICHIER_INDEXE: &str = "confirmerFichierIndexe";
 pub const COMMANDE_NOUVEAU_FICHIER: &str = "commandeNouveauFichier";
 pub const COMMANDE_ACTIVITE_FUUIDS: &str = "confirmerActiviteFuuids";
+pub const COMMANDE_VIDEO_TRANSCODER: &str = "transcoderVideo";
+pub const COMMANDE_VIDEO_ARRETER_CONVERSION: &str = "arreterVideo";
+pub const COMMANDE_VIDEO_DISPONIBLE: &str = "jobConversionVideoDisponible";
+pub const COMMANDE_VIDEO_GET_JOB: &str = "getJobVideo";
 
 pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
 pub const EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION: &str = "fuuidAjouterFichierCollection";
@@ -161,4 +166,35 @@ pub struct ImageConversion {
     pub resolution: Option<u32>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub data_chiffre: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeVideoConvertir {
+    pub tuuid: String,
+    pub fuuid: String,
+    pub mimetype: String,
+    #[serde(rename="codecVideo")]
+    pub codec_video: String,
+    #[serde(rename="codecAudio")]
+    pub codec_audio: String,
+    #[serde(rename="resolutionVideo")]
+    pub resolution_video: u32,
+    #[serde(rename="bitrateVideo")]
+    pub bitrate_video: u32,
+    #[serde(rename="bitrateAudio")]
+    pub bitrate_audio: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeVideoArreterConversion {
+    pub fuuid: String,
+    #[serde(rename="cleConversion")]
+    pub cle_conversion: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeVideoGetJob {
+    pub fuuid: Option<String>,
+    #[serde(rename="cleConversion")]
+    pub cle_conversion: Option<String>,
 }

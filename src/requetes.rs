@@ -339,22 +339,23 @@ async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValideAction
         CHAMP_SUPPRIME: false,
     };
 
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let options = FindOptions::builder().projection(doc!{CHAMP_FUUIDS: 1, CHAMP_SUPPRIME: 1}).build();
-    let mut curseur = collection.find(filtre, Some(options)).await?;
+    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    // let options = FindOptions::builder().projection(doc!{CHAMP_FUUIDS: 1, CHAMP_SUPPRIME: 1}).build();
+    // let mut curseur = collection.find(filtre, Some(options)).await?;
+    //
+    // let mut fuuids_acces = HashSet::new();
+    //
+    // while let Some(row) = curseur.next().await {
+    //     let doc_row = row?;
+    //     let doc_map: RowEtatFuuid = convertir_bson_deserializable(doc_row)?;
+    //     fuuids_acces.extend(doc_map.fuuids);
+    // }
 
-    let mut fuuids_acces = HashSet::new();
+    // let resultat: Vec<&String> = fuuids_acces.intersection(&hashset_requete).collect();
+    let resultat = verifier_acces_usager(middleware, &requete.user_id, &requete.fuuids).await?;
 
-    while let Some(row) = curseur.next().await {
-        let doc_row = row?;
-        let doc_map: RowEtatFuuid = convertir_bson_deserializable(doc_row)?;
-        fuuids_acces.extend(doc_map.fuuids);
-    }
-
-    let hashset_requete = HashSet::from_iter(requete.fuuids);
-
-    let resultat: Vec<&String> = fuuids_acces.intersection(&hashset_requete).collect();
-    let acces_tous = resultat.len() == hashset_requete.len();
+    // let hashset_requete = HashSet::from_iter(requete.fuuids);
+    let acces_tous = resultat.len() == requete.fuuids.len();
 
     let reponse = json!({ "fuuids_acces":  resultat , "acces_tous": acces_tous });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
@@ -929,6 +930,46 @@ async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction
     let confirmation = ReponseConfirmerEtatFuuids { fichiers: fichiers_confirmation };
     let reponse = json!({ "confirmation": confirmation });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+pub async fn verifier_acces_usager<M,S,T,V>(middleware: &M, user_id: S, fuuids: V)
+    -> Result<Vec<String>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+          S: AsRef<str>,
+          T: AsRef<str>,
+          V: AsRef<Vec<T>>
+{
+    let _user_id = user_id.as_ref();
+    let _fuuids: Vec<&str> = fuuids.as_ref().iter().map(|s| s.as_ref()).collect();
+
+    let mut filtre = doc! {
+        CHAMP_USER_ID: _user_id,
+        CHAMP_FUUIDS: {"$in": &_fuuids},
+        CHAMP_SUPPRIME: false,
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let options = FindOptions::builder().projection(doc!{CHAMP_FUUIDS: 1, CHAMP_SUPPRIME: 1}).build();
+    let mut curseur = collection.find(filtre, Some(options)).await?;
+
+    let mut fuuids_acces = HashSet::new();
+
+    while let Some(row) = curseur.next().await {
+        let doc_row = row?;
+        let doc_map: RowEtatFuuid = convertir_bson_deserializable(doc_row)?;
+        fuuids_acces.extend(doc_map.fuuids);
+    }
+
+    let hashset_requete = HashSet::from_iter(_fuuids);
+    let mut hashset_acces = HashSet::new();
+    for fuuid in &fuuids_acces {
+        hashset_acces.insert(fuuid.as_str());
+    }
+
+    let resultat: Vec<&&str> = hashset_acces.intersection(&hashset_requete).collect();
+
+    // String to_owned
+    Ok(resultat.into_iter().map(|s| s.to_string()).collect())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

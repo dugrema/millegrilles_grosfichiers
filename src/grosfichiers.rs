@@ -182,6 +182,9 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_ASSOCIER_VIDEO,
         COMMANDE_NOUVEAU_FICHIER,
         COMMANDE_INDEXER,
+        COMMANDE_VIDEO_TRANSCODER,
+        COMMANDE_VIDEO_ARRETER_CONVERSION,
+        COMMANDE_VIDEO_GET_JOB,
     ];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
@@ -386,6 +389,21 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         NOM_COLLECTION_VERSIONS,
         champs_index_media_traite,
         Some(options_index_media_traite)
+    ).await?;
+
+    // Index flag indexe
+    let options_fuuids_params = IndexOptions {
+        nom_index: Some(format!("fuuid_params")),
+        unique: true
+    };
+    let champs_fuuids_params = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_FUUID), direction: 1},
+        ChampIndex {nom_champ: String::from("cle_conversion"), direction: 1},
+    );
+    middleware.create_index(
+        NOM_COLLECTION_VIDEO_JOBS,
+        champs_fuuids_params,
+        Some(options_fuuids_params)
     ).await?;
 
     Ok(())

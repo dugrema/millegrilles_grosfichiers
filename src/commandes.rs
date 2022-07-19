@@ -24,7 +24,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 use crate::grosfichiers_constantes::*;
-use crate::requetes::mapper_fichier_db;
+use crate::requetes::{mapper_fichier_db, verifier_acces_usager};
 use crate::traitement_index::{ElasticSearchDao, emettre_commande_indexation, set_flag_indexe, traiter_index_manquant};
 use crate::traitement_media::{emettre_commande_media, traiter_media_batch};
 use crate::transactions::*;
@@ -76,6 +76,11 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         COMMANDE_COMPLETER_PREVIEWS => commande_completer_previews(middleware, m, gestionnaire).await,
         COMMANDE_CONFIRMER_FICHIER_INDEXE => commande_confirmer_fichier_indexe(middleware, m, gestionnaire).await,
         COMMANDE_NOUVEAU_FICHIER => commande_nouveau_fichier(middleware, m, gestionnaire).await,
+
+        // Video
+        COMMANDE_VIDEO_TRANSCODER => commande_video_convertir(middleware, m, gestionnaire).await,
+        COMMANDE_VIDEO_ARRETER_CONVERSION => commande_video_arreter_conversion(middleware, m, gestionnaire).await,
+        COMMANDE_VIDEO_GET_JOB => commande_video_get_job(middleware, m, gestionnaire).await,
 
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
@@ -828,4 +833,55 @@ async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValideAction, g
         debug!("commande_favoris_creerpath Path incomplet, poursuivre avec la transaction");
         Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
     }
+}
+
+async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("commande_video_convertir Consommer commande : {:?}", & m.message);
+    let commande: CommandeVideoConvertir = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_video_convertir parsed : {:?}", commande);
+
+    {   // Verifier acces
+        let user_id = m.get_user_id();
+        let delegation_globale = m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE);
+        if delegation_globale || m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
+            // Ok
+        } else if user_id.is_some() {
+            let u = user_id.expect("commande_video_convertir user_id");
+            let resultat = verifier_acces_usager(middleware, &u, vec![&commande.fuuid]).await?;
+            if ! resultat.contains(&commande.fuuid) {
+                debug!("commande_video_convertir verifier_exchanges : Usager n'a pas acces a fuuid {}", commande.fuuid);;
+                return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
+            }
+        } else {
+            debug!("commande_video_convertir verifier_exchanges : Certificat n'a pas l'acces requis (securite 2,3,4 ou user_id avec acces fuuid)");
+            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
+        }
+    }
+
+    Ok(middleware.reponse_ok()?)
+}
+
+async fn commande_video_arreter_conversion<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_video_arreter_conversion Consommer commande : {:?}", & m.message);
+    let commande: CommandeVideoArreterConversion = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_video_arreter_conversion parsed : {:?}", commande);
+
+    todo!("fix me")
+}
+
+async fn commande_video_get_job<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_video_get_job Consommer commande : {:?}", & m.message);
+    let commande: CommandeVideoGetJob = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_video_get_job parsed : {:?}", commande);
+
+    todo!("fix me")
 }
