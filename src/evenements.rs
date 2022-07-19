@@ -35,6 +35,7 @@ where
             evenement_confirmer_etat_fuuids(middleware, m).await?;
             Ok(None)
         },
+        EVENEMENT_TRANSCODAGE_PROGRES => evenement_transcodage_progres(middleware, m).await,
         _ => Err(format!("grosfichiers.consommer_evenement: Mauvais type d'action pour un evenement : {}", m.action))?,
     }
 }
@@ -58,6 +59,56 @@ async fn evenement_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideActi
 
     Ok(None)
 }
+
+async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValideAction)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao,
+{
+    let uuid_transaction = m.correlation_id.clone();
+
+    if !m.verifier_exchanges(vec![L2Prive]) {
+        error!("evenement_transcodage_progres Acces refuse, certificat n'est pas d'un exchange L2 : {:?}", uuid_transaction);
+        return Ok(None)
+    }
+    if !m.verifier_roles(vec![RolesCertificats::Media]) {
+        error!("evenement_transcodage_progres Acces refuse, certificat n'est pas de role media");
+        return Ok(None)
+    }
+
+    debug!("evenement_transcodage_progres Message : {:?}", & m.message);
+    let evenement: EvenementTranscodageProgres = m.message.get_msg().map_contenu(None)?;
+    debug!("evenement_transcodage_progres parsed : {:?}", evenement);
+
+    let height = match evenement.height {
+        Some(h) => h,
+        None => {
+            // Height/resolution n'est pas fourni, rien a faire
+            return Ok(None)
+        }
+    };
+
+    let cle_video = format!("{};{};{}", evenement.mimetype, height, evenement.video_bitrate);
+    let filtre = doc! {
+        CHAMP_FUUID: &evenement.fuuid,
+        CHAMP_CLE_CONVERSION: &cle_video
+    };
+
+    let mut ops = doc! {
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    match evenement.pct_progres {
+        Some(p) => {
+            let set_ops = doc! {"pct_progres": p};
+            ops.insert("$set", set_ops);
+        },
+        None => ()
+    }
+    let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+    collection.update_one(filtre, ops, None).await?;
+
+    Ok(None)
+}
+
 
 async fn repondre_fuuids<M>(middleware: &M, evenement_fuuids: &Vec<String>)
     -> Result<(), Box<dyn Error>>
@@ -113,6 +164,18 @@ async fn repondre_fuuids<M>(middleware: &M, evenement_fuuids: &Vec<String>)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct EvenementConfirmerEtatFuuids {
     fuuids: Vec<String>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct EvenementTranscodageProgres {
+    fuuid: String,
+    mimetype: String,
+    #[serde(rename="videoBitrate")]
+    video_bitrate: u32,
+    height: Option<u32>,
+    #[serde(rename="pctProgres")]
+    pct_progres: Option<i32>,
+    passe: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

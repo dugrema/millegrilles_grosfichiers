@@ -6,6 +6,7 @@ use log::{debug, error, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::ValidateurX509;
+use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
@@ -159,4 +160,83 @@ pub async fn traiter_media_batch<M>(middleware: &M, limite: i64) -> Result<Vec<S
     }
 
     Ok(tuuids)
+}
+
+pub async fn entretien_video_jobs<M>(middleware: &M) -> Result<(), Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    debug!("entretien_video_jobs Debut");
+
+    let date_now = Utc::now();
+    let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+
+    // Expirer jobs en situation de timeout pour persisting
+    {
+        let expiration_persisting = date_now - Duration::seconds(VIDEO_CONVERSION_TIMEOUT_PERSISTING as i64);
+        let filtre = doc! {
+            "etat": VIDEO_CONVERSION_ETAT_PERSISTING,
+            CHAMP_MODIFICATION: {"$lte": expiration_persisting}
+        };
+        let ops = doc! {
+            "$set": { "etat": VIDEO_CONVERSION_ETAT_PENDING },
+            "$inc": { CHAMP_FLAG_MEDIA_RETRY: 1 },
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        collection.update_many(filtre, ops, None).await?;
+    }
+
+    // Expirer jobs en situation de timeout pour running, erreur
+    {
+        let expiration_persisting = date_now - Duration::seconds(VIDEO_CONVERSION_TIMEOUT_RUNNING as i64);
+        let filtre = doc! {
+            "etat": {"$in": vec![VIDEO_CONVERSION_ETAT_RUNNING, VIDEO_CONVERSION_ETAT_ERROR]},
+            CHAMP_MODIFICATION: {"$lte": expiration_persisting}
+        };
+        let ops = doc! {
+            "$set": { "etat": VIDEO_CONVERSION_ETAT_PENDING },
+            "$inc": { CHAMP_FLAG_MEDIA_RETRY: 1 },
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        collection.update_many(filtre, ops, None).await?;
+    }
+
+    // Retirer jobs qui sont avec retry_count depasse
+    {
+        let filtre = doc! {
+            "etat": {"$ne": VIDEO_CONVERSION_ETAT_ERROR_TOOMANYRETRIES},
+            CHAMP_FLAG_MEDIA_RETRY: {"$gte": MEDIA_RETRY_LIMIT}
+        };
+        let ops = doc! {
+            "$set": { "etat": VIDEO_CONVERSION_ETAT_ERROR_TOOMANYRETRIES }
+        };
+        collection.update_many(filtre, ops, None).await?;
+    }
+
+    // Re-emettre toutes les jobs pending
+    {
+        let filtre = doc! { "etat": VIDEO_CONVERSION_ETAT_PENDING };
+        let hint = Hint::Name("etat_jobs".into());
+        let projection = doc! {CHAMP_FUUID: 1, CHAMP_CLE_CONVERSION: 1};
+        let options = FindOptions::builder().hint(hint).build();
+        let mut curseur = collection.find(filtre, options).await?;
+
+        let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS, COMMANDE_VIDEO_DISPONIBLE)
+            .exchanges(vec![Securite::L2Prive])
+            .build();
+        while let Some(d) = curseur.next().await {
+            let job_cles: JobCles = convertir_bson_deserializable(d?)?;
+            let commande = json!({CHAMP_FUUID: job_cles.fuuid, CHAMP_CLE_CONVERSION: job_cles.cle_conversion});
+            middleware.transmettre_commande(routage.clone(), &commande, false).await?;
+        }
+    }
+
+    debug!("entretien_video_jobs Fin");
+
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct JobCles {
+    fuuid: String,
+    cle_conversion: String,
 }

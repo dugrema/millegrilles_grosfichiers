@@ -36,7 +36,7 @@ use crate::evenements::consommer_evenement;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{consommer_requete, mapper_fichier_db};
 use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl, InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche, traiter_index_manquant};
-use crate::traitement_media::traiter_media_batch;
+use crate::traitement_media::{entretien_video_jobs, traiter_media_batch};
 use crate::transactions::*;
 
 #[derive(Clone, Debug)]
@@ -200,6 +200,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     }
 
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_CONFIRMER_ETAT_FUUIDS), exchange: Securite::L2Prive});
+    rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.*.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_TRANSCODAGE_PROGRES), exchange: Securite::L2Prive});
 
     let mut queues = Vec::new();
 
@@ -450,6 +451,9 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
         debug!("Generer index et media manquants");
         if let Err(e) = traiter_media_batch(middleware, 1000).await {
             warn!("Erreur traitement media batch : {:?}", e);
+        }
+        if let Err(e) = entretien_video_jobs(middleware).await {
+            warn!("Erreur traitement media entretien_video_jobs : {:?}", e);
         }
         if let Err(e) = traiter_index_manquant(middleware, gestionnaire, 1000).await {
             warn!("Erreur traitement index manquant batch : {:?}", e);

@@ -65,6 +65,7 @@ pub const EVENEMENT_FUUID_RETIRER_COLLECTION: &str = "fuuidRetirerCollection";
 pub const EVENEMENT_FUUID_SUPPRIMER_DOCUMENT: &str = "fuuidSupprimerDocument";
 pub const EVENEMENT_AJOUTER_FICHIER: &str = "fuuidNouvelleVersion";
 pub const EVENEMENT_CONFIRMER_ETAT_FUUIDS: &str = "confirmerEtatFuuids";
+pub const EVENEMENT_TRANSCODAGE_PROGRES: &str = "transcodageProgres";
 
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 pub const CHAMP_FUUIDS: &str = "fuuids";
