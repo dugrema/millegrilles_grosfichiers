@@ -410,7 +410,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
     // Index conversion video getJob
     let options_jobs_params = IndexOptions {
         nom_index: Some(format!("etat_jobs")),
-        unique: true
+        unique: false
     };
     let champs_jobs_params = vec!(
         ChampIndex {nom_champ: String::from("etat"), direction: 1},
