@@ -14,7 +14,7 @@ use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageM
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
 use millegrilles_common_rust::mongodb::Collection;
-use millegrilles_common_rust::mongodb::options::{FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::{MessageValide, MessageValideAction, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
@@ -843,6 +843,8 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
     let commande: CommandeVideoConvertir = m.message.get_msg().map_contenu(None)?;
     debug!("Commande commande_video_convertir parsed : {:?}", commande);
 
+    let fuuid = commande.fuuid.as_str();
+
     {   // Verifier acces
         let user_id = m.get_user_id();
         let delegation_globale = m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE);
@@ -850,15 +852,91 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
             // Ok
         } else if user_id.is_some() {
             let u = user_id.expect("commande_video_convertir user_id");
-            let resultat = verifier_acces_usager(middleware, &u, vec![&commande.fuuid]).await?;
+            let resultat = verifier_acces_usager(middleware, &u, vec![fuuid]).await?;
             if ! resultat.contains(&commande.fuuid) {
-                debug!("commande_video_convertir verifier_exchanges : Usager n'a pas acces a fuuid {}", commande.fuuid);;
+                debug!("commande_video_convertir verifier_exchanges : Usager n'a pas acces a fuuid {}", fuuid);;
                 return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
             }
         } else {
             debug!("commande_video_convertir verifier_exchanges : Certificat n'a pas l'acces requis (securite 2,3,4 ou user_id avec acces fuuid)");
             return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
         }
+    }
+
+    // Verifier si le fichier a deja un video correspondant
+    let cle_video = format!("{};{};{}", commande.mimetype, commande.resolution_video, commande.bitrate_video);
+    let filtre_fichier = doc!{CHAMP_FUUIDS: fuuid};
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let info_fichier: FichierDetail = match collection.find_one(filtre_fichier, None).await? {
+        Some(f) => convertir_bson_deserializable(f)?,
+        None => {
+            info!("commande_video_convertir verifier_exchanges : Fichier inconnu {}", fuuid);
+            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichier inconnu"}), None)?))
+        }
+    };
+
+    let version_courante = match info_fichier.version_courante {
+        Some(v) => v,
+        None => {
+            info!("commande_video_convertir Fichier video en etat incorrect (version_courante manquant) {}", fuuid);
+            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Information fichier corrompue"}), None)?))
+        }
+    };
+
+    match version_courante.video {
+        Some(v) => {
+            // Verifier si le video existe deja
+            match v.get(cle_video.as_str()) {
+                Some(v) => {
+                    info!("commande_video_convertir Fichier video existe deja {} pour {}", cle_video, fuuid);
+                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Video dans ce format existe deja"}), None)?))
+                },
+                None => ()  // Ok, le video n'existe pas
+            }
+        },
+        None => ()  // Ok, aucuns videos existant
+    };
+
+    // Conserver l'information de conversion, emettre nouveau message de job
+    // Note : job lock fait plus tard avant conversion, duplication de messages est OK
+    let insert_ops = doc! {
+        "tuuid": commande.tuuid,
+        CHAMP_FUUID: fuuid,
+        CHAMP_MIMETYPE: commande.mimetype,
+        "codec_video": commande.codec_video,
+        "codec_audio": commande.codec_audio,
+        "resolution_video": commande.resolution_video,
+        "bitrate_video": commande.bitrate_video,
+        "bitrate_audio": commande.bitrate_audio,
+        "etat": 1,  // Pending
+    };
+    let set_ops = doc! {
+        CHAMP_FLAG_MEDIA_RETRY: 0,  // Reset le retry count automatique
+    };
+    let ops = doc! {
+        "$set": set_ops,
+        "$setOnInsert": insert_ops,
+        "$currentDate": {CHAMP_MODIFICATION: true},
+    };
+    let filtre_video = doc! {CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video};
+    let collection_video = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+    let options = FindOneAndUpdateOptions::builder().upsert(true).build();
+    let emettre_job = match collection_video.find_one_and_update(filtre_video, ops, options).await? {
+        Some(d) => {
+            debug!("commande_video_convertir Etat precedent : {:?}", d);
+            // Verifier l'etat du document precedent (e.g. pending, erreur, en cours, etc)
+
+            true  // Emettre la job
+        },
+        None => true  // Nouvelle entree, emettre la nouvelle job.
+    };
+
+    if emettre_job {
+        let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS, COMMANDE_VIDEO_DISPONIBLE)
+            .exchanges(vec![Securite::L2Prive])
+            .build();
+        let commande = json!({CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video});
+        middleware.transmettre_commande(routage, &commande, false).await?;
     }
 
     Ok(middleware.reponse_ok()?)

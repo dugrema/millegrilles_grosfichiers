@@ -923,6 +923,15 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
         }
     }
 
+    {   // Supprimer job dans table videos
+        let collection_video = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+        let filtre = doc! {CHAMP_FUUID: &transaction_mappee.fuuid, CHAMP_CLE_CONVERSION: &cle_video};
+        if let Err(e) = collection_video.delete_one(filtre, None).await {
+            error!("transactions.transaction_associer_conversions Erreur suppression job video fuuid {:?} cle {} : {:?}",
+                &transaction_mappee.fuuid, &cle_video, e);
+        }
+    }
+
     // Emettre fichier pour que tous les clients recoivent la mise a jour
     if let Some(t) = tuuid.as_ref() {
         emettre_evenement_maj_fichier(middleware, t, EVENEMENT_FUUID_ASSOCIER_VIDEO).await?;

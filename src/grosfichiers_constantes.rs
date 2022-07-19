@@ -84,10 +84,20 @@ pub const CHAMP_FLAG_MEDIA_TRAITE: &str = "flag_media_traite";
 pub const CHAMP_FLAG_MEDIA_RETRY: &str = "flag_media_retry";
 pub const CHAMP_FLAG_MEDIA_ERREUR: &str = "flag_media_erreur";
 pub const CHAMP_USER_ID: &str = "user_id";
+pub const CHAMP_CLE_CONVERSION: &str = "cle_conversion";
 
 pub const ERREUR_MEDIA_TOOMANYRETRIES: i32 = 1;
 
 pub const MEDIA_RETRY_LIMIT: i32 = 5;
+
+pub const VIDEO_CONVERSION_ETAT_PENDING: i32 = 1;
+pub const VIDEO_CONVERSION_ETAT_RUNNING: i32 = 2;
+pub const VIDEO_CONVERSION_ETAT_PERSISTING: i32 = 3;
+pub const VIDEO_CONVERSION_ETAT_ERROR: i32 = 4;
+pub const VIDEO_CONVERSION_ETAT_ERROR_TOOMANYRETRIES: i32 = 5;
+
+pub const VIDEO_CONVERSION_TIMEOUT_RUNNING: i32 = 2 * 60;  // Secondes
+pub const VIDEO_CONVERSION_TIMEOUT_PERSISTING: i32 = 60 * 60;  // Secondes
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FichierDetail {
