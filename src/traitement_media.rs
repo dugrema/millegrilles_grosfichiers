@@ -62,22 +62,24 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
                         "codecVideo": "h264",
                         "codecAudio": "aac",
                         "mimetype": "video/mp4",
-                        "resolutionVideo": 240,
+                        "resolutionVideo": 270,
+                        "qualityVideo": 28,
                         "bitrateVideo": 250000,
                         "bitrateAudio": 64000,
+                        "preset": "medium",
                     });
-                    let commande_vp9 = json!({
-                        "tuuid": tuuid_str,
-                        "fuuid": fuuid_str,
-                        "codecVideo": "vp9",
-                        "codecAudio": "opus",
-                        "mimetype": "video/webm",
-                        "resolutionVideo": 320,
-                        "bitrateVideo": 250000,
-                        "bitrateAudio": 64000,
-                    });
-                    middleware.transmettre_commande(routage_video.clone(), &commande_mp4, false).await?;
-                    middleware.transmettre_commande(routage_video, &commande_vp9, false).await?;
+                    // let commande_vp9 = json!({
+                    //     "tuuid": tuuid_str,
+                    //     "fuuid": fuuid_str,
+                    //     "codecVideo": "vp9",
+                    //     "codecAudio": "opus",
+                    //     "mimetype": "video/webm",
+                    //     "resolutionVideo": 320,
+                    //     "bitrateVideo": 250000,
+                    //     "bitrateAudio": 64000,
+                    // });
+                    middleware.transmettre_commande(routage_video, &commande_mp4, false).await?;
+                    // middleware.transmettre_commande(routage_video, &commande_vp9, false).await?;
 
                     // Faire generer le poster
                     ACTION_GENERER_POSTER_VIDEO

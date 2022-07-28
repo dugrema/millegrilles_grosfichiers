@@ -87,7 +87,15 @@ async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValideAction
         }
     };
 
-    let cle_video = format!("{};{};{}", evenement.mimetype, height, evenement.video_bitrate);
+    let bitrate_quality = match &evenement.video_quality {
+        Some(q) => q.to_owned(),
+        None => match &evenement.video_bitrate {
+            Some(b) => b.to_owned() as i32,
+            None => 0
+        }
+    };
+
+    let cle_video = format!("{};{};{}p;{}", evenement.mimetype, evenement.video_codec, height, bitrate_quality);
     let filtre = doc! {
         CHAMP_FUUID: &evenement.fuuid,
         CHAMP_CLE_CONVERSION: &cle_video
@@ -170,8 +178,12 @@ struct EvenementConfirmerEtatFuuids {
 struct EvenementTranscodageProgres {
     fuuid: String,
     mimetype: String,
+    #[serde(rename="videoCodec")]
+    video_codec: String,
     #[serde(rename="videoBitrate")]
-    video_bitrate: u32,
+    video_bitrate: Option<u32>,
+    #[serde(rename="videoQuality")]
+    video_quality: Option<i32>,
     height: Option<u32>,
     #[serde(rename="pctProgres")]
     pct_progres: Option<i32>,

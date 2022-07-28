@@ -867,10 +867,29 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
     };
 
     let resolution = match transaction_mappee.height {
-        Some(inner) => inner,
-        None => 240
+        Some(height) => match transaction_mappee.width {
+            Some(width) => {
+                // La resolution est le plus petit des deux nombres
+                if width < height {
+                    width
+                } else {
+                    height
+                }
+            },
+            None => height,
+        },
+        None => 0
     };
-    let cle_video = format!("{};{};{}", &transaction_mappee.mimetype, resolution, &transaction_mappee.bitrate);
+    let bitrate_quality = {
+        match &transaction_mappee.quality {
+            Some(q) => q.to_owned(),
+            None => match &transaction_mappee.bitrate {
+                Some(b) => b.to_owned() as i32,
+                None => 0
+            }
+        }
+    };
+    let cle_video = format!("{};{};{}p;{}", &transaction_mappee.mimetype, &transaction_mappee.codec, resolution, bitrate_quality);
 
     // MAJ de la version du fichier
     {

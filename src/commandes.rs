@@ -864,7 +864,14 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
     }
 
     // Verifier si le fichier a deja un video correspondant
-    let cle_video = format!("{};{};{}", commande.mimetype, commande.resolution_video, commande.bitrate_video);
+    let bitrate_quality = match &commande.quality_video {
+        Some(q) => q.to_owned(),
+        None => match &commande.bitrate_video {
+            Some(b) => b.to_owned() as i32,
+            None => 0,
+        }
+    };
+    let cle_video = format!("{};{};{}p;{}", commande.mimetype, commande.codec_video, commande.resolution_video, bitrate_quality);
     let filtre_fichier = doc!{CHAMP_FUUIDS: fuuid};
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let info_fichier: FichierDetail = match collection.find_one(filtre_fichier, None).await? {
@@ -905,9 +912,11 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
         CHAMP_MIMETYPE: commande.mimetype,
         "codecVideo": commande.codec_video,
         "codecAudio": commande.codec_audio,
+        "qualityVideo": commande.quality_video,
         "resolutionVideo": commande.resolution_video,
         "bitrateVideo": commande.bitrate_video,
         "bitrateAudio": commande.bitrate_audio,
+        "preset": commande.preset,
         "etat": 1,  // Pending
     };
     let set_ops = doc! {

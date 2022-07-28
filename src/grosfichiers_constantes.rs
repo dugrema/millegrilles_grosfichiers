@@ -164,7 +164,8 @@ pub struct TransactionAssocierVideo {
     pub mimetype: String,
     pub fuuid_video: String,
     pub codec: String,
-    pub bitrate: u32,
+    pub bitrate: Option<u32>,
+    pub quality: Option<i32>,
     pub taille_fichier: u64,
 }
 
@@ -191,10 +192,13 @@ pub struct CommandeVideoConvertir {
     pub codec_audio: String,
     #[serde(rename="resolutionVideo")]
     pub resolution_video: u32,
+    #[serde(rename="qualityVideo")]
+    pub quality_video: Option<i32>,
     #[serde(rename="bitrateVideo")]
-    pub bitrate_video: u32,
+    pub bitrate_video: Option<u32>,
     #[serde(rename="bitrateAudio")]
     pub bitrate_audio: u32,
+    pub preset: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -223,10 +227,13 @@ pub struct JobVideo {
     pub codec_audio: String,
     #[serde(rename="resolutionVideo")]
     pub resolution_video: u32,
+    #[serde(rename="qualityVideo")]
+    pub quality_video: Option<i32>,
     #[serde(rename="bitrateVideo")]
-    pub bitrate_video: u32,
+    pub bitrate_video: Option<u32>,
     #[serde(rename="bitrateAudio")]
     pub bitrate_audio: u32,
+    pub preset: Option<String>,
     pub etat: i32,
     #[serde(rename="_mg-derniere-modification", skip_serializing)]
     pub date_modification: Value,
