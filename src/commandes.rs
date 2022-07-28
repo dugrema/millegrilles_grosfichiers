@@ -180,13 +180,11 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValideAction
     if ! m.verifier_exchanges(vec![L4Secure]) {
         Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas L4Secure) pour message {:?}", m.correlation_id))?
     }
+
+    // Autorisation - doit etre signe par media
     if ! m.verifier_roles(vec![RolesCertificats::Media]) {
         Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas media) pour message {:?}", m.correlation_id))?
     }
-
-    // Autorisation - doit etre signe par media
-
-
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)

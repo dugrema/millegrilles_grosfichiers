@@ -323,7 +323,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         // On emet les messages de traitement uniquement si la transaction est nouvelle
         if flag_media == true {
             debug!("Emettre une commande de conversion pour media {}", fuuid);
-            match emettre_commande_media(middleware, &tuuid, &fuuid, &mimetype).await {
+            match emettre_commande_media(middleware, &tuuid, &fuuid, &mimetype, &nom_fichier).await {
                 Ok(()) => (),
                 Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
             }
@@ -767,6 +767,12 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
         if let Some(inner) = transaction_mappee.height {
             set_ops.insert("height", inner);
         }
+        if let Some(inner) = transaction_mappee.video_codec.as_ref() {
+            set_ops.insert("videoCodec", inner);
+        }
+        if let Some(inner) = transaction_mappee.duration.as_ref() {
+            set_ops.insert("duration", inner);
+        }
         for (fuuid, mimetype) in fuuid_mimetypes.iter() {
             set_ops.insert(format!("{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
         }
@@ -812,6 +818,12 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
         }
         if let Some(inner) = &transaction_mappee.height {
             set_ops.insert("version_courante.height", inner);
+        }
+        if let Some(inner) = transaction_mappee.video_codec.as_ref() {
+            set_ops.insert("version_courante.videoCodec", inner);
+        }
+        if let Some(inner) = transaction_mappee.duration.as_ref() {
+            set_ops.insert("version_courante.duration", inner);
         }
         for (fuuid, mimetype) in fuuid_mimetypes.iter() {
             set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);

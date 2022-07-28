@@ -133,7 +133,11 @@ pub struct DBFichierVersionDetail {
     #[serde(skip_serializing_if="Option::is_none")]
     pub height: Option<u32>,
     #[serde(skip_serializing_if="Option::is_none")]
-    pub weight: Option<u32>,
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub duration: Option<f32>,
+    #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
+    pub video_codec: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub images: Option<HashMap<String, ImageConversion>>,
     #[serde(skip_serializing_if="Option::is_none")]
@@ -153,6 +157,9 @@ pub struct TransactionAssocierConversions {
     pub mimetype: Option<String>,
     pub images: HashMap<String, ImageConversion>,
     pub anime: Option<bool>,
+    pub duration: Option<f32>,
+    #[serde(rename="videoCodec")]
+    pub video_codec: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
