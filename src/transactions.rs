@@ -1466,26 +1466,25 @@ async fn transaction_supprimer_video<M, T>(middleware: &M, transaction: T) -> Re
     // }
 
     let mut labels_videos = Vec::new();
-    {
-        let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
-
-        let collection_fichier_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-
-        let projection = doc!{"version_courante.video": true};
-        // let options = FindOneOptions::builder().projection(projection).build();
-        let doc_video: FichierDetail = match collection_fichier_rep.find_one(filtre.clone(), None).await {
-            Ok(d) => match d {
-                Some(d) => match convertir_bson_deserializable(d) {
-                    Ok(d) => match d {
-                        Some(d) => d,
-                        None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?,
-                    },
-                    Err(e) => Err(format!("transaction_supprimer_video Erreur conversion info document : {:?}", e))?
+    let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
+    let collection_fichier_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let doc_video: FichierDetail = match collection_fichier_rep.find_one(filtre.clone(), None).await {
+        Ok(d) => match d {
+            Some(d) => match convertir_bson_deserializable(d) {
+                Ok(d) => match d {
+                    Some(d) => d,
+                    None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?,
                 },
-                None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
+                Err(e) => Err(format!("transaction_supprimer_video Erreur conversion info document : {:?}", e))?
             },
-            Err(e) => Err(format!("transaction_supprimer_video Erreur chargement info document : {:?}", e))?
-        };
+            None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
+        },
+        Err(e) => Err(format!("transaction_supprimer_video Erreur chargement info document : {:?}", e))?
+    };
+
+    let tuuid = doc_video.tuuid.as_str();
+
+    {
         debug!("Information doc videos a supprimer : {:?}", doc_video);
         let mut ops_unset = doc!{};
         if let Some(version_courante) = doc_video.version_courante {
@@ -1532,6 +1531,9 @@ async fn transaction_supprimer_video<M, T>(middleware: &M, transaction: T) -> Re
             Err(e) => Err(format!("transaction_supprimer_video Erreur update_one collection fichiers rep : {:?}", e))?
         }
     }
+
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
     match middleware.reponse_ok() {
