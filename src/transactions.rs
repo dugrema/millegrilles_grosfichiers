@@ -907,9 +907,93 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
     };
     let cle_video = format!("{};{};{}p;{}", &transaction_mappee.mimetype, &transaction_mappee.codec, resolution, bitrate_quality);
 
+    // Appliquer le filtre sur la version courante (pour l'usager si applicable)
+    let mut fuuid_video_existant = None;
+    {
+        let mut filtre = doc! {
+            CHAMP_TUUID: &transaction_mappee.tuuid,
+            CHAMP_FUUID_V_COURANTE: &transaction_mappee.fuuid,
+        };
+
+        if let Some(user_id) = transaction_mappee.user_id.as_ref() {
+            // Utiliser un filtre pour un usager
+            filtre.insert(CHAMP_USER_ID, user_id.to_owned());
+        }
+
+        // Verifier si le video existe deja - retirer le fuuid_video si c'est le cas
+        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+        {
+            let doc_existant: Option<FichierDetail> = match collection.find_one(filtre.clone(), None).await {
+                Ok(d) => match d {
+                    Some(d) => match convertir_bson_deserializable(d) {
+                        Ok(d) => d,
+                        Err(e) => Err(format!("transaction_associer_video Erreur conversion bson fichier (video) : {:?}", e))?
+                    },
+                    None => None
+                },
+                Err(e) => Err(format!("transaction_associer_video Erreur chargement fichier (video) : {:?}", e))?
+            };
+            if let Some(d) = doc_existant {
+                if let Some(version_courante) = d.version_courante {
+                    if let Some(v) = version_courante.video {
+                        if let Some(video) = v.get(cle_video.as_str()) {
+                            fuuid_video_existant = Some(video.fuuid_video.to_owned());
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(fuuid_video) = fuuid_video_existant.as_ref() {
+            let ops = doc! {
+                "$pull": {"fuuids": &fuuid_video},
+                "$unset": {format!("version_courante.fuuidMimetypes.{}", fuuid_video): true},
+            };
+            match collection.update_many(filtre.clone(), ops, None).await {
+                Ok(inner) => debug!("transactions.transaction_associer_conversions Suppression video : {:?}", inner),
+                Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur suppression video existant : {:?}", e))?
+            }
+        }
+
+        let mut set_ops = doc! {
+            format!("version_courante.video.{}", &cle_video): &doc_video,
+        };
+        for (fuuid, mimetype) in fuuid_mimetypes.iter() {
+            set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
+        }
+
+        // Combiner les fuuids hors de l'info de version
+        let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
+
+        let mut ops = doc! {
+            "$set": set_ops,
+            "$addToSet": add_to_set,
+            "$currentDate": { CHAMP_MODIFICATION: true }
+        };
+
+        match collection.update_many(filtre, ops, None).await {
+            Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
+            Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
+        }
+    }
+
     // MAJ de la version du fichier
     {
         let filtre = doc! { CHAMP_FUUID: &transaction_mappee.fuuid };
+
+        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+
+        if let Some(fuuid_video) = fuuid_video_existant.as_ref() {
+            let ops = doc! {
+                "$pull": {"fuuids": &fuuid_video},
+                "$unset": {format!("fuuidMimetypes.{}", fuuid_video): true},
+            };
+            match collection.update_many(filtre.clone(), ops, None).await {
+                Ok(inner) => debug!("transactions.transaction_associer_conversions Suppression video : {:?}", inner),
+                Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur suppression video existant : {:?}", e))?
+            }
+        }
+
         let mut set_ops = doc! {
             format!("video.{}", &cle_video): &doc_video,
         };
@@ -922,36 +1006,6 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
             "$addToSet": add_to_set,
             "$currentDate": { CHAMP_MODIFICATION: true }
         };
-        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-        match collection.update_one(filtre, ops, None).await {
-            Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
-            Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
-        }
-    }
-
-    // S'assurer d'appliquer le fitre sur la version courante
-    {
-        let filtre = doc! {
-            CHAMP_TUUID: &transaction_mappee.tuuid,
-            CHAMP_FUUID_V_COURANTE: &transaction_mappee.fuuid,
-        };
-
-        let mut set_ops = doc! {
-            format!("version_courante.video.{}", &cle_video): &doc_video,
-        };
-        for (fuuid, mimetype) in fuuid_mimetypes.iter() {
-            set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
-        }
-
-        // Combiner les fuuids hors de l'info de version
-        let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
-
-        let ops = doc! {
-            "$set": set_ops,
-            "$addToSet": add_to_set,
-            "$currentDate": { CHAMP_MODIFICATION: true }
-        };
-        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
         match collection.update_one(filtre, ops, None).await {
             Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
             Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?

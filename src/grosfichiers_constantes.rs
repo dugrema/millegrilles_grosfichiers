@@ -175,6 +175,7 @@ pub struct TransactionAssocierVideo {
     pub bitrate: Option<u32>,
     pub quality: Option<i32>,
     pub taille_fichier: u64,
+    pub user_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
