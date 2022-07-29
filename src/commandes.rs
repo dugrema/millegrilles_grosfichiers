@@ -844,14 +844,14 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
 
     let fuuid = commande.fuuid.as_str();
 
+    let user_id = m.get_user_id();
     {   // Verifier acces
-        let user_id = m.get_user_id();
         let delegation_globale = m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE);
         if delegation_globale || m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
             // Ok
         } else if user_id.is_some() {
-            let u = user_id.expect("commande_video_convertir user_id");
-            let resultat = verifier_acces_usager(middleware, &u, vec![fuuid]).await?;
+            let u = user_id.as_ref().expect("commande_video_convertir user_id");
+            let resultat = verifier_acces_usager(middleware, u, vec![fuuid]).await?;
             if ! resultat.contains(&commande.fuuid) {
                 debug!("commande_video_convertir verifier_exchanges : Usager n'a pas acces a fuuid {}", fuuid);;
                 return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
@@ -908,6 +908,7 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
     let insert_ops = doc! {
         "tuuid": commande.tuuid,
         CHAMP_FUUID: fuuid,
+        CHAMP_USER_ID: user_id,
         CHAMP_MIMETYPE: commande.mimetype,
         "codecVideo": commande.codec_video,
         "codecAudio": commande.codec_audio,

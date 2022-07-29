@@ -234,6 +234,7 @@ pub struct JobVideo {
     pub tuuid: String,
     pub fuuid: String,
     pub cle_conversion: String,
+    pub user_id: Option<String>,
     pub mimetype: String,
     #[serde(rename="codecVideo")]
     pub codec_video: String,
