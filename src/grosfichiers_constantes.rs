@@ -41,6 +41,7 @@ pub const TRANSACTION_DECRIRE_FICHIER: &str = "decrireFichier";
 pub const TRANSACTION_DECRIRE_COLLECTION: &str = "decrireCollection";
 pub const TRANSACTION_COPIER_FICHIER_TIERS: &str = "copierFichierTiers";
 pub const TRANSACTION_FAVORIS_CREERPATH: &str = "favorisCreerPath";
+pub const TRANSACTION_SUPPRIMER_VIDEO: &str = "supprimerVideo";
 
 pub const COMMANDE_INDEXER: &str = "indexerContenu";
 pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";
@@ -220,6 +221,11 @@ pub struct CommandeVideoGetJob {
     pub fuuid: Option<String>,
     #[serde(rename="cleConversion")]
     pub cle_conversion: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionSupprimerVideo {
+    pub fuuid_video: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

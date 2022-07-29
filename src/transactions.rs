@@ -14,14 +14,16 @@ use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMil
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::middleware::sauvegarder_transaction_recue;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao, verifier_erreur_duplication_mongo};
-use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOptions, ReturnDocument, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::transactions::Transaction;
+use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 
 use crate::grosfichiers_constantes::*;
+use crate::requetes::verifier_acces_usager;
 use crate::traitement_media::emettre_commande_media;
 use crate::traitement_index::emettre_commande_indexation;
 
@@ -45,7 +47,8 @@ where
         TRANSACTION_DECRIRE_FICHIER |
         TRANSACTION_DECRIRE_COLLECTION |
         TRANSACTION_COPIER_FICHIER_TIERS |
-        TRANSACTION_FAVORIS_CREERPATH => {
+        TRANSACTION_FAVORIS_CREERPATH |
+        TRANSACTION_SUPPRIMER_VIDEO => {
             match m.verifier_exchanges(vec![Securite::L4Secure]) {
                 true => Ok(()),
                 false => Err(format!("transactions.consommer_transaction: Trigger cedule autorisation invalide (pas 4.secure)"))
@@ -87,6 +90,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_DECRIRE_COLLECTION => transaction_decire_collection(middleware, transaction).await,
         TRANSACTION_COPIER_FICHIER_TIERS => transaction_copier_fichier_tiers(gestionnaire, middleware, transaction).await,
         TRANSACTION_FAVORIS_CREERPATH => transaction_favoris_creerpath(middleware, transaction).await,
+        TRANSACTION_SUPPRIMER_VIDEO => transaction_supprimer_video(middleware, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), transaction.get_action())),
     }
 }
@@ -1423,4 +1427,115 @@ pub struct InformationCollection {
     pub user_id: String,
     pub supprime: Option<bool>,
     pub favoris: Option<bool>,
+}
+
+async fn transaction_supprimer_video<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_supprimer_video Consommer transaction : {:?}", &transaction);
+    let transaction_collection: TransactionSupprimerVideo = match transaction.clone().convertir::<TransactionSupprimerVideo>() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur conversion transaction : {:?}", e))?
+    };
+
+    let fuuid = &transaction_collection.fuuid_video;
+
+    let enveloppe = match transaction.get_enveloppe_certificat() {
+        Some(e) => e,
+        None => Err(format!("transaction_supprimer_video Certificat inconnu, transaction ignoree"))?
+    };
+    let user_id = enveloppe.get_user_id()?;
+
+    // {   // Verifier acces
+    //     let delegation_globale = enveloppe.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE);
+    //     if delegation_globale || enveloppe.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
+    //         // Ok
+    //     } else if user_id.is_some() {
+    //         let u = user_id.expect("commande_video_convertir user_id");
+    //         let resultat = verifier_acces_usager(middleware, &u, vec![fuuid]).await?;
+    //         if ! resultat.contains(fuuid) {
+    //             debug!("commande_video_convertir verifier_exchanges : Usager n'a pas acces a fuuid {}", fuuid);;
+    //             return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
+    //         }
+    //     } else {
+    //         debug!("commande_video_convertir verifier_exchanges : Certificat n'a pas l'acces requis (securite 2,3,4 ou user_id avec acces fuuid)");
+    //         return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
+    //     }
+    // }
+
+    let mut labels_videos = Vec::new();
+    {
+        let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
+
+        let collection_fichier_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+        let projection = doc!{"version_courante.video": true};
+        // let options = FindOneOptions::builder().projection(projection).build();
+        let doc_video: FichierDetail = match collection_fichier_rep.find_one(filtre.clone(), None).await {
+            Ok(d) => match d {
+                Some(d) => match convertir_bson_deserializable(d) {
+                    Ok(d) => match d {
+                        Some(d) => d,
+                        None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?,
+                    },
+                    Err(e) => Err(format!("transaction_supprimer_video Erreur conversion info document : {:?}", e))?
+                },
+                None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
+            },
+            Err(e) => Err(format!("transaction_supprimer_video Erreur chargement info document : {:?}", e))?
+        };
+        debug!("Information doc videos a supprimer : {:?}", doc_video);
+        let mut ops_unset = doc!{};
+        if let Some(version_courante) = doc_video.version_courante {
+            if let Some(map_video) = version_courante.video {
+                for (label, video) in map_video {
+                    if &video.fuuid_video == fuuid {
+                        ops_unset.insert(format!("version_courante.video.{}", label), true);
+                        labels_videos.push(label);
+                    }
+                }
+            }
+        }
+
+        ops_unset.insert(format!("version_courante.fuuidMimetypes.{}", fuuid), true);
+
+        let ops = doc! {
+            "$pull": {"fuuids": fuuid},
+            "$unset": ops_unset,
+            "$currentDate": {CHAMP_MODIFICATION: true},
+        };
+
+        debug!("transaction_supprimer_video Ops supprimer video fichier_rep : {:?}", ops);
+        match collection_fichier_rep.update_one(filtre.clone(), ops, None).await {
+            Ok(_r) => (),
+            Err(e) => Err(format!("transaction_supprimer_video Erreur update_one collection fichiers rep : {:?}", e))?
+        }
+    }
+
+    {
+        let filtre = doc!{CHAMP_FUUIDS: fuuid};
+        let mut ops_unset = doc!{format!("fuuidMimetypes.{}", fuuid): true};
+        for label in labels_videos {
+            ops_unset.insert(format!("video.{}", label), true);
+        }
+
+        let ops = doc! {
+            "$pull": {"fuuids": fuuid},
+            "$unset": ops_unset,
+            "$currentDate": {CHAMP_MODIFICATION: true},
+        };
+        let collection_version_fichier = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        match collection_version_fichier.update_one(filtre, ops, None).await {
+            Ok(_r) => (),
+            Err(e) => Err(format!("transaction_supprimer_video Erreur update_one collection fichiers rep : {:?}", e))?
+        }
+    }
+
+    // Retourner le tuuid comme reponse, aucune transaction necessaire
+    match middleware.reponse_ok() {
+        Ok(r) => Ok(r),
+        Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
+    }
 }

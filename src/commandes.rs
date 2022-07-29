@@ -71,6 +71,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         TRANSACTION_DECRIRE_COLLECTION => commande_decrire_collection(middleware, m, gestionnaire).await,
         TRANSACTION_COPIER_FICHIER_TIERS => commande_copier_fichier_tiers(middleware, m, gestionnaire).await,
         TRANSACTION_FAVORIS_CREERPATH => commande_favoris_creerpath(middleware, m, gestionnaire).await,
+        TRANSACTION_SUPPRIMER_VIDEO => commande_supprimer_video(middleware, m, gestionnaire).await,
 
         COMMANDE_INDEXER => commande_reindexer(middleware, m, gestionnaire).await,
         COMMANDE_COMPLETER_PREVIEWS => commande_completer_previews(middleware, m, gestionnaire).await,
@@ -1068,4 +1069,44 @@ async fn trouver_prochaine_job<M,S,T>(middleware: &M, fuuid: Option<S>, cle: Opt
     }
 
     Ok(job)
+}
+
+async fn commande_supprimer_video<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("commande_supprimer_video Consommer commande : {:?}", & m.message);
+    let commande: TransactionSupprimerVideo = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_supprimer_video parsed : {:?}", commande);
+
+    let fuuid = &commande.fuuid_video;
+    let user_id = m.get_user_id();
+
+    {   // Verifier acces
+        let delegation_globale = m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE);
+        if delegation_globale || m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
+            // Ok
+        } else if user_id.is_some() {
+            let u = user_id.as_ref().expect("commande_video_convertir user_id");
+            let resultat = verifier_acces_usager(middleware, &u, vec![fuuid]).await?;
+            if ! resultat.contains(fuuid) {
+                debug!("commande_video_convertir verifier_exchanges : Usager n'a pas acces a fuuid {}", fuuid);;
+                return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
+            }
+        } else {
+            debug!("commande_video_convertir verifier_exchanges : Certificat n'a pas l'acces requis (securite 2,3,4 ou user_id avec acces fuuid)");
+            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
+        }
+    }
+
+    let filtre_fichier = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let result = collection.count_documents(filtre_fichier, None).await?;
+
+    if result > 0 {
+        // Traiter la transaction
+        Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    } else {
+        Ok(middleware.reponse_ok()?)
+    }
 }
