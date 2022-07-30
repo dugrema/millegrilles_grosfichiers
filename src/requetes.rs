@@ -64,8 +64,9 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
             REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
+            REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
             _ => {
-                error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
+                error!("Message requete/action inconnue (1): '{}'. Message dropped.", message.action);
                 Ok(None)
             }
         }
@@ -98,8 +99,9 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
             REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
+            REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
             _ => {
-                error!("Message requete/action inconnue : '{}'. Message dropped.", message.action);
+                error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", message.action);
                 Ok(None)
             }
         }
@@ -333,31 +335,27 @@ async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValideAction
     let requete: RequeteVerifierAccesFuuids = m.message.get_msg().map_contenu(None)?;
     debug!("requete_verifier_acces_fuuids cle parsed : {:?}", requete);
 
-    let mut filtre = doc! {
-        CHAMP_USER_ID: &requete.user_id,
-        CHAMP_FUUIDS: {"$in": &requete.fuuids},
-        CHAMP_SUPPRIME: false,
+    let user_id_option = m.get_user_id();
+    let user_id = match user_id_option.as_ref() {
+        Some(u) => u,
+        None => {
+            if ! m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
+                return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "acces refuse"}), None)?))
+            }
+            match requete.user_id.as_ref() {
+                Some(u) => u,
+                None => {
+                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User_id manquant"}), None)?))
+                }
+            }
+        }
     };
 
-    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    // let options = FindOptions::builder().projection(doc!{CHAMP_FUUIDS: 1, CHAMP_SUPPRIME: 1}).build();
-    // let mut curseur = collection.find(filtre, Some(options)).await?;
-    //
-    // let mut fuuids_acces = HashSet::new();
-    //
-    // while let Some(row) = curseur.next().await {
-    //     let doc_row = row?;
-    //     let doc_map: RowEtatFuuid = convertir_bson_deserializable(doc_row)?;
-    //     fuuids_acces.extend(doc_map.fuuids);
-    // }
+    let resultat = verifier_acces_usager(middleware, user_id, &requete.fuuids).await?;
 
-    // let resultat: Vec<&String> = fuuids_acces.intersection(&hashset_requete).collect();
-    let resultat = verifier_acces_usager(middleware, &requete.user_id, &requete.fuuids).await?;
-
-    // let hashset_requete = HashSet::from_iter(requete.fuuids);
     let acces_tous = resultat.len() == requete.fuuids.len();
 
-    let reponse = json!({ "fuuids_acces":  resultat , "acces_tous": acces_tous });
+    let reponse = json!({ "fuuids_acces": resultat , "acces_tous": acces_tous });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
@@ -854,7 +852,7 @@ struct RequeteDocumentsParFuuids {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RequeteVerifierAccesFuuids {
-    user_id: String,
+    user_id: Option<String>,
     fuuids: Vec<String>,
 }
 
