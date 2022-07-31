@@ -18,6 +18,7 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use crate::grosfichiers_constantes::*;
 
 const ACTION_GENERER_POSTER_IMAGE: &str = "genererPosterImage";
+const ACTION_GENERER_POSTER_PDF: &str = "genererPosterPdf";
 const ACTION_GENERER_POSTER_VIDEO: &str = "genererPosterVideo";
 const ACTION_TRANSCODER_VIDEO: &str = "transcoderVideo";
 
@@ -52,7 +53,7 @@ pub async fn emettre_commande_media<M, S, T, U, V>(middleware: &M, tuuid: U, fuu
     });
 
     let action = match mimetype_str {
-        "application/pdf" => ACTION_GENERER_POSTER_IMAGE,
+        "application/pdf" => ACTION_GENERER_POSTER_PDF,
         _ => {
             let subtype = match mimetype_str.split("/").next() {
                 Some(t) => t,
