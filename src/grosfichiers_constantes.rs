@@ -92,6 +92,7 @@ pub const CHAMP_CLE_CONVERSION: &str = "cle_conversion";
 pub const ERREUR_MEDIA_TOOMANYRETRIES: i32 = 1;
 
 pub const MEDIA_RETRY_LIMIT: i32 = 5;
+pub const MEDIA_IMAGE_BACTH_DEFAULT: i64 = 50;
 
 pub const VIDEO_CONVERSION_ETAT_PENDING: i32 = 1;
 pub const VIDEO_CONVERSION_ETAT_RUNNING: i32 = 2;

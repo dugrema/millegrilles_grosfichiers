@@ -574,7 +574,7 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionna
 
     let limite = match commande.limit {
         Some(inner) => inner,
-        None => 1000,
+        None => MEDIA_IMAGE_BACTH_DEFAULT,
     };
 
     let tuuids = traiter_index_manquant(middleware, gestionnaire, limite).await?;
@@ -611,7 +611,7 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, 
 
     let limite = match commande.limit {
         Some(inner) => inner,
-        None => 1000,
+        None => MEDIA_IMAGE_BACTH_DEFAULT,
     };
 
     let tuuids = traiter_media_batch(middleware, limite).await?;

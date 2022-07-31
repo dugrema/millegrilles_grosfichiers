@@ -451,7 +451,7 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
     // Executer a toutes les 5 minutes
     if minutes % 5 == 0 {
         debug!("Generer index et media manquants");
-        if let Err(e) = traiter_media_batch(middleware, 1000).await {
+        if let Err(e) = traiter_media_batch(middleware, MEDIA_IMAGE_BACTH_DEFAULT).await {
             warn!("Erreur traitement media batch : {:?}", e);
         }
         if let Err(e) = entretien_video_jobs(middleware).await {
