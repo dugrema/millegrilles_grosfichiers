@@ -99,7 +99,7 @@ pub const VIDEO_CONVERSION_ETAT_PERSISTING: i32 = 3;
 pub const VIDEO_CONVERSION_ETAT_ERROR: i32 = 4;
 pub const VIDEO_CONVERSION_ETAT_ERROR_TOOMANYRETRIES: i32 = 5;
 
-pub const VIDEO_CONVERSION_TIMEOUT_RUNNING: i32 = 2 * 60;  // Secondes
+pub const VIDEO_CONVERSION_TIMEOUT_RUNNING: i32 = 10 * 60;  // Secondes
 pub const VIDEO_CONVERSION_TIMEOUT_PERSISTING: i32 = 60 * 60;  // Secondes
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
