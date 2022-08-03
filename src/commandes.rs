@@ -7,6 +7,7 @@ use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
+use millegrilles_common_rust::common_messages::RequeteVerifierPreuve;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L4Secure};
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageSerialise};
@@ -461,19 +462,19 @@ async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
-    debug!("commande_decrire_collection Consommer commande : {:?}", & m.message);
+    debug!("commande_copier_fichier_tiers Consommer commande : {:?}", & m.message);
     let commande: CommandeCopierFichierTiers = m.message.get_msg().map_contenu(None)?;
-    debug!("Commande decrire_collection parsed : {:?}", commande);
+    debug!("commande_copier_fichier_tiers parsed : {:?}", commande);
     // debug!("Commande en json (DEBUG) : \n{:?}", serde_json::to_string(&commande));
 
     // Verifier aupres du maitredescles si les cles sont valides
     let preuve = commande.preuve;
-    let preuve_value: Value = m.message.get_msg().map_contenu(Some("preuve"))?;
     let routage_maitrecles = RoutageMessageAction::builder(
         DOMAINE_NOM_MAITREDESCLES, REQUETE_MAITREDESCLES_VERIFIER_PREUVE)
         .partition(&preuve.partition)
         .build();
-    let reponse_preuve = match middleware.transmettre_requete(routage_maitrecles, &preuve_value).await? {
+    debug!("commande_copier_fichier_tiers Requete preuve possession cles : {:?}", preuve.preuve);
+    let reponse_preuve = match middleware.transmettre_requete(routage_maitrecles, &preuve.preuve).await? {
         TypeMessage::Valide(m) => {
             match m.message.certificat.as_ref() {
                 Some(c) => {
@@ -490,7 +491,7 @@ async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction
         },
         m => Err(format!("commandes.commande_copier_fichier_tiers Erreur reponse message verification cles, mauvais type : {:?}", m))
     }?;
-    debug!("Reponse verification preuve : {:?}", reponse_preuve);
+    debug!("commande_copier_fichier_tiers Reponse verification preuve : {:?}", reponse_preuve);
 
     // S'assurer que tous les fuuids de la transaction sont verifies
     let transaction_copier = commande.transaction;
@@ -505,7 +506,7 @@ async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction
         fuuids.extend(fuuids_videos);
     }
 
-    debug!("Fuuids fichier : {:?}", fuuids);
+    debug!("commande_copier_fichier_tiers Fuuids fichier : {:?}", fuuids);
     for fuuid in fuuids {
         if let Some(confirme) = reponse_preuve.verification.get(fuuid.into()) {
             if(!confirme) {
@@ -519,7 +520,7 @@ async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction
     // La preuve n'est plus necessaire
     let transaction_copier: Value = m.message.get_msg().map_contenu(Some("transaction"))?;
     let transaction_copier_str = serde_json::to_string(&transaction_copier)?;
-    debug!("Transaction copier str : {:?}", transaction_copier_str);
+    debug!("commande_copier_fichier_tiers Transaction copier str : {:?}", transaction_copier_str);
     let mut transaction_copier_message = MessageSerialise::from_str(transaction_copier_str.as_str())?;
     transaction_copier_message.certificat = m.message.certificat.clone();
     let mva = MessageValideAction::new(transaction_copier_message, m.q, "transaction.GrosFichiers.copierFichierTiers".into(), m.domaine, m.action, m.type_message);
@@ -534,7 +535,7 @@ pub struct CommandeCopierFichierTiers {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PreuvePossessionCles {
-    pub cles: HashMap<String, String>,
+    pub preuve: RequeteVerifierPreuve,
     pub partition: String,
 }
 
