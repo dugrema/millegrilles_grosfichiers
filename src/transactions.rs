@@ -170,6 +170,10 @@ pub struct TransactionCopierFichierTiers {
     pub taille: u64,
     #[serde(rename="dateFichier")]
     pub date_fichier: DateEpochSeconds,
+    pub anime: Option<bool>,
+    pub duration: Option<f32>,
+    pub height: Option<u32>,
+    pub width: Option<u32>,
     pub images: Option<HashMap<String, ImageInfo>>,
     pub video: Option<HashMap<String, VideoInfo>>,
 }
@@ -196,7 +200,8 @@ pub struct VideoInfo {
     pub taille_fichier: Option<u64>,
     pub mimetype: String,
     pub codec: String,
-    pub bitrate: u32,
+    pub bitrate: Option<u32>,
+    pub quality: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
