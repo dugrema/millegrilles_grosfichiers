@@ -26,6 +26,9 @@ pub const REQUETE_RECHERCHE_INDEX: &str = "rechercheIndex";
 pub const REQUETE_GET_CLES_FICHIERS: &str = "getClesFichiers";
 pub const REQUETE_CONFIRMER_ETAT_FUUIDS: &str = "confirmerEtatFuuids";
 pub const REQUETE_VERIFIER_ACCES_FUUIDS: &str = "verifierAccesFuuids";
+pub const REQUETE_SYNC_COLLECTION: &str = "syncCollection";
+pub const REQUETE_SYNC_RECENTS: &str = "syncRecents";
+pub const REQUETE_SYNC_CORBEILLE: &str = "syncCorbeille";
 
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";

@@ -160,6 +160,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         REQUETE_GET_CLES_FICHIERS,
         REQUETE_CONFIRMER_ETAT_FUUIDS,
         REQUETE_VERIFIER_ACCES_FUUIDS,
+        REQUETE_SYNC_COLLECTION,
     ];
     for req in requetes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L2Prive});
@@ -198,6 +199,15 @@ pub fn preparer_queues() -> Vec<QueueType> {
     ];
     for cmd in commandes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
+    }
+
+    // RK 2.prive
+    let requetes_protegees: Vec<&str> = vec![
+        REQUETE_SYNC_COLLECTION,
+    ];
+    for req in requetes_protegees {
+        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L3Protege});
+        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L4Secure});
     }
 
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_CONFIRMER_ETAT_FUUIDS), exchange: Securite::L2Prive});

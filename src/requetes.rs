@@ -7,8 +7,9 @@ use log::{debug, error, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{Bson, doc, Document};
+use millegrilles_common_rust::bson::serde_helpers::deserialize_chrono_datetime_from_bson_datetime;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chrono::{DateTime, Utc};
+use millegrilles_common_rust::chrono::{Date, DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
@@ -70,22 +71,24 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
                 Ok(None)
             }
         }
+    } else if message.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+        match message.action.as_str() {
+            REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
+            REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
+            REQUETE_SYNC_COLLECTION => requete_sync_collection(middleware, message, gestionnaire).await,
+            _ => {
+                error!("Message requete/action inconnue pour exchanges 3.protege/4.secure : '{}'. Message dropped.", message.action);
+                Ok(None)
+            }
+        }
     } else if message.verifier_exchanges(vec![Securite::L2Prive]) {
         match message.action.as_str() {
             REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
+            REQUETE_SYNC_COLLECTION => requete_sync_collection(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue pour exchange 2.prive : '{}'. Message dropped.", message.action);
-                Ok(None)
-            }
-        }
-    } else if message.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
-        match message.action.as_str() {
-            REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
-            REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
-            _ => {
-                error!("Message requete/action inconnue pour exchanges 3.protege/4.secure : '{}'. Message dropped.", message.action);
                 Ok(None)
             }
         }
@@ -990,4 +993,110 @@ struct RowEtatFuuid {
 struct ConfirmationEtatFuuid {
     fuuid: String,
     supprime: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteSyncCollection {
+    cuuid: String,
+    user_id: Option<String>,
+    skip: Option<u64>,
+    limit: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct FichierSync {
+    tuuid: String,
+    #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
+    map_derniere_modification: DateTime<Utc>,
+    derniere_modification: Option<DateEpochSeconds>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    favoris: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    supprime: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ReponseRequeteSyncCollection {
+    complete: bool,
+    fichiers: Vec<FichierSync>
+}
+
+async fn requete_sync_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    let uuid_transaction = m.correlation_id.clone();
+
+    debug!("requete_confirmer_etat_fuuids Message : {:?}", & m.message);
+    let requete: RequeteSyncCollection = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_confirmer_etat_fuuids cle parsed : {:?}", requete);
+
+    let user_id = {
+        match m.message.get_user_id() {
+            Some(u) => u,
+            None => {
+                if m.verifier_exchanges(vec![L3Protege, L4Secure]) {
+                    match requete.user_id {
+                        Some(u) => u,
+                        None => {
+                            error!("requete_sync_collection L3Protege/L4Secure user_id manquant");
+                            return Ok(None)
+                        }
+                    }
+                } else {
+                    error!("requetes.requete_confirmer_etat_fuuids Acces refuse, certificat n'est pas d'un exchange L2+ : {:?}", uuid_transaction);
+                    return Ok(None)
+                }
+            }
+        }
+    };
+
+    let limit = match requete.limit {
+        Some(l) => l,
+        None => 1000
+    };
+    let skip = match requete.skip {
+        Some(s) => s,
+        None => 0
+    };
+
+    let sort = doc! {CHAMP_CREATION: 1, CHAMP_TUUID: 1};
+    let projection = doc! {
+        CHAMP_TUUID: 1,
+        CHAMP_MODIFICATION: 1,
+        CHAMP_FAVORIS: 1,
+        CHAMP_SUPPRIME: 1,
+    };
+    let opts = FindOptions::builder()
+        .projection(projection)
+        .sort(sort)
+        .skip(skip)
+        .limit(limit.clone())
+        .hint(Hint::Name("fichiers_cuuid".into()))
+        .build();
+    let mut filtre = doc!{"cuuids": requete.cuuid};
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
+    let complete = fichiers_confirmation.len() < limit as usize;
+
+    let reponse = ReponseRequeteSyncCollection { complete, fichiers: fichiers_confirmation };
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+async fn find_sync_fichiers<M>(middleware: &M, filtre: Document, opts: FindOptions) -> Result<Vec<FichierSync>, Box<dyn Error>>
+    where M: MongoDao
+{
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+    let mut curseur = collection.find(filtre, opts).await?;
+    let mut fichiers_confirmation = Vec::new();
+    while let Some(d) = curseur.next().await {
+        let mut record: FichierSync = convertir_bson_deserializable(d?)?;
+        debug!("requete_sync_collection Record {:?}", record);
+        record.derniere_modification = Some(DateEpochSeconds::from(record.map_derniere_modification.clone()));
+        fichiers_confirmation.push(record);
+    }
+
+    Ok(fichiers_confirmation)
 }
