@@ -161,6 +161,8 @@ pub fn preparer_queues() -> Vec<QueueType> {
         REQUETE_CONFIRMER_ETAT_FUUIDS,
         REQUETE_VERIFIER_ACCES_FUUIDS,
         REQUETE_SYNC_COLLECTION,
+        REQUETE_SYNC_RECENTS,
+        REQUETE_SYNC_CORBEILLE,
     ];
     for req in requetes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L2Prive});
@@ -204,6 +206,8 @@ pub fn preparer_queues() -> Vec<QueueType> {
     // RK 2.prive
     let requetes_protegees: Vec<&str> = vec![
         REQUETE_SYNC_COLLECTION,
+        REQUETE_SYNC_RECENTS,
+        REQUETE_SYNC_CORBEILLE,
     ];
     for req in requetes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L3Protege});
