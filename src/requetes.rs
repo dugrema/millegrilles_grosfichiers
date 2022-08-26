@@ -107,6 +107,9 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
+            REQUETE_SYNC_COLLECTION => requete_sync_collection(middleware, message, gestionnaire).await,
+            REQUETE_SYNC_RECENTS => requete_sync_plusrecent(middleware, message, gestionnaire).await,
+            REQUETE_SYNC_CORBEILLE => requete_sync_corbeille(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -1031,7 +1034,7 @@ struct FichierSync {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ReponseRequeteSyncCollection {
     complete: bool,
-    fichiers: Vec<FichierSync>
+    liste: Vec<FichierSync>
 }
 
 async fn requete_sync_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -1103,7 +1106,7 @@ async fn requete_sync_collection<M>(middleware: &M, m: MessageValideAction, gest
     let mut fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
     let complete = fichiers_confirmation.len() < limit as usize;
 
-    let reponse = ReponseRequeteSyncCollection { complete, fichiers: fichiers_confirmation };
+    let reponse = ReponseRequeteSyncCollection { complete, liste: fichiers_confirmation };
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
@@ -1186,7 +1189,7 @@ async fn requete_sync_plusrecent<M>(middleware: &M, m: MessageValideAction, gest
     let mut fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
     let complete = fichiers_confirmation.len() < limit as usize;
 
-    let reponse = ReponseRequeteSyncCollection { complete, fichiers: fichiers_confirmation };
+    let reponse = ReponseRequeteSyncCollection { complete, liste: fichiers_confirmation };
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
@@ -1253,7 +1256,7 @@ async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValideAction, gesti
     let mut fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
     let complete = fichiers_confirmation.len() < limit as usize;
 
-    let reponse = ReponseRequeteSyncCollection { complete, fichiers: fichiers_confirmation };
+    let reponse = ReponseRequeteSyncCollection { complete, liste: fichiers_confirmation };
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
