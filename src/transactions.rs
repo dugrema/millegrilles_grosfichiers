@@ -594,6 +594,11 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
         Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur conversion transaction : {:?}", e))?
     };
 
+    let user_id = match transaction.get_enveloppe_certificat() {
+        Some(c) => c.get_user_id()?.to_owned(),
+        None => None
+    };
+
     // Conserver liste de tuuids par cuuid, utilise pour evenement
     let mut tuuids_retires_par_cuuid: HashMap<String, Vec<String>> = HashMap::new();
     // Liste de tuuids qui vont etre marques comme supprimes=true
@@ -614,50 +619,46 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
                 Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur mapping FichierDetail : {:?}", e))?
             };
             let tuuid = fichier.tuuid;
-            if let Some(cuuids) = fichier.cuuids.as_ref() {
-                if cuuids.len() == 0 {
-                    // Document sans collection - erreur (corruption), on le supprime sommairement
-                    tuuids_supprimes.push(tuuid);
-                } else if cuuids.len() == 1 {
-                    let cuuid = cuuids.get(0).expect("cuuid");
+            match fichier.cuuids.as_ref() {
+                Some(cuuids) => {
+                    if cuuids.len() == 0 {
+                        // Document sans collection - traiter comme un favoris
+                        tuuids_supprimes.push(tuuid.clone());
 
-                    // Ajouter dans la liste de suppression du cuuid (evenement)
-                    match tuuids_retires_par_cuuid.get_mut(cuuid) {
-                        Some(tuuids_supprimes) => {
-                            tuuids_supprimes.push(tuuid.clone());
-                        },
-                        None => {
-                            tuuids_retires_par_cuuid.insert(cuuid.clone(), vec![tuuid.clone()]);
-                        }
-                    }
-
-                    // Ajouter a la liste de documents a marquer supprime=true
-                    tuuids_supprimes.push(tuuid);
-                } else {
-                    // Plusieurs cuuids - on retire celui qui est demande seulement
-                    match transaction_collection.cuuid.as_ref() {
-                        Some(cuuid) => {
-                            // Supprimer seulement le cuuid demande
-                            tuuids_retires.push(tuuid.clone());
-
-                            // Ajouter a la liste des tuuids supprimes par cuuid
-                            match tuuids_retires_par_cuuid.get_mut(cuuid) {
+                        // Ajouter dans la liste de suppression des favoris (cuuid = user_id)
+                        if let Some(u) = user_id.as_ref() {
+                            match tuuids_retires_par_cuuid.get_mut(u) {
                                 Some(tuuids_supprimes) => {
                                     tuuids_supprimes.push(tuuid.clone());
                                 },
                                 None => {
-                                    tuuids_retires_par_cuuid.insert(cuuid.clone(), vec![tuuid.clone()]);
+                                    tuuids_retires_par_cuuid.insert(u.clone(), vec![tuuid.clone()]);
                                 }
                             }
-                        },
-                        None => {
-                            // Aucun cuuid en parametre - on supprime le document de tous les cuuids
-                            // Ajouter a la liste de documents a marquer supprime=true
-                            tuuids_supprimes.push(tuuid.clone());
+                        }
+                    } else if cuuids.len() == 1 {
+                        let cuuid = cuuids.get(0).expect("cuuid");
 
-                            // Conserver le tuuid dans la liste pour les cuuids
-                            for cuuid in cuuids {
-                                // Ajouter dans la liste de suppression du cuuid (evenement)
+                        // Ajouter dans la liste de suppression du cuuid (evenement)
+                        match tuuids_retires_par_cuuid.get_mut(cuuid) {
+                            Some(tuuids_supprimes) => {
+                                tuuids_supprimes.push(tuuid.clone());
+                            },
+                            None => {
+                                tuuids_retires_par_cuuid.insert(cuuid.clone(), vec![tuuid.clone()]);
+                            }
+                        }
+
+                        // Ajouter a la liste de documents a marquer supprime=true
+                        tuuids_supprimes.push(tuuid);
+                    } else {
+                        // Plusieurs cuuids - on retire celui qui est demande seulement
+                        match transaction_collection.cuuid.as_ref() {
+                            Some(cuuid) => {
+                                // Supprimer seulement le cuuid demande
+                                tuuids_retires.push(tuuid.clone());
+
+                                // Ajouter a la liste des tuuids supprimes par cuuid
                                 match tuuids_retires_par_cuuid.get_mut(cuuid) {
                                     Some(tuuids_supprimes) => {
                                         tuuids_supprimes.push(tuuid.clone());
@@ -666,6 +667,40 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
                                         tuuids_retires_par_cuuid.insert(cuuid.clone(), vec![tuuid.clone()]);
                                     }
                                 }
+                            },
+                            None => {
+                                // Aucun cuuid en parametre - on supprime le document de tous les cuuids
+                                // Ajouter a la liste de documents a marquer supprime=true
+                                tuuids_supprimes.push(tuuid.clone());
+
+                                // Conserver le tuuid dans la liste pour les cuuids
+                                for cuuid in cuuids {
+                                    // Ajouter dans la liste de suppression du cuuid (evenement)
+                                    match tuuids_retires_par_cuuid.get_mut(cuuid) {
+                                        Some(tuuids_supprimes) => {
+                                            tuuids_supprimes.push(tuuid.clone());
+                                        },
+                                        None => {
+                                            tuuids_retires_par_cuuid.insert(cuuid.clone(), vec![tuuid.clone()]);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                None => {
+                    // Document sans collection - traiter comme un favoris
+                    tuuids_supprimes.push(tuuid.clone());
+
+                    // Ajouter dans la liste de suppression des favoris (cuuid = user_id)
+                    if let Some(u) = user_id.as_ref() {
+                        match tuuids_retires_par_cuuid.get_mut(u) {
+                            Some(tuuids_supprimes) => {
+                                tuuids_supprimes.push(tuuid.clone());
+                            },
+                            None => {
+                                tuuids_retires_par_cuuid.insert(u.clone(), vec![tuuid.clone()]);
                             }
                         }
                     }
