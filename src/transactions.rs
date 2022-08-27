@@ -18,6 +18,7 @@ use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOn
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
+use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::Transaction;
 use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
@@ -154,6 +155,12 @@ pub struct TransactionRetirerDocumentsCollection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionListeDocuments {
     pub tuuids: Vec<String>,  // Fichiers/rep a supprimer
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionSupprimerDocuments {
+    pub tuuids: Vec<String>,    // Fichiers/rep a supprimer
+    pub cuuid: Option<String>,  // Collection a retirer des documents (suppression conditionnelle)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -534,6 +541,7 @@ async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, transact
     middleware.reponse_ok()
 }
 
+/// Obsolete - conserver pour support legacy
 async fn transaction_retirer_documents_collection<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
         M: GenerateurMessages + MongoDao,
@@ -581,34 +589,129 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
         T: Transaction
 {
     debug!("transaction_supprimer_documents Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionListeDocuments = match transaction.clone().convertir::<TransactionListeDocuments>() {
+    let transaction_collection: TransactionSupprimerDocuments = match transaction.clone().convertir::<TransactionSupprimerDocuments>() {
         Ok(t) => t,
         Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur conversion transaction : {:?}", e))?
     };
 
-    // Conserver champs transaction uniquement (filtrer champs meta)
-    let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.tuuids}};
-    let ops = doc! {
-        "$set": {CHAMP_SUPPRIME: true},
-        "$currentDate": {CHAMP_MODIFICATION: true}
-    };
+    // Conserver liste de tuuids par cuuid, utilise pour evenement
+    let mut tuuids_retires_par_cuuid: HashMap<String, Vec<String>> = HashMap::new();
+    // Liste de tuuids qui vont etre marques comme supprimes=true
+    let mut tuuids_supprimes: Vec<String> = Vec::new();
+    // Liste de tuuids encore valides (plusieurs cuuids). On va juste retirer le cuuid en parametre.
+    let mut tuuids_retires: Vec<String> = Vec::new();
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let resultat = match collection.update_many(filtre, ops, None).await {
-        Ok(r) => r,
-        Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur update_one sur transcation : {:?}", e))?
+    let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.tuuids}};
+    let mut curseur = match collection.find(filtre, None).await {
+        Ok(c) => c,
+        Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur preparation curseur : {:?}", e))?
     };
-    debug!("grosfichiers.transaction_supprimer_documents Resultat transaction update : {:?}", resultat);
+    while let Some(r) = curseur.next().await {
+        if let Ok(d) = r {
+            let fichier: FichierDetail = match convertir_bson_deserializable(d) {
+                Ok(f) => f,
+                Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur mapping FichierDetail : {:?}", e))?
+            };
+            let tuuid = fichier.tuuid;
+            if let Some(cuuids) = fichier.cuuids.as_ref() {
+                if cuuids.len() == 0 {
+                    // Document sans collection - erreur (corruption), on le supprime sommairement
+                    tuuids_supprimes.push(tuuid);
+                } else if cuuids.len() == 1 {
+                    let cuuid = cuuids.get(0).expect("cuuid");
 
-    for tuuid in &transaction_collection.tuuids {
-        // Emettre fichier pour que tous les clients recoivent la mise a jour
-        match emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_SUPPRIMER_DOCUMENT).await {
-            Ok(()) => (),
-            Err(e) => {
-                // Peut-etre une collection
-                emettre_evenement_maj_collection(middleware, &tuuid).await?;
+                    // Ajouter dans la liste de suppression du cuuid (evenement)
+                    match tuuids_retires_par_cuuid.get_mut(cuuid) {
+                        Some(tuuids_supprimes) => {
+                            tuuids_supprimes.push(tuuid.clone());
+                        },
+                        None => {
+                            tuuids_retires_par_cuuid.insert(cuuid.clone(), vec![tuuid.clone()]);
+                        }
+                    }
+
+                    // Ajouter a la liste de documents a marquer supprime=true
+                    tuuids_supprimes.push(tuuid);
+                } else {
+                    // Plusieurs cuuids - on retire celui qui est demande seulement
+                    match transaction_collection.cuuid.as_ref() {
+                        Some(cuuid) => {
+                            // Supprimer seulement le cuuid demande
+                            tuuids_retires.push(tuuid.clone());
+
+                            // Ajouter a la liste des tuuids supprimes par cuuid
+                            match tuuids_retires_par_cuuid.get_mut(cuuid) {
+                                Some(tuuids_supprimes) => {
+                                    tuuids_supprimes.push(tuuid.clone());
+                                },
+                                None => {
+                                    tuuids_retires_par_cuuid.insert(cuuid.clone(), vec![tuuid.clone()]);
+                                }
+                            }
+                        },
+                        None => {
+                            // Aucun cuuid en parametre - on supprime le document de tous les cuuids
+                            // Ajouter a la liste de documents a marquer supprime=true
+                            tuuids_supprimes.push(tuuid.clone());
+
+                            // Conserver le tuuid dans la liste pour les cuuids
+                            for cuuid in cuuids {
+                                // Ajouter dans la liste de suppression du cuuid (evenement)
+                                match tuuids_retires_par_cuuid.get_mut(cuuid) {
+                                    Some(tuuids_supprimes) => {
+                                        tuuids_supprimes.push(tuuid.clone());
+                                    },
+                                    None => {
+                                        tuuids_retires_par_cuuid.insert(cuuid.clone(), vec![tuuid.clone()]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
+    }
+
+    if tuuids_supprimes.len() > 0 {
+        // Marquer tuuids supprime=true
+        let filtre = doc! {CHAMP_TUUID: {"$in": &tuuids_supprimes}};
+        let ops = doc! {
+            "$set": {CHAMP_SUPPRIME: true},
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        let resultat = match collection.update_many(filtre, ops, None).await {
+            Ok(r) => r,
+            Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur update_many supprimer=true sur transaction : {:?}", e))?
+        };
+        debug!("grosfichiers.transaction_supprimer_documents Resultat transaction update : {:?}", resultat);
+    }
+
+    if tuuids_retires.len() > 0 {
+        if let Some(cuuid) = transaction_collection.cuuid.as_ref() {
+            // Retirer cuuid
+            let filtre = doc! {CHAMP_TUUID: {"$in": &tuuids_retires}};
+            let ops = doc! {
+                "$pull": {CHAMP_CUUIDS: cuuid},
+                "$currentDate": {CHAMP_MODIFICATION: true}
+            };
+            let resultat = match collection.update_many(filtre, ops, None).await {
+                Ok(r) => r,
+                Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur update_many pour pull cuuid : {:?}", e))?
+            };
+            debug!("transaction_supprimer_documents Resultat transaction update : {:?}", resultat);
+        }
+    }
+
+    debug!("transaction_supprimer_documents Emettre messages pour tuuids retires : {:?}", tuuids_retires_par_cuuid);
+
+    // Emettre evenements supprime par cuuid
+    for (cuuid, liste) in tuuids_retires_par_cuuid {
+        let mut evenement = EvenementContenuCollection::new();
+        evenement.cuuid = Some(cuuid);
+        evenement.retires = Some(liste);
+        emettre_evenement_contenu_collection(middleware, evenement).await?;
     }
 
     middleware.reponse_ok()

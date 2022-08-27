@@ -321,29 +321,33 @@ async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageVali
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
-    debug!("commande_retirer_documents_collection Consommer commande : {:?}", & m.message);
-    let commande: TransactionRetirerDocumentsCollection = m.message.get_msg().map_contenu(None)?;
-    debug!("Commande commande_retirer_documents_collection versions parsed : {:?}", commande);
+    debug!("commande_retirer_documents_collection **OBSOLETE** Consommer commande : {:?}", & m.message);
 
-    // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
-    if role_prive && user_id.is_some() {
-        let user_id_str = user_id.as_ref().expect("user_id");
-        let cuuid = commande.cuuid.as_str();
-        let tuuids: Vec<&str> = commande.retirer_tuuids.iter().map(|t| t.as_str()).collect();
-        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
-        if err_reponse.is_some() {
-            return Ok(err_reponse)
-        }
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        // Ok
-    } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
-    }
+    let reponse = middleware.formatter_reponse(json!({"ok": false, "err": "Obsolete"}), None)?;
+    Ok(Some(reponse))
 
-    // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    // let commande: TransactionRetirerDocumentsCollection = m.message.get_msg().map_contenu(None)?;
+    // debug!("Commande commande_retirer_documents_collection versions parsed : {:?}", commande);
+    //
+    // // Autorisation: Action usager avec compte prive ou delegation globale
+    // let user_id = m.get_user_id();
+    // let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    // if role_prive && user_id.is_some() {
+    //     let user_id_str = user_id.as_ref().expect("user_id");
+    //     let cuuid = commande.cuuid.as_str();
+    //     let tuuids: Vec<&str> = commande.retirer_tuuids.iter().map(|t| t.as_str()).collect();
+    //     let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
+    //     if err_reponse.is_some() {
+    //         return Ok(err_reponse)
+    //     }
+    // } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    //     // Ok
+    // } else {
+    //     Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    // }
+    //
+    // // Traiter la transaction
+    // Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
 async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -351,7 +355,7 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction,
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_supprimer_documents Consommer commande : {:?}", & m.message);
-    let commande: TransactionListeDocuments = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionSupprimerDocuments = m.message.get_msg().map_contenu(None)?;
     debug!("Commande commande_supprimer_documents versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
@@ -359,7 +363,10 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction,
     let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
-        let tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
+        let mut tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
+        if let Some(t) = commande.cuuid.as_ref() {
+            tuuids.push(t.as_str());
+        }
         let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
         if err_reponse.is_some() {
             return Ok(err_reponse)
