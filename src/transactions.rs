@@ -1183,6 +1183,11 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Res
         Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion transaction : {:?}", e))?
     };
 
+    let user_id = match transaction.get_enveloppe_certificat() {
+        Some(e) => e.get_user_id()?.to_owned(),
+        None => None
+    };
+
     let tuuid = transaction_mappee.tuuid.as_str();
     let filtre = doc! { CHAMP_TUUID: tuuid };
 
@@ -1216,9 +1221,37 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Res
         "$currentDate": { CHAMP_MODIFICATION: true }
     };
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    match collection.update_one(filtre, ops, None).await {
-        Ok(inner) => debug!("transactions.transaction_decire_fichier Update description : {:?}", inner),
-        Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur update description : {:?}", e))?
+    match collection.find_one_and_update(filtre, ops, None).await {
+        Ok(inner) => {
+            debug!("transaction_decire_fichier Update description : {:?}", inner);
+            if let Some(d) = inner {
+                // Emettre evenement de maj contenu sur chaque cuuid
+                match convertir_bson_deserializable::<FichierDetail>(d) {
+                    Ok(fichier) => {
+                        if let Some(favoris) = fichier.favoris {
+                            if let Some(u) = user_id {
+                                if favoris {
+                                    let mut evenement = EvenementContenuCollection::new();
+                                    evenement.cuuid = Some(u);
+                                    evenement.fichiers_modifies = Some(vec![tuuid.to_owned()]);
+                                    emettre_evenement_contenu_collection(middleware, evenement).await?;
+                                }
+                            }
+                        }
+                        if let Some(cuuids) = fichier.cuuids {
+                            for cuuid in cuuids {
+                                let mut evenement = EvenementContenuCollection::new();
+                                evenement.cuuid = Some(cuuid);
+                                evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
+                                emettre_evenement_contenu_collection(middleware, evenement).await?;
+                            }
+                        }
+                    },
+                    Err(e) => warn!("transaction_decire_fichier Erreur conversion a FichierDetail : {:?}", e)
+                }
+            }
+        },
+        Err(e) => Err(format!("transaction_decire_fichier Erreur update description : {:?}", e))?
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
@@ -1303,10 +1336,7 @@ async fn transaction_decire_collection<M, T>(middleware: &M, transaction: T) -> 
                                 if favoris {
                                     let mut evenement = EvenementContenuCollection::new();
                                     evenement.cuuid = Some(u);
-                                    match fichier.mimetype.as_ref() {
-                                        Some(_m) => evenement.fichiers_modifies = Some(vec![tuuid.to_owned()]),
-                                        None => evenement.collections_modifiees = Some(vec![tuuid.to_owned()])
-                                    }
+                                    evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
                                     emettre_evenement_contenu_collection(middleware, evenement).await?;
                                 }
                             }
@@ -1315,10 +1345,7 @@ async fn transaction_decire_collection<M, T>(middleware: &M, transaction: T) -> 
                             for cuuid in cuuids {
                                 let mut evenement = EvenementContenuCollection::new();
                                 evenement.cuuid = Some(cuuid);
-                                match fichier.mimetype.as_ref() {
-                                    Some(_m) => evenement.fichiers_modifies = Some(vec![tuuid.to_owned()]),
-                                    None => evenement.collections_modifiees = Some(vec![tuuid.to_owned()])
-                                }
+                                evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
                                 emettre_evenement_contenu_collection(middleware, evenement).await?;
                             }
                         }
@@ -1331,7 +1358,7 @@ async fn transaction_decire_collection<M, T>(middleware: &M, transaction: T) -> 
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    //emettre_evenement_maj_collection(middleware, &tuuid).await?;
+    emettre_evenement_maj_collection(middleware, &tuuid).await?;
 
     middleware.reponse_ok()
 }
