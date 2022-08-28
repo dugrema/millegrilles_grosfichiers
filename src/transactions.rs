@@ -1224,32 +1224,32 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Res
     match collection.find_one_and_update(filtre, ops, None).await {
         Ok(inner) => {
             debug!("transaction_decire_fichier Update description : {:?}", inner);
-            if let Some(d) = inner {
-                // Emettre evenement de maj contenu sur chaque cuuid
-                match convertir_bson_deserializable::<FichierDetail>(d) {
-                    Ok(fichier) => {
-                        if let Some(favoris) = fichier.favoris {
-                            if let Some(u) = user_id {
-                                if favoris {
-                                    let mut evenement = EvenementContenuCollection::new();
-                                    evenement.cuuid = Some(u);
-                                    evenement.fichiers_modifies = Some(vec![tuuid.to_owned()]);
-                                    emettre_evenement_contenu_collection(middleware, evenement).await?;
-                                }
-                            }
-                        }
-                        if let Some(cuuids) = fichier.cuuids {
-                            for cuuid in cuuids {
-                                let mut evenement = EvenementContenuCollection::new();
-                                evenement.cuuid = Some(cuuid);
-                                evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
-                                emettre_evenement_contenu_collection(middleware, evenement).await?;
-                            }
-                        }
-                    },
-                    Err(e) => warn!("transaction_decire_fichier Erreur conversion a FichierDetail : {:?}", e)
-                }
-            }
+            // if let Some(d) = inner {
+            //     // Emettre evenement de maj contenu sur chaque cuuid
+            //     match convertir_bson_deserializable::<FichierDetail>(d) {
+            //         Ok(fichier) => {
+            //             if let Some(favoris) = fichier.favoris {
+            //                 if let Some(u) = user_id {
+            //                     if favoris {
+            //                         let mut evenement = EvenementContenuCollection::new();
+            //                         evenement.cuuid = Some(u);
+            //                         evenement.fichiers_modifies = Some(vec![tuuid.to_owned()]);
+            //                         emettre_evenement_contenu_collection(middleware, evenement).await?;
+            //                     }
+            //                 }
+            //             }
+            //             if let Some(cuuids) = fichier.cuuids {
+            //                 for cuuid in cuuids {
+            //                     let mut evenement = EvenementContenuCollection::new();
+            //                     evenement.cuuid = Some(cuuid);
+            //                     evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
+            //                     emettre_evenement_contenu_collection(middleware, evenement).await?;
+            //                 }
+            //             }
+            //         },
+            //         Err(e) => warn!("transaction_decire_fichier Erreur conversion a FichierDetail : {:?}", e)
+            //     }
+            // }
         },
         Err(e) => Err(format!("transaction_decire_fichier Erreur update description : {:?}", e))?
     }

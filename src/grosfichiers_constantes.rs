@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use millegrilles_common_rust::bson::Document;
 use millegrilles_common_rust::formatteur_messages::DateEpochSeconds;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
+use crate::requetes::mapper_fichier_db;
 
 pub const DOMAINE_NOM: &str = "GrosFichiers";
 pub const NOM_COLLECTION_TRANSACTIONS: &str = "GrosFichiers";
@@ -124,6 +126,17 @@ pub struct FichierDetail {
     pub date_creation: Option<DateEpochSeconds>,
     pub derniere_modification: Option<DateEpochSeconds>,
     pub supprime: Option<bool>,
+}
+
+impl TryFrom<Document> for FichierDetail {
+    type Error = String;
+
+    fn try_from(value: Document) -> Result<Self, Self::Error> {
+        match mapper_fichier_db(value) {
+            Ok(d) => Ok(d),
+            Err(e) => Err(format!("FichierDetail::try_from {:?}", e))?
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

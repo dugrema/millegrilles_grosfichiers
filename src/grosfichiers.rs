@@ -492,35 +492,38 @@ where
     // Charger fichier
     let filtre = doc! {CHAMP_TUUID: tuuid_str};
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let doc_fichier = match collection.find_one(filtre, None).await {
-        Ok(inner) => inner,
+    let doc_fichier: FichierDetail = match collection.find_one(filtre, None).await {
+        Ok(inner) => match inner {
+            Some(d) => FichierDetail::try_from(d)?,
+            None => Err(format!("grosfichiers.emettre_evenement_maj_fichier Document {} introuvable", tuuid_str))?
+        },
         Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_fichier Erreur collection.find_one pour {} : {:?}", tuuid_str, e))?
     };
-    match doc_fichier {
-        Some(inner) => {
-            // Extraire liste de fuuids directement
-            let routage_action = RoutageMessageAction::builder("grosfichiers", action_str)
-                .exchanges(vec![Securite::L2Prive])
-                .build();
 
-            match inner.get_array("fuuids") {
-                Ok(fuuids) => {
-                    middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: fuuids})).await?;
-                },
-                Err(_) => ()
-            };
+    // // Extraire liste de fuuids directement
+    // let routage_action = RoutageMessageAction::builder("grosfichiers", action_str)
+    //     .exchanges(vec![Securite::L2Prive])
+    //     .build();
 
-            let fichier_mappe = match mapper_fichier_db(inner) {
-                Ok(inner) => inner,
-                Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_fichier Erreur mapper_fichier_db : {:?}", e))?
-            };
-            let routage = RoutageMessageAction::builder("grosfichiers", EVENEMENT_MAJ_FICHIER)
-                .exchanges(vec![Securite::L2Prive])
-                .build();
-            middleware.emettre_evenement(routage, &fichier_mappe).await?;
-        },
-        None => Err(format!("grosfichiers.emettre_evenement_maj_fichier Fichier {} introuvable", tuuid_str))?
-    };
+    // match doc_fichier.fuuids {
+    //     Ok(fuuids) => {
+    //         middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: fuuids})).await?;
+    //     },
+    //     Err(_) => ()
+    // };
+
+    // let fichier_mappe = match mapper_fichier_db(inner) {
+    //     Ok(inner) => inner,
+    //     Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_fichier Erreur mapper_fichier_db : {:?}", e))?
+    // };
+    if let Some(cuuids) = doc_fichier.cuuids {
+        for cuuid in cuuids {
+            let mut evenement = EvenementContenuCollection::new();
+            evenement.cuuid = Some(cuuid);
+            evenement.fichiers_modifies = Some(vec![tuuid_str.to_owned()]);
+            emettre_evenement_contenu_collection(middleware, evenement).await?
+        }
+    }
 
     Ok(())
 }
