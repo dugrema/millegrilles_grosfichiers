@@ -735,14 +735,14 @@ async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHits
 struct ResultatDocumentRecherche {
     tuuid: String,
     fuuid: String,
-    nom: String,
+    nom: Option<String>,
     supprime: Option<bool>,
-    nom_version: String,
+    nom_version: Option<String>,
     taille: u64,
     mimetype: String,
     date_creation: Option<DateEpochSeconds>,
     date_modification: Option<DateEpochSeconds>,
-    date_version: DateEpochSeconds,
+    date_version: Option<DateEpochSeconds>,
     titre: Option<HashMap<String, String>>,
     description: Option<HashMap<String, String>>,
 
@@ -834,7 +834,7 @@ impl ResultatDocumentRecherche {
             mimetype,
             date_creation: value.date_creation,
             date_modification: Some(date_version.clone()),
-            date_version,
+            date_version: Some(date_version),
             titre: value.titre,
             description: value.description,
 

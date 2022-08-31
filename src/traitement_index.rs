@@ -138,9 +138,9 @@ pub struct InfoDocumentIndexation {
 /// Contenu et mots-cles pour l'indexation d'un document
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DocumentIndexation {
-    nom: String,    // Nom du fichier
+    nom: Option<String>,    // Nom du fichier
     mimetype: String,
-    date_v_courante: DateEpochSeconds,
+    date_v_courante: Option<DateEpochSeconds>,
 
     // Champs qui proviennent du fichierRep (courant uniquement)
     titre: Option<HashMap<String, String>>,          // Dictionnaire combine

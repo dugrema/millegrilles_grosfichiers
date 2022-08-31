@@ -22,30 +22,29 @@ const ACTION_GENERER_POSTER_PDF: &str = "genererPosterPdf";
 const ACTION_GENERER_POSTER_VIDEO: &str = "genererPosterVideo";
 const ACTION_TRANSCODER_VIDEO: &str = "transcoderVideo";
 
-pub async fn emettre_commande_media<M, S, T, U, V>(middleware: &M, tuuid: U, fuuid: S, mimetype: T, nom_fichier: V)
+pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid: S, mimetype: T)
     -> Result<(), String>
     where
         M: GenerateurMessages,
         S: AsRef<str>,
         T: AsRef<str>,
-        U: AsRef<str>,
-        V: AsRef<str>
+        U: AsRef<str>
 {
     let tuuid_str = tuuid.as_ref();
     let fuuid_str = fuuid.as_ref();
     let mimetype_str = mimetype.as_ref();
-    let nom_fichier_str = nom_fichier.as_ref();
+    // let nom_fichier_str = nom_fichier.as_ref();
 
-    let extension_fichier = match nom_fichier_str.split('.').last() {
-        Some(e) => Some(e.to_lowercase()),
-        None => None
-    };
+    // let extension_fichier = match nom_fichier_str.split('.').last() {
+    //     Some(e) => Some(e.to_lowercase()),
+    //     None => None
+    // };
 
     let message = json!({
         "fuuid": fuuid_str,
         "tuuid": tuuid_str,
         "mimetype": mimetype_str,
-        "extension": extension_fichier,
+        // "extension": extension_fichier,
 
         // Section permission de dechiffrage
         //"permission_hachage_bytes": [fuuid_str],
@@ -131,7 +130,6 @@ pub async fn traiter_media_batch<M>(middleware: &M, limite: i64) -> Result<Vec<S
         let tuuid = version_mappe.tuuid;
         let fuuid = version_mappe.fuuid;
         let mimteype = version_mappe.mimetype;
-        let nom_fichier = version_mappe.nom;
         if let Some(t) = tuuid {
             if let Some(f) = fuuid {
                 if let Some(retry_count) = version_mappe.flag_media_retry {
@@ -139,7 +137,7 @@ pub async fn traiter_media_batch<M>(middleware: &M, limite: i64) -> Result<Vec<S
                         fuuids_retry_expire.push(f.clone());
                     }
                 }
-                emettre_commande_media(middleware, &t, &f, mimteype, nom_fichier).await?;
+                emettre_commande_media(middleware, &t, &f, mimteype).await?;
                 fuuids_media.push(f);
                 tuuids.push(t);
             }

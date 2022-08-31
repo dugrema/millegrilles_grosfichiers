@@ -4,6 +4,7 @@ use millegrilles_common_rust::formatteur_messages::DateEpochSeconds;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use crate::requetes::mapper_fichier_db;
+use crate::transactions::DataChiffre;
 
 pub const DOMAINE_NOM: &str = "GrosFichiers";
 pub const NOM_COLLECTION_TRANSACTIONS: &str = "GrosFichiers";
@@ -81,6 +82,7 @@ pub const CHAMP_CUUID: &str = "cuuid";  // UUID collection de tuuids
 pub const CHAMP_CUUIDS: &str = "cuuids";  // Liste de cuuids (e.g. appartenance a plusieurs collections)
 pub const CHAMP_SUPPRIME: &str = "supprime";
 pub const CHAMP_NOM: &str = "nom";
+pub const CHAMP_METADATA: &str = "metadata";
 pub const CHAMP_TITRE: &str = "titre";
 pub const CHAMP_MIMETYPE: &str = "mimetype";
 pub const CHAMP_FUUID_V_COURANTE: &str = "fuuid_v_courante";
@@ -113,7 +115,7 @@ pub struct FichierDetail {
     pub tuuid: String,
     #[serde(skip_serializing_if="Option::is_none")]
     pub cuuids: Option<Vec<String>>,
-    pub nom: String,
+    pub nom: Option<String>,
     pub titre: Option<HashMap<String, String>>,
     pub description: Option<HashMap<String, String>>,
     pub securite: Option<String>,  // Collection seulement
@@ -126,6 +128,8 @@ pub struct FichierDetail {
     pub date_creation: Option<DateEpochSeconds>,
     pub derniere_modification: Option<DateEpochSeconds>,
     pub supprime: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub metadata: Option<DataChiffre>,
 }
 
 impl TryFrom<Document> for FichierDetail {
@@ -141,13 +145,13 @@ impl TryFrom<Document> for FichierDetail {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DBFichierVersionDetail {
-    pub nom: String,
+    pub nom: Option<String>,
     pub fuuid: Option<String>,
     pub tuuid: Option<String>,
     pub mimetype: String,
     pub taille: usize,
     #[serde(rename="dateFichier")]
-    pub date_fichier: DateEpochSeconds,
+    pub date_fichier: Option<DateEpochSeconds>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub height: Option<u32>,
     #[serde(skip_serializing_if="Option::is_none")]
@@ -164,6 +168,8 @@ pub struct DBFichierVersionDetail {
     pub video: Option<HashMap<String, TransactionAssocierVideo>>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub flag_media_retry: Option<i32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub metadata: Option<DataChiffre>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

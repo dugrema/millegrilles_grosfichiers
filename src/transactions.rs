@@ -97,15 +97,25 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DataChiffre {
+    pub data_chiffre: String,
+    pub header: Option<String>,
+    pub ref_hachage_bytes: Option<String>,
+    pub hachage_bytes: Option<String>,
+    pub format: Option<String>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionNouvelleVersion {
     pub fuuid: String,
     pub cuuid: Option<String>,
     pub tuuid: Option<String>,  // uuid de la premiere commande/transaction comme collateur de versions
-    pub nom: String,
+    pub nom: Option<String>,
     pub mimetype: String,
+    pub metadata: Option<DataChiffre>,
     pub taille: u64,
     #[serde(rename="dateFichier")]
-    pub date_fichier: DateEpochSeconds,
+    pub date_fichier: Option<DateEpochSeconds>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -120,16 +130,18 @@ pub struct TransactionDecrireFichier {
 pub struct TransactionDecrireCollection {
     pub tuuid: String,
     nom: Option<String>,
-    titre: Option<HashMap<String, String>>,
-    description: Option<HashMap<String, String>>,
-    securite: Option<String>,
+    metadata: DataChiffre,
+    // titre: Option<HashMap<String, String>>,
+    // description: Option<HashMap<String, String>>,
+    // securite: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionNouvelleCollection {
-    nom: String,
+    nom: Option<String>,
+    pub metadata: DataChiffre,
     pub cuuid: Option<String>,  // Insertion dans collection destination
-    securite: Option<String>,
+    // securite: Option<String>,
     favoris: Option<bool>,
 }
 
@@ -339,7 +351,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         // On emet les messages de traitement uniquement si la transaction est nouvelle
         if flag_media == true {
             debug!("Emettre une commande de conversion pour media {}", fuuid);
-            match emettre_commande_media(middleware, &tuuid, &fuuid, &mimetype, &nom_fichier).await {
+            match emettre_commande_media(middleware, &tuuid, &fuuid, &mimetype).await {
                 Ok(()) => (),
                 Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
             }
@@ -390,11 +402,16 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
     let tuuid = transaction.get_uuid_transaction().to_owned();
     let cuuid = transaction_collection.cuuid;
     let nom_collection = transaction_collection.nom;
-    let date_courante = millegrilles_common_rust::bson::DateTime::now();
-    let securite = match transaction_collection.securite {
-        Some(s) => s,
-        None => SECURITE_3_PROTEGE.to_owned()
+    let metadata = match convertir_to_bson(&transaction_collection.metadata) {
+        Ok(d) => d,
+        Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion metadata chiffre en bson {:?}", e))?
     };
+
+    let date_courante = millegrilles_common_rust::bson::DateTime::now();
+    // let securite = match transaction_collection.securite {
+    //     Some(s) => s,
+    //     None => SECURITE_3_PROTEGE.to_owned()
+    // };
     let favoris = match transaction_collection.favoris {
         Some(f) => f,
         None => false
@@ -404,9 +421,10 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
     let mut doc_collection = doc! {
         CHAMP_TUUID: &tuuid,
         CHAMP_NOM: nom_collection,
+        CHAMP_METADATA: metadata,
         CHAMP_CREATION: &date_courante,
         CHAMP_MODIFICATION: &date_courante,
-        CHAMP_SECURITE: &securite,
+        // CHAMP_SECURITE: &securite,
         CHAMP_USER_ID: &user_id,
         CHAMP_SUPPRIME: false,
         CHAMP_FAVORIS: favoris,
@@ -1279,7 +1297,14 @@ async fn transaction_decire_collection<M, T>(middleware: &M, transaction: T) -> 
     let tuuid = transaction_mappee.tuuid.as_str();
     let filtre = doc! { CHAMP_TUUID: tuuid };
 
-    let mut set_ops = doc! {};
+    let doc_metadata = match convertir_to_bson(&transaction_mappee.metadata) {
+        Ok(d) => d,
+        Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion transaction : {:?}", e))?
+    };
+
+    let mut set_ops = doc! {
+        "metadata": doc_metadata,
+    };
 
     // Modifier champ nom si present
     if let Some(nom) = &transaction_mappee.nom {
@@ -1287,37 +1312,37 @@ async fn transaction_decire_collection<M, T>(middleware: &M, transaction: T) -> 
     }
 
     // Modifier champ titre si present
-    if let Some(titre) = &transaction_mappee.titre {
-        let titre_bson = match bson::to_bson(titre) {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion titre vers bson : {:?}", e))?
-        };
-        set_ops.insert("titre", titre_bson);
-    }
+    // if let Some(titre) = &transaction_mappee.titre {
+    //     let titre_bson = match bson::to_bson(titre) {
+    //         Ok(inner) => inner,
+    //         Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion titre vers bson : {:?}", e))?
+    //     };
+    //     set_ops.insert("titre", titre_bson);
+    // }
 
     // Modifier champ securite si present
-    if let Some(securite) = &transaction_mappee.securite {
-        // Valider le champ securite
-        let _: Securite = match securite.as_str().try_into() {
-            Ok(s) => s,
-            Err(e) => Err(format!("transactions.transaction_decire_collection Champ securite invalide '{}' : {:?}", securite, e))?
-        };
-
-        let titre_bson = match bson::to_bson(securite) {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion securite vers bson : {:?}", e))?
-        };
-        set_ops.insert("securite", titre_bson);
-    }
+    // if let Some(securite) = &transaction_mappee.securite {
+    //     // Valider le champ securite
+    //     let _: Securite = match securite.as_str().try_into() {
+    //         Ok(s) => s,
+    //         Err(e) => Err(format!("transactions.transaction_decire_collection Champ securite invalide '{}' : {:?}", securite, e))?
+    //     };
+    //
+    //     let titre_bson = match bson::to_bson(securite) {
+    //         Ok(inner) => inner,
+    //         Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion securite vers bson : {:?}", e))?
+    //     };
+    //     set_ops.insert("securite", titre_bson);
+    // }
 
     // Modifier champ description si present
-    if let Some(description) = &transaction_mappee.description {
-        let description_bson = match bson::to_bson(description) {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion titre vers bson : {:?}", e))?
-        };
-        set_ops.insert("description", description_bson);
-    }
+    // if let Some(description) = &transaction_mappee.description {
+    //     let description_bson = match bson::to_bson(description) {
+    //         Ok(inner) => inner,
+    //         Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion titre vers bson : {:?}", e))?
+    //     };
+    //     set_ops.insert("description", description_bson);
+    // }
 
     let ops = doc! {
         "$set": set_ops,
