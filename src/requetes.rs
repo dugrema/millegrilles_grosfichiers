@@ -563,7 +563,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     }
 
     let mut filtre = doc!{
-        "user_id": user_id,
+        "user_id": &user_id,
         "$or": conditions,
     };
     debug!("requete_get_cles_fichiers Filtre : {:?}", filtre);
@@ -584,6 +584,8 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     let permission = json!({
         "liste_hachage_bytes": hachage_bytes,
         "certificat_rechiffrage": pem_rechiffrage,
+        // Condition d'identite
+        "user_id": user_id,
     });
 
     // Emettre requete de rechiffrage de cle, reponse acheminee directement au demandeur
