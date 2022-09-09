@@ -555,11 +555,12 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     };
 
     let mut conditions: Vec<Document> = Vec::new();
-    if requete.tuuids.is_some() {
-        conditions.push(doc!{"tuuid": {"$in": requete.tuuids.expect("tuuids")}});
+    if let Some(tuuids) = requete.tuuids {
+        conditions.push(doc!{"tuuid": {"$in": tuuids}});
     }
-    if requete.fuuids.is_some() {
-        conditions.push(doc!{"fuuids": {"$in": requete.fuuids.expect("fuuids")}});
+    if let Some(fuuids) = requete.fuuids {
+        conditions.push(doc!{"fuuids": {"$in": &fuuids}});
+        conditions.push(doc!{"metadata.ref_hachage_bytes": {"$in": fuuids}});
     }
 
     let mut filtre = doc!{
@@ -567,7 +568,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
         "$or": conditions,
     };
     debug!("requete_get_cles_fichiers Filtre : {:?}", filtre);
-    let projection = doc! {"fuuids": true, "tuuid": true};
+    let projection = doc! {"fuuids": true, "tuuid": true, "metadata": true};
     let opts = FindOptions::builder().projection(projection).limit(1000).build();
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let mut curseur = collection.find(filtre, Some(opts)).await?;
@@ -576,8 +577,15 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     while let Some(fresult) = curseur.next().await {
         debug!("requete_get_cles_fichiers document trouve pour permission cle : {:?}", fresult);
         let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
-        for d in doc_mappe.fuuids {
-            hachage_bytes.insert(d);
+        if let Some(fuuids) = doc_mappe.fuuids {
+            for d in fuuids {
+                hachage_bytes.insert(d);
+            }
+        }
+        if let Some(metadata) = doc_mappe.metadata {
+            if let Some(ref_hachage_bytes) = metadata.ref_hachage_bytes {
+                hachage_bytes.insert(ref_hachage_bytes);
+            }
         }
     }
 
@@ -585,7 +593,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
         "liste_hachage_bytes": hachage_bytes,
         "certificat_rechiffrage": pem_rechiffrage,
         // Condition d'identite
-        "user_id": user_id,
+        // "user_id": user_id,
     });
 
     // Emettre requete de rechiffrage de cle, reponse acheminee directement au demandeur
@@ -885,7 +893,8 @@ struct SortKey {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ResultatDocsPermission {
     tuuid: String,
-    fuuids: Vec<String>,
+    fuuids: Option<Vec<String>>,
+    metadata: Option<DataChiffre>,
 }
 
 async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
