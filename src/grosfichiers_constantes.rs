@@ -145,8 +145,11 @@ impl TryFrom<Document> for FichierDetail {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DBFichierVersionDetail {
+    #[serde(skip_serializing_if="Option::is_none")]
     pub nom: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub fuuid: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub tuuid: Option<String>,
     pub mimetype: String,
     pub taille: usize,

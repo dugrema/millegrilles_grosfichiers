@@ -99,8 +99,11 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DataChiffre {
     pub data_chiffre: String,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub header: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub ref_hachage_bytes: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub hachage_bytes: Option<String>,
     pub format: Option<String>
 }
@@ -108,13 +111,17 @@ pub struct DataChiffre {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionNouvelleVersion {
     pub fuuid: String,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub cuuid: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub tuuid: Option<String>,  // uuid de la premiere commande/transaction comme collateur de versions
+    #[serde(skip_serializing_if="Option::is_none")]
     pub nom: Option<String>,
     pub mimetype: String,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub metadata: Option<DataChiffre>,
     pub taille: u64,
-    #[serde(rename="dateFichier")]
+    #[serde(rename="dateFichier", skip_serializing_if="Option::is_none")]
     pub date_fichier: Option<DateEpochSeconds>,
 }
 
