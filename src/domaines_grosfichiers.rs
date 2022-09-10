@@ -224,7 +224,9 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
         debug!("domaines_grosfichiers.entretien  Execution task d'entretien Core {:?}", maintenant);
 
         if prochain_chargement_certificats_maitredescles < maintenant {
-            match middleware.charger_certificats_chiffrage(middleware.get_enveloppe_privee().enveloppe.as_ref()).await {
+            let enveloppe_privee = middleware.get_enveloppe_privee();
+            let cert_prive = enveloppe_privee.enveloppe.clone();
+            match middleware.charger_certificats_chiffrage(middleware.as_ref(), cert_prive.as_ref(), enveloppe_privee).await {
                 Ok(()) => {
                     prochain_chargement_certificats_maitredescles = maintenant + intervalle_chargement_certificats_maitredescles;
                     debug!("Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_maitredescles);

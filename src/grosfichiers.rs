@@ -10,7 +10,7 @@ use millegrilles_common_rust::{serde_json, serde_json::json};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::CommandeSauvegarderCle;
+use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::{chrono, chrono::{DateTime, Utc}};
 use millegrilles_common_rust::chrono::Timelike;
 use millegrilles_common_rust::constantes::*;
