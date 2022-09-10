@@ -202,6 +202,12 @@ pub struct TransactionAssocierVideo {
     pub quality: Option<i32>,
     pub taille_fichier: u64,
     pub user_id: Option<String>,
+
+    // Information dechiffrage - note : fuuid -> ref_hachage_bytes
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub header: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub format: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -214,6 +220,12 @@ pub struct ImageConversion {
     pub resolution: Option<u32>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub data_chiffre: Option<String>,
+
+    // Information dechiffrage - note : fuuid_v_courante du fichier -> ref_hachage_bytes
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub header: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub format: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
