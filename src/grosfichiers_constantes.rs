@@ -234,6 +234,8 @@ pub struct CommandeVideoConvertir {
     #[serde(rename="bitrateAudio")]
     pub bitrate_audio: u32,
     pub preset: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub user_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

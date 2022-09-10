@@ -25,7 +25,7 @@ const ACTION_TRANSCODER_VIDEO: &str = "transcoderVideo";
 pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid: S, mimetype: T)
     -> Result<(), String>
     where
-        M: GenerateurMessages,
+        M: GenerateurMessages + MongoDao,
         S: AsRef<str>,
         T: AsRef<str>,
         U: AsRef<str>
@@ -40,10 +40,25 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
     //     None => None
     // };
 
+    let filtre = doc! {"tuuid": tuuid_str};
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let doc_fichier = match collection.find_one(filtre, None).await {
+        Ok(f) => match f {
+            Some(f) => match convertir_bson_deserializable::<FichierDetail>(f) {
+                Ok(f) => f,
+                Err(e) => Err(format!("traitement_media.emettre_commande_media Erreur convertir_bson_deserializable {} : {:?}", tuuid_str, e))?
+            },
+            None => Err(format!("traitement_media.emettre_commande_media Fichier tuuid {} inconnu", tuuid_str))?
+        },
+        Err(e) => Err(format!("traitement_media.emettre_commande_media Erreur find_one tuuid {} : {:?}", tuuid_str, e))?
+    };
+    let user_id = doc_fichier.user_id;
+
     let message = json!({
         "fuuid": fuuid_str,
         "tuuid": tuuid_str,
         "mimetype": mimetype_str,
+        "user_id": &user_id,
         // "extension": extension_fichier,
 
         // Section permission de dechiffrage
@@ -60,13 +75,14 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
             };
             match subtype {
                 "video" => {
-                    // Demarrer transcodate versions 270p h264 (mp4)
+                    // Demarrer transcodage versions 270p h264 (mp4)
                     let routage_video = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_VIDEO_TRANSCODER)
                         .exchanges(vec![Securite::L2Prive])
                         .build();
                     let commande_mp4 = json!({
                         "tuuid": tuuid_str,
                         "fuuid": fuuid_str,
+                        "user_id": &user_id,
                         "codecVideo": "h264",
                         "codecAudio": "aac",
                         "mimetype": "video/mp4",
@@ -76,18 +92,7 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
                         "bitrateAudio": 64000,
                         "preset": "medium",
                     });
-                    // let commande_vp9 = json!({
-                    //     "tuuid": tuuid_str,
-                    //     "fuuid": fuuid_str,
-                    //     "codecVideo": "vp9",
-                    //     "codecAudio": "opus",
-                    //     "mimetype": "video/webm",
-                    //     "resolutionVideo": 320,
-                    //     "bitrateVideo": 250000,
-                    //     "bitrateAudio": 64000,
-                    // });
                     middleware.transmettre_commande(routage_video, &commande_mp4, false).await?;
-                    // middleware.transmettre_commande(routage_video, &commande_vp9, false).await?;
 
                     // Faire generer le poster
                     ACTION_GENERER_POSTER_VIDEO
