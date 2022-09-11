@@ -263,7 +263,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
 
     let fuuid = transaction_fichier.fuuid;
     let cuuid = transaction_fichier.cuuid;
-    let nom_fichier = transaction_fichier.nom;
+    // let nom_fichier = transaction_fichier.nom;
     let mimetype = transaction_fichier.mimetype;
 
     let user_id = match transaction.get_enveloppe_certificat() {
@@ -273,7 +273,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         None => None
     };
 
-    doc_bson_transaction.insert(CHAMP_FUUID_MIMETYPES, doc! {&fuuid: &mimetype});
+    // doc_bson_transaction.insert(CHAMP_FUUID_MIMETYPES, doc! {&fuuid: &mimetype});
 
     // Retirer champ CUUID, pas utile dans l'information de version
     doc_bson_transaction.remove(CHAMP_CUUID);
@@ -339,7 +339,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         },
         "$addToSet": add_to_set,
         "$setOnInsert": {
-            "nom": &nom_fichier,
+            // "nom": &nom_fichier,
             "tuuid": &tuuid,
             CHAMP_CREATION: Utc::now(),
             CHAMP_USER_ID: &user_id,
@@ -946,9 +946,9 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
         if let Some(inner) = transaction_mappee.duration.as_ref() {
             set_ops.insert("duration", inner);
         }
-        for (fuuid, mimetype) in fuuid_mimetypes.iter() {
-            set_ops.insert(format!("{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
-        }
+        // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
+        //     set_ops.insert(format!("{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
+        // }
 
         let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
 
@@ -998,9 +998,9 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
         if let Some(inner) = transaction_mappee.duration.as_ref() {
             set_ops.insert("version_courante.duration", inner);
         }
-        for (fuuid, mimetype) in fuuid_mimetypes.iter() {
-            set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
-        }
+        // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
+        //     set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
+        // }
 
         // Combiner les fuuids hors de l'info de version
         let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
@@ -1127,9 +1127,9 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
         let mut set_ops = doc! {
             format!("version_courante.video.{}", &cle_video): &doc_video,
         };
-        for (fuuid, mimetype) in fuuid_mimetypes.iter() {
-            set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
-        }
+        // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
+        //     set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
+        // }
 
         // Combiner les fuuids hors de l'info de version
         let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
@@ -1166,9 +1166,9 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
         let mut set_ops = doc! {
             format!("video.{}", &cle_video): &doc_video,
         };
-        for (fuuid, mimetype) in fuuid_mimetypes.iter() {
-            set_ops.insert(format!("{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
-        }
+        // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
+        //     set_ops.insert(format!("{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
+        // }
         let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
         let ops = doc! {
             "$set": set_ops,
@@ -1469,7 +1469,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
 
     let fuuids: Vec<&String> = fuuids_mimetype.keys().collect();
 
-    doc_bson_transaction.insert(CHAMP_FUUID_MIMETYPES, &fuuids_mimetype);
+    // doc_bson_transaction.insert(CHAMP_FUUID_MIMETYPES, &fuuids_mimetype);
 
     // Retirer champ CUUID, pas utile dans l'information de version
     doc_bson_transaction.remove(CHAMP_CUUID);
@@ -1540,7 +1540,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
             CHAMP_FUUID_V_COURANTE: &fuuid,
             CHAMP_MIMETYPE: &mimetype,
             CHAMP_SUPPRIME: false,
-            CHAMP_FUUID_MIMETYPES: &fuuids_mimetype,
+            // CHAMP_FUUID_MIMETYPES: &fuuids_mimetype,
         },
         "$addToSet": add_to_set,
         "$setOnInsert": {
