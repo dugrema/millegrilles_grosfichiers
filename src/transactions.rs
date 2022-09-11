@@ -128,16 +128,17 @@ pub struct TransactionNouvelleVersion {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionDecrireFichier {
     pub tuuid: String,
-    nom: Option<String>,
-    titre: Option<HashMap<String, String>>,
-    description: Option<HashMap<String, String>>,
+    // nom: Option<String>,
+    // titre: Option<HashMap<String, String>>,
+    metadata: Option<DataChiffre>,
+    // description: Option<HashMap<String, String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionDecrireCollection {
     pub tuuid: String,
-    nom: Option<String>,
-    metadata: DataChiffre,
+    // nom: Option<String>,
+    metadata: Option<DataChiffre>,
     // titre: Option<HashMap<String, String>>,
     // description: Option<HashMap<String, String>>,
     // securite: Option<String>,
@@ -145,7 +146,7 @@ pub struct TransactionDecrireCollection {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionNouvelleCollection {
-    nom: Option<String>,
+    // nom: Option<String>,
     pub metadata: DataChiffre,
     pub cuuid: Option<String>,  // Insertion dans collection destination
     // securite: Option<String>,
@@ -408,7 +409,7 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
 
     let tuuid = transaction.get_uuid_transaction().to_owned();
     let cuuid = transaction_collection.cuuid;
-    let nom_collection = transaction_collection.nom;
+    // let nom_collection = transaction_collection.nom;
     let metadata = match convertir_to_bson(&transaction_collection.metadata) {
         Ok(d) => d,
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion metadata chiffre en bson {:?}", e))?
@@ -427,7 +428,7 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
     // Creer document de collection (fichiersRep)
     let mut doc_collection = doc! {
         CHAMP_TUUID: &tuuid,
-        CHAMP_NOM: nom_collection,
+        // CHAMP_NOM: nom_collection,
         CHAMP_METADATA: metadata,
         CHAMP_CREATION: &date_courante,
         CHAMP_MODIFICATION: &date_courante,
@@ -1218,28 +1219,37 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Res
 
     let mut set_ops = doc! {};
 
-    // Modifier champ nom si present
-    if let Some(nom) = &transaction_mappee.nom {
-        set_ops.insert("nom", nom);
+    // Modifier metadata
+    if let Some(metadata) = transaction_mappee.metadata {
+        let metadata_bson = match bson::to_bson(&metadata) {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion metadata vers bson : {:?}", e))?
+        };
+        set_ops.insert("version_courante.metadata", metadata_bson);
     }
+
+    // Modifier champ nom si present
+    // if let Some(nom) = &transaction_mappee.nom {
+    //     set_ops.insert("nom", nom);
+    // }
 
     // Modifier champ titre si present
-    if let Some(titre) = &transaction_mappee.titre {
-        let titre_bson = match bson::to_bson(titre) {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion titre vers bson : {:?}", e))?
-        };
-        set_ops.insert("titre", titre_bson);
-    }
+    // if let Some(titre) = &transaction_mappee.titre {
+    //     let titre_bson = match bson::to_bson(titre) {
+    //         Ok(inner) => inner,
+    //         Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion titre vers bson : {:?}", e))?
+    //     };
+    //     set_ops.insert("titre", titre_bson);
+    // }
 
     // Modifier champ description si present
-    if let Some(description) = &transaction_mappee.description {
-        let description_bson = match bson::to_bson(description) {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion titre vers bson : {:?}", e))?
-        };
-        set_ops.insert("description", description_bson);
-    }
+    // if let Some(description) = &transaction_mappee.description {
+    //     let description_bson = match bson::to_bson(description) {
+    //         Ok(inner) => inner,
+    //         Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion titre vers bson : {:?}", e))?
+    //     };
+    //     set_ops.insert("description", description_bson);
+    // }
 
     let ops = doc! {
         "$set": set_ops,
@@ -1314,9 +1324,9 @@ async fn transaction_decire_collection<M, T>(middleware: &M, transaction: T) -> 
     };
 
     // Modifier champ nom si present
-    if let Some(nom) = &transaction_mappee.nom {
-        set_ops.insert("nom", nom);
-    }
+    // if let Some(nom) = &transaction_mappee.nom {
+    //     set_ops.insert("nom", nom);
+    // }
 
     // Modifier champ titre si present
     // if let Some(titre) = &transaction_mappee.titre {
