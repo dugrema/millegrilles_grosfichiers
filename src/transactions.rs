@@ -132,6 +132,7 @@ pub struct TransactionDecrireFichier {
     // titre: Option<HashMap<String, String>>,
     metadata: Option<DataChiffre>,
     // description: Option<HashMap<String, String>>,
+    mimetype: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -663,7 +664,7 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
                             }
                         }
                     } else if cuuids.len() == 1 {
-                        let cuuid = cuuids.get(0).expect("cuuid");
+                        let cuuid: &String = cuuids.get(0).expect("cuuid");
 
                         // Ajouter dans la liste de suppression du cuuid (evenement)
                         match tuuids_retires_par_cuuid.get_mut(cuuid) {
@@ -984,6 +985,7 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
             set_ops.insert("version_courante.anime", inner);
         }
         if let Some(inner) = &transaction_mappee.mimetype {
+            set_ops.insert("mimetype", inner);
             set_ops.insert("version_courante.mimetype", inner);
         }
         if let Some(inner) = &transaction_mappee.width {
@@ -1226,6 +1228,11 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Res
             Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion metadata vers bson : {:?}", e))?
         };
         set_ops.insert("version_courante.metadata", metadata_bson);
+    }
+
+    if let Some(mimetype) = transaction_mappee.mimetype {
+        set_ops.insert("mimetype", &mimetype);
+        set_ops.insert("version_courante.mimetype", &mimetype);
     }
 
     // Modifier champ nom si present

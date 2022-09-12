@@ -16,6 +16,7 @@ use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 
 use crate::grosfichiers_constantes::*;
+use crate::requetes::mapper_fichier_db;
 
 const ACTION_GENERER_POSTER_IMAGE: &str = "genererPosterImage";
 const ACTION_GENERER_POSTER_PDF: &str = "genererPosterPdf";
@@ -117,7 +118,8 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
     Ok(())
 }
 
-pub async fn traiter_media_batch<M>(middleware: &M, limite: i64, reset: bool, fuuids_in: Option<Vec<String>>) -> Result<Vec<String>, Box<dyn Error>>
+pub async fn traiter_media_batch<M>(middleware: &M, limite: i64, reset: bool, fuuids_in: Option<Vec<String>>, user_id: Option<String>)
+    -> Result<Vec<String>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
     debug!("traiter_media_batch limite {}, reset {}, fuuids {:?}", limite, reset, fuuids_in);
@@ -129,14 +131,34 @@ pub async fn traiter_media_batch<M>(middleware: &M, limite: i64, reset: bool, fu
         .build();
 
     // let mut filtre = doc! { CHAMP_FLAG_MEDIA_TRAITE: false };
-    let filtre = match fuuids_in.as_ref() {
-        Some(f) => doc! {CHAMP_FUUIDS: doc!{"$in": f}},
-        None => doc! { CHAMP_FLAG_MEDIA_TRAITE: false }
+    let mut mapper_fichiers_reps = false;
+    let mut curseur = match fuuids_in.as_ref() {
+        Some(f) => {
+            let mut filtre = doc! {CHAMP_FUUIDS: doc!{"$in": f}};
+            match user_id {
+                Some(u) => {
+                    mapper_fichiers_reps = true;
+                    filtre.insert(CHAMP_USER_ID, &u);
+                    debug!("traiter_media_batch filtre {:?}", filtre);
+                    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+                    collection.find(filtre, Some(opts)).await?
+                },
+                None => {
+                    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+                    collection.find(filtre, Some(opts)).await?
+                }
+            }
+        },
+        None => {
+            let filtre = doc! { CHAMP_FLAG_MEDIA_TRAITE: false };
+            debug!("traiter_media_batch filtre {:?}", filtre);
+            let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+            collection.find(filtre, Some(opts)).await?
+        }
     };
-    debug!("traiter_media_batch filtre {:?}", filtre);
 
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    let mut curseur = collection.find(filtre, Some(opts)).await?;
+    // let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    // let mut curseur = collection.find(filtre, Some(opts)).await?;
     let mut tuuids = Vec::new();
 
     let mut fuuids_media = Vec::new();
@@ -144,40 +166,40 @@ pub async fn traiter_media_batch<M>(middleware: &M, limite: i64, reset: bool, fu
 
     while let Some(d) = curseur.next().await {
         let doc_version = d?;
-        let version_mappe: DBFichierVersionDetail = convertir_bson_deserializable(doc_version)?;
-        let tuuid = version_mappe.tuuid;
-        let fuuid = version_mappe.fuuid;
-        let mimteype = version_mappe.mimetype;
-        if let Some(t) = tuuid {
-            if let Some(f) = fuuid {
-                if reset == false {
-                    if let Some(retry_count) = version_mappe.flag_media_retry {
-                        if retry_count > MEDIA_RETRY_LIMIT {
-                            fuuids_retry_expire.push(f.clone());
-                        }
+
+        let (tuuid, fuuid, mimetype, retry_count) = if mapper_fichiers_reps {
+            let version_mappe = mapper_fichier_db(doc_version)?;
+            (Some(version_mappe.tuuid), version_mappe.fuuid_v_courante, version_mappe.mimetype, Some(0))
+        } else {
+            let version_mappe: DBFichierVersionDetail = convertir_bson_deserializable(doc_version)?;
+            (version_mappe.tuuid, version_mappe.fuuid, Some(version_mappe.mimetype), version_mappe.flag_media_retry)
+        };
+
+        if tuuid.is_some() && fuuid.is_some() && mimetype.is_some() {
+            let tuuid_ref = tuuid.as_ref().expect("mimetype");
+            let fuuid_ref = fuuid.as_ref().expect("mimetype");
+            let mimetype_ref = mimetype.as_ref().expect("mimetype");
+            if reset == false {
+                if let Some(r) = retry_count {
+                    if r > MEDIA_RETRY_LIMIT {
+                        fuuids_retry_expire.push(fuuid_ref.to_owned());
                     }
                 }
-                let skip_video = reset;  // Si on reset, on genere uniquement previews/images
-                emettre_commande_media(middleware, &t, &f, mimteype, skip_video).await?;
-                fuuids_media.push(f);
-                tuuids.push(t);
+            }
+            let skip_video = reset;  // Si on reset, on genere uniquement previews/images
+            emettre_commande_media(middleware, tuuid_ref, fuuid_ref, mimetype_ref, skip_video).await?;
+            fuuids_media.push(fuuid_ref.to_owned());
+            tuuids.push(tuuid_ref.to_owned());
+        } else {
+            // Skip, mauvais fichier
+            if let Some(f) = fuuid {
+                fuuids_retry_expire.push(f);
             }
         }
     }
 
-    if reset == true {
-        // Reset les flags de traitement media
-        let filtre_retry = doc!{CHAMP_FUUID: {"$in": &fuuids_media}};
-        let ops = doc!{
-            "$set": {
-                CHAMP_FLAG_MEDIA_TRAITE: false,
-                CHAMP_FLAG_MEDIA_RETRY: 0,
-            },
-            "$unset": {CHAMP_FLAG_MEDIA_ERREUR: true},
-            "$currentDate": {CHAMP_MODIFICATION: true},
-        };
-        collection.update_many(filtre_retry, ops, None).await?;
-    } else if fuuids_retry_expire.len() > 0 {
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    if fuuids_retry_expire.len() > 0 {
         // Desactiver apres trop d'echecs de retry
         let filtre_retry = doc!{CHAMP_FUUID: {"$in": fuuids_retry_expire}};
         let ops = doc!{
@@ -200,6 +222,18 @@ pub async fn traiter_media_batch<M>(middleware: &M, limite: i64, reset: bool, fu
             };
             collection.update_many(filtre_retry, ops, None).await?;
         }
+    } else if reset == true {
+        // Reset les flags de traitement media
+        let filtre_retry = doc!{CHAMP_FUUID: {"$in": &fuuids_media}};
+        let ops = doc!{
+            "$set": {
+                CHAMP_FLAG_MEDIA_TRAITE: false,
+                CHAMP_FLAG_MEDIA_RETRY: 0,
+            },
+            "$unset": {CHAMP_FLAG_MEDIA_ERREUR: true},
+            "$currentDate": {CHAMP_MODIFICATION: true},
+        };
+        collection.update_many(filtre_retry, ops, None).await?;
     }
 
     Ok(tuuids)

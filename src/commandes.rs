@@ -612,11 +612,12 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, 
 
     // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
     // Verifier si on a un certificat delegation globale ou prive
+    let user_id = m.get_user_id();
     let autorisation_valide = match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         true => true,
         false => {
             let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
-            match m.get_user_id() {
+            match user_id.as_ref() {
                 Some(u) => {
                     if role_prive == true {
                         match commande.fuuids.as_ref() {
@@ -669,7 +670,7 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, 
         None => false
     };
 
-    let tuuids = traiter_media_batch(middleware, limite, reset, commande.fuuids).await?;
+    let tuuids = traiter_media_batch(middleware, limite, reset, commande.fuuids, user_id).await?;
 
     // Reponse generer preview
     let reponse = ReponseCommandeReindexer {tuuids: Some(tuuids)};
