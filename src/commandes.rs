@@ -365,7 +365,9 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction,
         let user_id_str = user_id.as_ref().expect("user_id");
         let mut tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
         if let Some(t) = commande.cuuid.as_ref() {
-            tuuids.push(t.as_str());
+            if t != "" {
+                tuuids.push(t.as_str());
+            }
         }
         let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
         if err_reponse.is_some() {
