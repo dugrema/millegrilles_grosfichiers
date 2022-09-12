@@ -22,7 +22,7 @@ const ACTION_GENERER_POSTER_PDF: &str = "genererPosterPdf";
 const ACTION_GENERER_POSTER_VIDEO: &str = "genererPosterVideo";
 const ACTION_TRANSCODER_VIDEO: &str = "transcoderVideo";
 
-pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid: S, mimetype: T)
+pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid: S, mimetype: T, skip_video: bool)
     -> Result<(), String>
     where
         M: GenerateurMessages + MongoDao,
@@ -66,6 +66,8 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
         //"permission_duree": 300,  // 300 secondes a partir de la signature de la commande
     });
 
+    debug!("emettre_commande_media Emettre commande {:?}", message);
+
     let action = match mimetype_str {
         "application/pdf" => ACTION_GENERER_POSTER_PDF,
         _ => {
@@ -75,24 +77,27 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
             };
             match subtype {
                 "video" => {
-                    // Demarrer transcodage versions 270p h264 (mp4)
-                    let routage_video = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_VIDEO_TRANSCODER)
-                        .exchanges(vec![Securite::L2Prive])
-                        .build();
-                    let commande_mp4 = json!({
-                        "tuuid": tuuid_str,
-                        "fuuid": fuuid_str,
-                        "user_id": &user_id,
-                        "codecVideo": "h264",
-                        "codecAudio": "aac",
-                        "mimetype": "video/mp4",
-                        "resolutionVideo": 270,
-                        "qualityVideo": 28,
-                        "bitrateVideo": 250000,
-                        "bitrateAudio": 64000,
-                        "preset": "medium",
-                    });
-                    middleware.transmettre_commande(routage_video, &commande_mp4, false).await?;
+                    if skip_video == false {
+                        // Demarrer transcodage versions 270p h264 (mp4)
+                        let routage_video = RoutageMessageAction::builder(DOMAINE_NOM, COMMANDE_VIDEO_TRANSCODER)
+                            .exchanges(vec![Securite::L2Prive])
+                            .build();
+                        let commande_mp4 = json!({
+                            "tuuid": tuuid_str,
+                            "fuuid": fuuid_str,
+                            "user_id": &user_id,
+                            "codecVideo": "h264",
+                            "codecAudio": "aac",
+                            "mimetype": "video/mp4",
+                            "resolutionVideo": 270,
+                            "qualityVideo": 28,
+                            "bitrateVideo": 250000,
+                            "bitrateAudio": 64000,
+                            "preset": "medium",
+                        });
+                        debug!("emettre_commande_media Emettre commande video {:?}", commande_mp4);
+                        middleware.transmettre_commande(routage_video, &commande_mp4, false).await?;
+                    }
 
                     // Faire generer le poster
                     ACTION_GENERER_POSTER_VIDEO
@@ -112,16 +117,24 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
     Ok(())
 }
 
-pub async fn traiter_media_batch<M>(middleware: &M, limite: i64) -> Result<Vec<String>, Box<dyn Error>>
+pub async fn traiter_media_batch<M>(middleware: &M, limite: i64, reset: bool, fuuids_in: Option<Vec<String>>) -> Result<Vec<String>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
+    debug!("traiter_media_batch limite {}, reset {}, fuuids {:?}", limite, reset, fuuids_in);
+
     let opts = FindOptions::builder()
-        .hint(Hint::Name(String::from("flag_media_traite")))
+        // .hint(Hint::Name(String::from("flag_media_traite")))
         .sort(doc! {CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_CREATION: 1})
         .limit(limite)
         .build();
 
-    let filtre = doc! { CHAMP_FLAG_MEDIA_TRAITE: false };
+    // let mut filtre = doc! { CHAMP_FLAG_MEDIA_TRAITE: false };
+    let filtre = match fuuids_in.as_ref() {
+        Some(f) => doc! {CHAMP_FUUIDS: doc!{"$in": f}},
+        None => doc! { CHAMP_FLAG_MEDIA_TRAITE: false }
+    };
+    debug!("traiter_media_batch filtre {:?}", filtre);
+
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     let mut curseur = collection.find(filtre, Some(opts)).await?;
     let mut tuuids = Vec::new();
@@ -137,20 +150,35 @@ pub async fn traiter_media_batch<M>(middleware: &M, limite: i64) -> Result<Vec<S
         let mimteype = version_mappe.mimetype;
         if let Some(t) = tuuid {
             if let Some(f) = fuuid {
-                if let Some(retry_count) = version_mappe.flag_media_retry {
-                    if retry_count > MEDIA_RETRY_LIMIT {
-                        fuuids_retry_expire.push(f.clone());
+                if reset == false {
+                    if let Some(retry_count) = version_mappe.flag_media_retry {
+                        if retry_count > MEDIA_RETRY_LIMIT {
+                            fuuids_retry_expire.push(f.clone());
+                        }
                     }
                 }
-                emettre_commande_media(middleware, &t, &f, mimteype).await?;
+                let skip_video = reset;  // Si on reset, on genere uniquement previews/images
+                emettre_commande_media(middleware, &t, &f, mimteype, skip_video).await?;
                 fuuids_media.push(f);
                 tuuids.push(t);
             }
         }
     }
 
-    // Desactive apres trop d'echecs de retry
-    if fuuids_retry_expire.len() > 0 {
+    if reset == true {
+        // Reset les flags de traitement media
+        let filtre_retry = doc!{CHAMP_FUUID: {"$in": &fuuids_media}};
+        let ops = doc!{
+            "$set": {
+                CHAMP_FLAG_MEDIA_TRAITE: false,
+                CHAMP_FLAG_MEDIA_RETRY: 0,
+            },
+            "$unset": {CHAMP_FLAG_MEDIA_ERREUR: true},
+            "$currentDate": {CHAMP_MODIFICATION: true},
+        };
+        collection.update_many(filtre_retry, ops, None).await?;
+    } else if fuuids_retry_expire.len() > 0 {
+        // Desactiver apres trop d'echecs de retry
         let filtre_retry = doc!{CHAMP_FUUID: {"$in": fuuids_retry_expire}};
         let ops = doc!{
             "$set": {
@@ -160,18 +188,18 @@ pub async fn traiter_media_batch<M>(middleware: &M, limite: i64) -> Result<Vec<S
             "$currentDate": {CHAMP_MODIFICATION: true},
         };
         collection.update_many(filtre_retry, ops, None).await?;
-    }
 
-    // Maj le retry count
-    if fuuids_media.len() > 0 {
-        let filtre_retry = doc!{CHAMP_FUUID: {"$in": fuuids_media}};
-        let ops = doc!{
-            "$inc": {
-                CHAMP_FLAG_MEDIA_RETRY: 1,
-            },
-            "$currentDate": {CHAMP_MODIFICATION: true},
-        };
-        collection.update_many(filtre_retry, ops, None).await?;
+        // Maj le retry count
+        if fuuids_media.len() > 0 {
+            let filtre_retry = doc!{CHAMP_FUUID: {"$in": fuuids_media}};
+            let ops = doc!{
+                "$inc": {
+                    CHAMP_FLAG_MEDIA_RETRY: 1,
+                },
+                "$currentDate": {CHAMP_MODIFICATION: true},
+            };
+            collection.update_many(filtre_retry, ops, None).await?;
+        }
     }
 
     Ok(tuuids)

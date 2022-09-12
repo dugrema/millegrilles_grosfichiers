@@ -189,6 +189,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         COMMANDE_VIDEO_TRANSCODER,
         COMMANDE_VIDEO_ARRETER_CONVERSION,
         COMMANDE_VIDEO_GET_JOB,
+        COMMANDE_COMPLETER_PREVIEWS,
     ];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
@@ -196,7 +197,6 @@ pub fn preparer_queues() -> Vec<QueueType> {
 
     let commandes_protegees: Vec<&str> = vec![
         COMMANDE_INDEXER,
-        COMMANDE_COMPLETER_PREVIEWS,
         COMMANDE_CONFIRMER_FICHIER_INDEXE,
     ];
     for cmd in commandes_protegees {
@@ -465,7 +465,7 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
     // Executer a toutes les 5 minutes
     if minutes % 5 == 0 {
         debug!("Generer index et media manquants");
-        if let Err(e) = traiter_media_batch(middleware, MEDIA_IMAGE_BACTH_DEFAULT).await {
+        if let Err(e) = traiter_media_batch(middleware, MEDIA_IMAGE_BACTH_DEFAULT, false, None).await {
             warn!("Erreur traitement media batch : {:?}", e);
         }
         if let Err(e) = entretien_video_jobs(middleware).await {

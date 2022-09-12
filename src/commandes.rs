@@ -607,31 +607,91 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, 
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_completer_previews Consommer commande : {:?}", & m.message);
-    let commande: CommandeIndexerContenu = m.message.get_msg().map_contenu(None)?;
+    let commande: CommandeCompleterPreviews = m.message.get_msg().map_contenu(None)?;
     debug!("Commande commande_completer_previews parsed : {:?}", commande);
 
     // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
-    // Verifier si on a un certificat delegation globale
-    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        true => Ok(()),
-        false => Err(format!("commandes.commande_completer_previews: Commande autorisation invalide pour message {:?}", m.correlation_id)),
-    }?;
+    // Verifier si on a un certificat delegation globale ou prive
+    let autorisation_valide = match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        true => true,
+        false => {
+            let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+            match m.get_user_id() {
+                Some(u) => {
+                    if role_prive == true {
+                        match commande.fuuids.as_ref() {
+                            Some(f) => {
+                                // Verifier que l'usager a les droits d'acces a tous les tuuids
+
+                                // Creer un set et retirer les tuuids trouves pour l'usager
+                                let mut set_fuuids: HashSet<&String> = HashSet::new();
+                                set_fuuids.extend(f.iter());
+
+                                // Parcourir les fichiers de l'usager, retirer tuuids trouves
+                                let filtre = doc! {CHAMP_USER_ID: u, CHAMP_FUUIDS: {"$in": f}};
+                                let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+                                let mut curseur = collection.find(filtre, None).await?;
+                                while let Some(d) = curseur.next().await {
+                                    let fichier: RowTuuid = convertir_bson_deserializable(d?)?;
+                                    // Retirer tous les fuuids (usager a acces)
+                                    if let Some(f) = fichier.fuuids {
+                                        for fuuid in f {
+                                            set_fuuids.remove(&fuuid);
+                                        }
+                                    }
+                                }
+
+                                // Verifier que tous les tuuids sont representes (set est vide)
+                                set_fuuids.is_empty()  // Retourne true si tous les tuuids ont ete trouves pour l'usager
+                            },
+                            None => false  // Un usager doit fournir une liste de tuuids
+                        }
+                    } else {
+                        false
+                    }
+                },
+                None => false
+            }
+        },
+    };
+
+    if ! autorisation_valide {
+        Err(format!("commandes.commande_completer_previews: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
 
     let limite = match commande.limit {
         Some(inner) => inner,
         None => MEDIA_IMAGE_BACTH_DEFAULT,
     };
 
-    let tuuids = traiter_media_batch(middleware, limite).await?;
+    let reset = match commande.reset {
+        Some(b) => b,
+        None => false
+    };
+
+    let tuuids = traiter_media_batch(middleware, limite, reset, commande.fuuids).await?;
 
     // Reponse generer preview
     let reponse = ReponseCommandeReindexer {tuuids: Some(tuuids)};
     Ok(Some(middleware.formatter_reponse(reponse, None)?))
 }
 
+#[derive(Clone, Deserialize)]
+struct RowTuuid {
+    tuuid: String,
+    fuuids: Option<Vec<String>>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct CommandeCompleterPreviews {
     reset: Option<bool>,
+    limit: Option<i64>,
+    fuuids: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ReponseCompleterPreviews {
+    tuuids: Option<Vec<String>>,
 }
 
 async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
