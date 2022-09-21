@@ -58,7 +58,7 @@ impl TraiterTransaction for GestionnaireGrosFichiers {
 impl GestionnaireDomaine for GestionnaireGrosFichiers {
     fn get_nom_domaine(&self) -> String { String::from(DOMAINE_NOM) }
 
-    fn get_collection_transactions(&self) -> String { String::from(NOM_COLLECTION_TRANSACTIONS) }
+    fn get_collection_transactions(&self) -> Option<String> { Some(String::from(NOM_COLLECTION_TRANSACTIONS)) }
 
     fn get_collections_documents(&self) -> Vec<String> { vec![
         String::from(NOM_COLLECTION_VERSIONS),
@@ -66,11 +66,11 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
         String::from(NOM_COLLECTION_DOCUMENTS),
     ] }
 
-    fn get_q_transactions(&self) -> String { String::from(NOM_Q_TRANSACTIONS) }
+    fn get_q_transactions(&self) -> Option<String> { Some(String::from(NOM_Q_TRANSACTIONS)) }
 
-    fn get_q_volatils(&self) -> String { String::from(NOM_Q_VOLATILS) }
+    fn get_q_volatils(&self) -> Option<String> { Some(String::from(NOM_Q_VOLATILS)) }
 
-    fn get_q_triggers(&self) -> String { String::from(NOM_Q_TRIGGERS) }
+    fn get_q_triggers(&self) -> Option<String> { Some(String::from(NOM_Q_TRIGGERS)) }
 
     fn preparer_queues(&self) -> Vec<QueueType> { preparer_queues() }
 
@@ -98,7 +98,7 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
         consommer_evenement(middleware, message).await
     }
 
-    async fn entretien<M>(&self, middleware: Arc<M>) where M: Middleware + 'static {
+    async fn entretien<M>(self: &'static Self, middleware: Arc<M>) where M: Middleware + 'static {
         entretien(self, middleware).await
     }
 
@@ -226,6 +226,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
             routing_keys: rk_volatils,
             ttl: DEFAULT_Q_TTL.into(),
             durable: true,
+            autodelete: false,
         }
     ));
 
@@ -265,6 +266,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
             routing_keys: rk_transactions,
             ttl: None,
             durable: true,
+            autodelete: false,
         }
     ));
 

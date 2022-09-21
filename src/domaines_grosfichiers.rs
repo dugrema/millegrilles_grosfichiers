@@ -44,7 +44,7 @@ pub async fn run() {
     let gestionnaire = charger_gestionnaire();
 
     // Wiring
-    let (futures, _) = build(gestionnaire).await;
+    let futures = build(gestionnaire).await;
 
     // Run
     executer(futures).await
@@ -75,97 +75,39 @@ fn charger_gestionnaire() -> &'static TypeGestionnaire {
     }
 }
 
-async fn build(gestionnaire: &'static TypeGestionnaire) -> (FuturesUnordered<JoinHandle<()>>, Arc<MiddlewareDb>) {
-
-    // Recuperer configuration des Q de tous les domaines
-    let queues = {
-        let mut queues: Vec<QueueType> = Vec::new();
-        //for g in gestionnaires.clone() {
-            match gestionnaire {
-                TypeGestionnaire::PartitionConsignation(g) => {
-                    queues.extend(g.preparer_queues());
-                },
-                TypeGestionnaire::None => ()
-            }
-        //}
-        queues
-    };
-
-    // Listeners de connexion MQ
-    let (tx_entretien, rx_entretien) = mpsc::channel(1);
-    let listeners = {
-        let mut callbacks: Callback<EventMq> = Callback::new();
-        callbacks.register(Box::new(move |event| {
-            debug!("Callback sur connexion a MQ, event : {:?}", event);
-            let tx_ref = tx_entretien.clone();
-            let _ = spawn(async move {
-                match tx_ref.send(event).await {
-                    Ok(_) => (),
-                    Err(e) => error!("Erreur queuing via callback : {:?}", e)
-                }
-            });
-        }));
-
-        Some(Mutex::new(callbacks))
-    };
-
-    // Preparer middleware avec acces direct aux tables Pki (le domaine est local)
-    // let (
-    //     middleware,
-    //     rx_messages_verifies,
-    //     rx_messages_verif_reply,
-    //     rx_triggers,
-    //     future_recevoir_messages
-    // ) = preparer_middleware_db(queues, listeners);
-
-    let middleware_hooks = preparer_middleware_db(queues, listeners);
+async fn build(gestionnaire: &'static TypeGestionnaire) -> FuturesUnordered<JoinHandle<()>> {
+    let middleware_hooks = preparer_middleware_db();
     let middleware = middleware_hooks.middleware;
+
+    // Tester connexion redis
+    match middleware.redis.liste_certificats_fingerprints().await {
+         Ok(fingerprints_redis) => {
+             info!("redis.liste_certificats_fingerprints Resultat : {:?}", fingerprints_redis);
+         },
+         Err(e) => warn!("redis.liste_certificats_fingerprints Erreur test de connexion redis : {:?}", e)
+    }
 
     // Preparer les green threads de tous les domaines/processus
     let mut futures = FuturesUnordered::new();
-    {
-        let mut map_senders: HashMap<String, Sender<TypeMessage>> = HashMap::new();
 
-        // ** Domaines **
-        {
-            //for g in gestionnaires.clone() {
-                let (
-                    routing_g,
-                    futures_g,
-                ) = match gestionnaire {
-                    TypeGestionnaire::PartitionConsignation(g) => {
-                        g.preparer_threads(middleware.clone()).await.expect("gestionnaire")
-                    },
-                    TypeGestionnaire::None => (HashMap::new(), FuturesUnordered::new()),
-                };
-                futures.extend(futures_g);        // Deplacer vers futures globaux
-                map_senders.extend(routing_g);    // Deplacer vers mapping global
-            //}
-        }
-
-        // ** Wiring global **
-
-        // Creer consommateurs MQ globaux pour rediriger messages recus vers Q internes appropriees
-        futures.push(spawn(
-            consommer(middleware.clone(), middleware_hooks.rx_messages_verifies, map_senders.clone())
-        ));
-        futures.push(spawn(
-            consommer(middleware.clone(), middleware_hooks.rx_messages_verif_reply, map_senders.clone())
-        ));
-        futures.push(spawn(
-            consommer(middleware.clone(), middleware_hooks.rx_triggers, map_senders.clone())
-        ));
-
-        // ** Thread d'entretien **
-        futures.push(spawn(entretien(middleware.clone(), rx_entretien, vec![gestionnaire])));
-
-        // Thread ecoute et validation des messages
-        for f in middleware_hooks.futures {
-            futures.push(f);
-        }
+    // ** Domaines **
+    match gestionnaire {
+        TypeGestionnaire::PartitionConsignation(gestionnaire) => {
+            futures.extend(gestionnaire.preparer_threads(middleware.clone()).await.expect("preparer_threads"));
+        },
+        TypeGestionnaire::None => {panic!("Gestionnaire non configure");}
     }
 
-    (futures, middleware)
+    // ** Thread d'entretien **
+    futures.push(spawn(entretien(middleware.clone(), vec![gestionnaire])));
+
+    // Thread ecoute et validation des messages
+    info!("domaines_maitredescles.build Ajout {} futures dans middleware_hooks", futures.len());
+    for f in middleware_hooks.futures {
+        futures.push(f);
+    }
+
+    futures
 }
 
 async fn executer(mut futures: FuturesUnordered<JoinHandle<()>>) {
@@ -175,7 +117,7 @@ async fn executer(mut futures: FuturesUnordered<JoinHandle<()>>) {
 }
 
 /// Thread d'entretien
-async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnaires: Vec<&'static TypeGestionnaire>)
+async fn entretien<M>(middleware: Arc<M>, gestionnaires: Vec<&'static TypeGestionnaire>)
     where M: Middleware
 {
     let mut certificat_emis = false;
@@ -186,7 +128,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
         for g in &gestionnaires {
             match g {
                 TypeGestionnaire::PartitionConsignation(g) => {
-                    coll_docs_strings.push(String::from(g.get_collection_transactions()));
+                    coll_docs_strings.push(String::from(g.get_collection_transactions().expect("collection transactions")));
                 },
                 TypeGestionnaire::None => ()
             }
@@ -238,33 +180,7 @@ async fn entretien<M>(middleware: Arc<M>, mut rx: Receiver<EventMq>, gestionnair
         // Sleep jusqu'au prochain entretien ou evenement MQ (e.g. connexion)
         debug!("domaines_grosfichiers.entretien Fin cycle, sleep {} secondes", DUREE_ATTENTE / 1000);
         let duration = DurationTokio::from_millis(DUREE_ATTENTE);
-
-        let result = timeout(duration, rx.recv()).await;
-        match result {
-            Ok(inner) => {
-                debug!("domaines_grosfichiers.entretien Recu event MQ : {:?}", inner);
-                match inner {
-                    Some(e) => {
-                        match e {
-                            EventMq::Connecte => {
-                            },
-                            EventMq::Deconnecte => {
-                                // Reset flag certificat
-                                certificat_emis = false;
-                            }
-                        }
-                    },
-                    None => {
-                        warn!("domaines_grosfichiers.entretien MQ n'est pas disponible, on ferme");
-                        break
-                    },
-                }
-
-            },
-            Err(_) => {
-                debug!("domaines_grosfichiers.entretien entretien Timeout, entretien est du");
-            }
-        }
+        sleep(duration).await;
 
         middleware.entretien_validateur().await;
 
