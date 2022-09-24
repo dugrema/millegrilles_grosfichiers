@@ -80,11 +80,13 @@ async fn build(gestionnaire: &'static TypeGestionnaire) -> FuturesUnordered<Join
     let middleware = middleware_hooks.middleware;
 
     // Tester connexion redis
-    match middleware.redis.liste_certificats_fingerprints().await {
-         Ok(fingerprints_redis) => {
-             info!("redis.liste_certificats_fingerprints Resultat : {:?}", fingerprints_redis);
-         },
-         Err(e) => warn!("redis.liste_certificats_fingerprints Erreur test de connexion redis : {:?}", e)
+    if let Some(redis) = middleware.redis.as_ref() {
+        match redis.liste_certificats_fingerprints().await {
+            Ok(fingerprints_redis) => {
+                info!("redis.liste_certificats_fingerprints Resultat : {:?}", fingerprints_redis);
+            },
+            Err(e) => warn!("redis.liste_certificats_fingerprints Erreur test de connexion redis : {:?}", e)
+        }
     }
 
     // Preparer les green threads de tous les domaines/processus
