@@ -170,7 +170,7 @@ async fn entretien<M>(middleware: Arc<M>, gestionnaires: Vec<&'static TypeGestio
         if prochain_chargement_certificats_maitredescles < maintenant {
             let enveloppe_privee = middleware.get_enveloppe_privee();
             let cert_prive = enveloppe_privee.enveloppe.clone();
-            match middleware.charger_certificats_chiffrage(middleware.as_ref(), cert_prive.as_ref(), enveloppe_privee).await {
+            match middleware.charger_certificats_chiffrage(middleware.as_ref()).await {
                 Ok(()) => {
                     prochain_chargement_certificats_maitredescles = maintenant + intervalle_chargement_certificats_maitredescles;
                     debug!("Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_maitredescles);
