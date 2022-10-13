@@ -575,7 +575,7 @@ pub struct ParametresRecherche {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ParametresGetPermission {
     pub tuuids: Option<Vec<String>>,
-    pub fuuids: Option<Vec<String>>,
+    pub fuuids: Vec<String>,
 }
 
 pub async fn traiter_index_manquant<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, limite: i64)

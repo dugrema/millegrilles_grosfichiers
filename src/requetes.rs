@@ -558,10 +558,12 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     if let Some(tuuids) = requete.tuuids {
         conditions.push(doc!{"tuuid": {"$in": tuuids}});
     }
-    if let Some(fuuids) = requete.fuuids {
-        conditions.push(doc!{"fuuids": {"$in": &fuuids}});
-        conditions.push(doc!{"metadata.ref_hachage_bytes": {"$in": fuuids}});
-    }
+    //if let Some(fuuids) = requete.fuuids {
+        // conditions.push(doc!{"fuuids": {"$in": &fuuids}});
+        // conditions.push(doc!{"metadata.ref_hachage_bytes": {"$in": fuuids}});
+        conditions.push(doc!{"fuuids": {"$in": &requete.fuuids}});
+        conditions.push(doc!{"metadata.ref_hachage_bytes": {"$in": &requete.fuuids}});
+    //}
 
     let mut filtre = doc!{
         "user_id": &user_id,
@@ -573,18 +575,24 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let mut curseur = collection.find(filtre, Some(opts)).await?;
 
-    let mut hachage_bytes = HashSet::new();
+    let mut hachage_bytes_demandes = HashSet::new();
+    hachage_bytes_demandes.extend(requete.fuuids.iter().map(|f| f.to_string()));
+    let mut hachage_bytes = Vec::new();
     while let Some(fresult) = curseur.next().await {
         debug!("requete_get_cles_fichiers document trouve pour permission cle : {:?}", fresult);
         let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
         if let Some(fuuids) = doc_mappe.fuuids {
             for d in fuuids {
-                hachage_bytes.insert(d);
+                if hachage_bytes_demandes.remove(d.as_str()) {
+                    hachage_bytes.push(d);
+                }
             }
         }
         if let Some(metadata) = doc_mappe.metadata {
             if let Some(ref_hachage_bytes) = metadata.ref_hachage_bytes {
-                hachage_bytes.insert(ref_hachage_bytes);
+                if hachage_bytes_demandes.remove(ref_hachage_bytes.as_str()) {
+                    hachage_bytes.push(ref_hachage_bytes);
+                }
             }
         }
     }
