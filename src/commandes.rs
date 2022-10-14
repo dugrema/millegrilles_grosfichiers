@@ -6,6 +6,7 @@ use millegrilles_common_rust::{serde_json, serde_json::json};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::common_messages::RequeteVerifierPreuve;
 use millegrilles_common_rust::constantes::*;
@@ -476,76 +477,79 @@ async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction
     debug!("commande_copier_fichier_tiers parsed : {:?}", commande);
     // debug!("Commande en json (DEBUG) : \n{:?}", serde_json::to_string(&commande));
 
+    todo!("fix me")
+
     // Verifier aupres du maitredescles si les cles sont valides
-    let preuve = commande.preuve;
-    let routage_maitrecles = RoutageMessageAction::builder(
-        DOMAINE_NOM_MAITREDESCLES, REQUETE_MAITREDESCLES_VERIFIER_PREUVE)
-        .partition(&preuve.partition)
-        .build();
-    debug!("commande_copier_fichier_tiers Requete preuve possession cles : {:?}", preuve.preuve);
-    let reponse_preuve = match middleware.transmettre_requete(routage_maitrecles, &preuve.preuve).await? {
-        TypeMessage::Valide(m) => {
-            match m.message.certificat.as_ref() {
-                Some(c) => {
-                    if c.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
-                        debug!("commande_copier_fichier_tiers Reponse preuve : {:?}", m);
-                        let preuve_value: ReponsePreuvePossessionCles = m.message.get_msg().map_contenu(None)?;
-                        Ok(preuve_value)
-                    } else {
-                        Err(format!("commandes.commande_copier_fichier_tiers Erreur chargement certificat de reponse verification preuve, certificat n'est pas de role maitre des cles"))
-                    }
-                },
-                None => Err(format!("commandes.commande_copier_fichier_tiers Erreur chargement certificat de reponse verification preuve, certificat inconnu"))
-            }
-        },
-        m => Err(format!("commandes.commande_copier_fichier_tiers Erreur reponse message verification cles, mauvais type : {:?}", m))
-    }?;
-    debug!("commande_copier_fichier_tiers Reponse verification preuve : {:?}", reponse_preuve);
-
-    // S'assurer que tous les fuuids de la transaction sont verifies
-    let transaction_copier = commande.transaction;
-    let mut fuuids = Vec::new();
-    fuuids.push(transaction_copier.fuuid.as_str());
-    if let Some(i) = &transaction_copier.images {
-        let fuuids_image: Vec<&str> = i.values().map(|info| info.hachage.as_str()).collect();
-        fuuids.extend(fuuids_image);
-    }
-    if let Some(v) = &transaction_copier.video {
-        let fuuids_videos: Vec<&str> = v.values().map(|info| info.fuuid_video.as_str()).collect();
-        fuuids.extend(fuuids_videos);
-    }
-
-    debug!("commande_copier_fichier_tiers Fuuids fichier : {:?}", fuuids);
-    for fuuid in fuuids {
-        if let Some(confirme) = reponse_preuve.verification.get(fuuid.into()) {
-            if(!confirme) {
-                debug!("Au moins une des cles n'est pas confirmee, on abandonne la transaction");
-                return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cles invalides ou manquantes"}), None)?));
-            }
-        }
-    }
-
-    // Traiter la transaction, generer nouveau MVA pour transmettre uniquement la transaction
-    // La preuve n'est plus necessaire
-    let transaction_copier: Value = m.message.get_msg().map_contenu(Some("transaction"))?;
-    let transaction_copier_str = serde_json::to_string(&transaction_copier)?;
-    debug!("commande_copier_fichier_tiers Transaction copier str : {:?}", transaction_copier_str);
-    let mut transaction_copier_message = MessageSerialise::from_str(transaction_copier_str.as_str())?;
-    transaction_copier_message.certificat = m.message.certificat.clone();
-    let mva = MessageValideAction::new(transaction_copier_message, m.q, "transaction.GrosFichiers.copierFichierTiers".into(), m.domaine, m.action, m.type_message);
-    Ok(sauvegarder_traiter_transaction(middleware, mva, gestionnaire).await?)
+    // let preuve = commande.preuve;
+    // let routage_maitrecles = RoutageMessageAction::builder(
+    //     DOMAINE_NOM_MAITREDESCLES, REQUETE_MAITREDESCLES_VERIFIER_PREUVE)
+    //     .partition(&preuve.partition)
+    //     .build();
+    // debug!("commande_copier_fichier_tiers Requete preuve possession cles : {:?}", preuve.preuve);
+    // let reponse_preuve = match middleware.transmettre_requete(routage_maitrecles, &preuve.preuve).await? {
+    //     TypeMessage::Valide(m) => {
+    //         match m.message.certificat.as_ref() {
+    //             Some(c) => {
+    //                 if c.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
+    //                     debug!("commande_copier_fichier_tiers Reponse preuve : {:?}", m);
+    //                     let preuve_value: ReponsePreuvePossessionCles = m.message.get_msg().map_contenu(None)?;
+    //                     Ok(preuve_value)
+    //                 } else {
+    //                     Err(format!("commandes.commande_copier_fichier_tiers Erreur chargement certificat de reponse verification preuve, certificat n'est pas de role maitre des cles"))
+    //                 }
+    //             },
+    //             None => Err(format!("commandes.commande_copier_fichier_tiers Erreur chargement certificat de reponse verification preuve, certificat inconnu"))
+    //         }
+    //     },
+    //     m => Err(format!("commandes.commande_copier_fichier_tiers Erreur reponse message verification cles, mauvais type : {:?}", m))
+    // }?;
+    // debug!("commande_copier_fichier_tiers Reponse verification preuve : {:?}", reponse_preuve);
+    //
+    // // S'assurer que tous les fuuids de la transaction sont verifies
+    // let transaction_copier = commande.transaction;
+    // let mut fuuids = Vec::new();
+    // fuuids.push(transaction_copier.fuuid.as_str());
+    // if let Some(i) = &transaction_copier.images {
+    //     let fuuids_image: Vec<&str> = i.values().map(|info| info.hachage.as_str()).collect();
+    //     fuuids.extend(fuuids_image);
+    // }
+    // if let Some(v) = &transaction_copier.video {
+    //     let fuuids_videos: Vec<&str> = v.values().map(|info| info.fuuid_video.as_str()).collect();
+    //     fuuids.extend(fuuids_videos);
+    // }
+    //
+    // debug!("commande_copier_fichier_tiers Fuuids fichier : {:?}", fuuids);
+    // for fuuid in fuuids {
+    //     if let Some(confirme) = reponse_preuve.verification.get(fuuid.into()) {
+    //         if(!confirme) {
+    //             debug!("Au moins une des cles n'est pas confirmee, on abandonne la transaction");
+    //             return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cles invalides ou manquantes"}), None)?));
+    //         }
+    //     }
+    // }
+    //
+    // // Traiter la transaction, generer nouveau MVA pour transmettre uniquement la transaction
+    // // La preuve n'est plus necessaire
+    // let transaction_copier: Value = m.message.get_msg().map_contenu(Some("transaction"))?;
+    // let transaction_copier_str = serde_json::to_string(&transaction_copier)?;
+    // debug!("commande_copier_fichier_tiers Transaction copier str : {:?}", transaction_copier_str);
+    // let mut transaction_copier_message = MessageSerialise::from_str(transaction_copier_str.as_str())?;
+    // transaction_copier_message.certificat = m.message.certificat.clone();
+    // let mva = MessageValideAction::new(transaction_copier_message, m.q, "transaction.GrosFichiers.copierFichierTiers".into(), m.domaine, m.action, m.type_message);
+    // Ok(sauvegarder_traiter_transaction(middleware, mva, gestionnaire).await?)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeCopierFichierTiers {
-    pub preuve: PreuvePossessionCles,
-    pub transaction: TransactionCopierFichierTiers,
+    pub cles: HashMap<String, CommandeSauvegarderCle>,
+    pub fichiers: Vec<TransactionCopierFichierTiers>,
+    pub preuve: HashMap<String, PreuvePossessionCles>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PreuvePossessionCles {
-    pub preuve: RequeteVerifierPreuve,
-    pub partition: String,
+    pub preuve: String,
+    pub date: DateEpochSeconds,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
