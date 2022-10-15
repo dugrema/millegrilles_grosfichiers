@@ -1182,7 +1182,7 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
 
     // MAJ de la version du fichier
     {
-        let filtre = doc! { CHAMP_FUUID: &transaction_mappee.fuuid };
+        let filtre = doc! { CHAMP_FUUID: &transaction_mappee.fuuid, CHAMP_TUUID: &transaction_mappee.tuuid };
 
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
 
@@ -1479,7 +1479,9 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         Some(images) => {
             let presentes = ! images.is_empty();
             for image in images.values() {
-                fuuids.insert(image.hachage.as_str());
+                if image.data_chiffre.is_none() {
+                    fuuids.insert(image.hachage.as_str());
+                }
             }
             presentes
         },
@@ -1532,7 +1534,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
             "$currentDate": {CHAMP_MODIFICATION: true}
         };
 
-        let filtre = doc! { "fuuid": &fuuid };
+        let filtre = doc! { "fuuid": &fuuid, "tuuid": &tuuid };
         let options = UpdateOptions::builder()
             .upsert(true)
             .build();
@@ -1547,44 +1549,52 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         }
     }
 
-    todo!("fix me");
+    // Retirer champs cles - ils sont inutiles dans la version_courante
+    doc_bson_transaction.remove(CHAMP_TUUID);
+    doc_bson_transaction.remove(CHAMP_FUUID);
+    doc_bson_transaction.remove(CHAMP_METADATA);
+    doc_bson_transaction.remove(CHAMP_FUUIDS);
+    doc_bson_transaction.remove(CHAMP_USER_ID);
 
-    // // Retirer champs cles - ils sont inutiles dans la version
-    // doc_bson_transaction.remove(CHAMP_TUUID);
-    // doc_bson_transaction.remove(CHAMP_FUUID);
-    //
-    // let filtre = doc! {CHAMP_TUUID: &tuuid};
-    // let mut add_to_set = doc!{"fuuids": {"$each": &fuuids}};
-    //
-    // // Ajouter collection
-    // add_to_set.insert("cuuids", cuuid);
-    //
-    // let ops = doc! {
-    //     "$set": {
-    //         "version_courante": doc_bson_transaction,
-    //         CHAMP_FUUID_V_COURANTE: &fuuid,
-    //         CHAMP_MIMETYPE: &mimetype,
-    //         CHAMP_SUPPRIME: false,
-    //         // CHAMP_FUUID_MIMETYPES: &fuuids_mimetype,
-    //     },
-    //     "$addToSet": add_to_set,
-    //     "$setOnInsert": {
-    //         "nom": &nom_fichier,
-    //         "tuuid": &tuuid,
-    //         CHAMP_CREATION: Utc::now(),
-    //         CHAMP_USER_ID: &user_id,
-    //     },
-    //     "$currentDate": {CHAMP_MODIFICATION: true}
-    // };
-    // let opts = UpdateOptions::builder().upsert(true).build();
-    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    // debug!("nouveau fichier update ops : {:?}", ops);
-    // let resultat = match collection.update_one(filtre, ops, opts).await {
-    //     Ok(r) => r,
-    //     Err(e) => Err(format!("grosfichiers.transaction_cle Erreur update_one sur transcation : {:?}", e))?
-    // };
-    // debug!("nouveau fichier Resultat transaction update : {:?}", resultat);
-    //
+    let filtre = doc! {CHAMP_TUUID: &tuuid};
+    let mut add_to_set = doc!{"fuuids": {"$each": &fuuids}};
+
+    // Ajouter collection
+    add_to_set.insert("cuuids", cuuid);
+
+    let metadata = match metadata {
+        Some(inner) => match convertir_to_bson(inner) {
+            Ok(metadata) => Some(metadata),
+            Err(e) => Err(format!("Erreur conversion metadata a bson : {:?}", e))?
+        },
+        None => None
+    };
+
+    let ops = doc! {
+        "$set": {
+            "version_courante": doc_bson_transaction,
+            CHAMP_FUUID_V_COURANTE: &fuuid,
+            CHAMP_MIMETYPE: &mimetype,
+            CHAMP_SUPPRIME: false,
+        },
+        "$addToSet": add_to_set,
+        "$setOnInsert": {
+            CHAMP_TUUID: &tuuid,
+            CHAMP_CREATION: Utc::now(),
+            CHAMP_USER_ID: &user_id,
+            CHAMP_METADATA: metadata,
+        },
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    let opts = UpdateOptions::builder().upsert(true).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    debug!("nouveau fichier update ops : {:?}", ops);
+    let resultat = match collection.update_one(filtre, ops, opts).await {
+        Ok(r) => r,
+        Err(e) => Err(format!("grosfichiers.transaction_cle Erreur update_one sur transcation : {:?}", e))?
+    };
+    debug!("nouveau fichier Resultat transaction update : {:?}", resultat);
+
     // // if flag_media == true {
     // //     debug!("Emettre une commande de conversion pour media {}", fuuid);
     // //     match emettre_commande_media(middleware, &tuuid, &fuuid, &mimetype).await {
@@ -1598,9 +1608,9 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     //     Ok(()) => (),
     //     Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
     // }
-    //
-    // // Emettre fichier pour que tous les clients recoivent la mise a jour
-    // emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_COPIER_FICHIER_TIERS).await?;
+
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_COPIER_FICHIER_TIERS).await?;
 
     middleware.reponse_ok()
 }
