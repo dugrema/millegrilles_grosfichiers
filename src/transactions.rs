@@ -201,6 +201,7 @@ pub struct TransactionCopierFichierTiers {
     pub width: Option<u32>,
     pub images: Option<HashMap<String, ImageInfo>>,
     pub video: Option<HashMap<String, VideoInfo>>,
+    pub user_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1434,11 +1435,13 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur conversion transaction en bson : {:?}", e))?
     };
 
+    debug!("transaction_copier_fichier_tiers Doc bson : {:?}", doc_bson_transaction);
+
     todo!("fix me");
 
     // let fuuid = transaction_fichier.fuuid;
     // let cuuid = transaction_fichier.cuuid;
-    // let nom_fichier = transaction_fichier.nom;
+    // let metadata = transaction_fichier.metadata;
     // let mimetype = transaction_fichier.mimetype;
     //
     // let user_id = match transaction.get_enveloppe_certificat() {
