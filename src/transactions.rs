@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::convert::TryInto;
 
@@ -192,28 +192,45 @@ pub struct TransactionChangerFavoris {
 pub struct TransactionCopierFichierTiers {
     pub fuuid: String,
     pub cuuid: String,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub metadata: Option<DataChiffre>,
     pub mimetype: String,
-    pub taille: u64,
-    pub anime: Option<bool>,
-    pub duration: Option<f32>,
-    pub height: Option<u32>,
-    pub width: Option<u32>,
-    pub images: Option<HashMap<String, ImageInfo>>,
-    pub video: Option<HashMap<String, VideoInfo>>,
     pub user_id: Option<String>,
+    pub taille: u64,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub anime: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub duration: Option<f32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub images: Option<HashMap<String, ImageInfo>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub video: Option<HashMap<String, VideoInfo>>,
+    #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
+    pub video_codec: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImageInfo {
     pub hachage: String,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub resolution: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub height: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub width: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub taille: Option<u64>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub mimetype: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub data_chiffre: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub header: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub format: Option<String>,
 }
 
@@ -222,15 +239,23 @@ pub struct VideoInfo {
     pub fuuid: String,
     pub tuuid: String,
     pub fuuid_video: String,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub resolution: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub height: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub width: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub taille_fichier: Option<u64>,
     pub mimetype: String,
     pub codec: String,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub bitrate: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub quality: Option<i32>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub header: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub format: Option<String>,
 }
 
@@ -269,14 +294,18 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
     // let nom_fichier = transaction_fichier.nom;
     let mimetype = transaction_fichier.mimetype;
 
-    let user_id = match transaction.get_enveloppe_certificat() {
-        Some(e) => {
-            e.get_user_id()?.to_owned()
-        },
-        None => None
+    let enveloppe = match transaction.get_enveloppe_certificat() {
+        Some(inner) => inner,
+        None => Err(format!("grosfichiers.transaction_nouvelle_version Certificat absent (enveloppe)"))?
     };
 
-    // doc_bson_transaction.insert(CHAMP_FUUID_MIMETYPES, doc! {&fuuid: &mimetype});
+    let user_id = match enveloppe.get_user_id() {
+        Ok(inner) => match inner {
+            Some(user) => user.to_owned(),
+            None => Err(format!("grosfichiers.transaction_nouvelle_version User_id absent du certificat"))?
+        },
+        Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur get_user_id() : {:?}", e))?
+    };
 
     // Retirer champ CUUID, pas utile dans l'information de version
     doc_bson_transaction.remove(CHAMP_CUUID);
@@ -289,6 +318,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
         let mut doc_version = doc_bson_transaction.clone();
         doc_version.insert(CHAMP_TUUID, &tuuid);
+        doc_version.insert(CHAMP_USER_ID, &user_id);
         doc_version.insert(CHAMP_FUUIDS, vec![&fuuid]);
 
         // Information optionnelle pour accelerer indexation/traitement media
@@ -1435,108 +1465,90 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur conversion transaction en bson : {:?}", e))?
     };
 
-    debug!("transaction_copier_fichier_tiers Doc bson : {:?}", doc_bson_transaction);
+    debug!("transaction_copier_fichier_tiers Tuuid {} Doc bson : {:?}", tuuid, doc_bson_transaction);
+
+    let fuuid = transaction_fichier.fuuid;
+    let cuuid = transaction_fichier.cuuid;
+    let metadata = transaction_fichier.metadata;
+    let mimetype = transaction_fichier.mimetype;
+    let user_id = transaction_fichier.user_id;
+
+    let mut fuuids = HashSet::new();
+    fuuids.insert(fuuid.as_str());
+    let images_presentes = match &transaction_fichier.images {
+        Some(images) => {
+            let presentes = ! images.is_empty();
+            for image in images.values() {
+                fuuids.insert(image.hachage.as_str());
+            }
+            presentes
+        },
+        None => false
+    };
+    let videos_presents = match &transaction_fichier.video {
+        Some(videos) => {
+            let presents = ! videos.is_empty();
+            for video in videos.values() {
+                fuuids.insert(video.fuuid_video.as_str());
+            }
+            presents
+        },
+        None => false
+    };
+
+    let fuuids: Vec<&str> = fuuids.into_iter().collect();  // Convertir en vec
+
+    debug!("Fuuids fichier : {:?}", fuuids);
+    doc_bson_transaction.insert(CHAMP_FUUIDS, &fuuids);
+
+    // Retirer champ CUUID, pas utile dans l'information de version
+    doc_bson_transaction.remove(CHAMP_CUUID);
+
+    // Inserer document de version
+    {
+        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        let mut doc_version = doc_bson_transaction.clone();
+        doc_version.insert(CHAMP_TUUID, &tuuid);
+        doc_version.insert(CHAMP_FUUIDS, &fuuids);
+
+        // Information optionnelle pour accelerer indexation/traitement media
+        if mimetype.starts_with("image") {
+            doc_version.insert(CHAMP_FLAG_MEDIA, "image");
+            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, true);
+        } else if mimetype.starts_with("video") {
+            doc_version.insert(CHAMP_FLAG_MEDIA, "video");
+            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, true);
+        } else if mimetype =="application/pdf" {
+            doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
+            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, true);
+        }
+        doc_version.insert(CHAMP_FLAG_INDEXE, false);
+
+        // Champs date
+        doc_version.insert(CHAMP_CREATION, Utc::now());
+
+        let ops = doc! {
+            "$setOnInsert": doc_version,
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+
+        let filtre = doc! { "fuuid": &fuuid };
+        let options = UpdateOptions::builder()
+            .upsert(true)
+            .build();
+
+        match collection.update_one(filtre, ops, options).await {
+            Ok(resultat_update) => {
+                if resultat_update.upserted_id.is_none() && resultat_update.matched_count != 1 {
+                   Err(format!("Erreur mise a jour versionsFichiers, echec insertion document (updated count == 0)"))?;
+                }
+            },
+            Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur update versionFichiers : {:?}", e))?
+        }
+    }
 
     todo!("fix me");
 
-    // let fuuid = transaction_fichier.fuuid;
-    // let cuuid = transaction_fichier.cuuid;
-    // let metadata = transaction_fichier.metadata;
-    // let mimetype = transaction_fichier.mimetype;
-    //
-    // let user_id = match transaction.get_enveloppe_certificat() {
-    //     Some(e) => {
-    //         match e.get_user_id()? {
-    //             Some(u) => u.to_owned(),
-    //             None => Err(format!("transactions.transaction_copier_fichier_tiers Le certificat n'a pas de user_id"))?
-    //         }
-    //     },
-    //     None => Err(format!("transactions.transaction_copier_fichier_tiers Certificat n'est pas charge"))?
-    // };
-    //
-    // let fuuids_mimetype = {
-    //     let mut fuuids_mimetype = Document::new();
-    //     fuuids_mimetype.insert(fuuid.clone(), mimetype.clone());
-    //
-    //     // Ajouter fuuids video, images
-    //     if let Some(images) = transaction_fichier.images {
-    //         for img in images.values() {
-    //             let mimetype = img.mimetype.as_ref();
-    //             let fuuid = &img.hachage;
-    //             if let Some(mt) = mimetype {
-    //                 fuuids_mimetype.insert(fuuid.to_owned(), mt.to_owned());
-    //             }
-    //         }
-    //     }
-    //
-    //     if let Some(videos) = transaction_fichier.video {
-    //         for vid in videos.values() {
-    //             let mimetype = vid.mimetype.as_str();
-    //             let fuuid = &vid.fuuid_video;
-    //             fuuids_mimetype.insert(fuuid.to_owned(), mimetype.to_owned());
-    //         }
-    //     }
-    //
-    //     fuuids_mimetype
-    // };
-    //
-    // let fuuids: Vec<&String> = fuuids_mimetype.keys().collect();
-    //
-    // // doc_bson_transaction.insert(CHAMP_FUUID_MIMETYPES, &fuuids_mimetype);
-    //
-    // // Retirer champ CUUID, pas utile dans l'information de version
-    // doc_bson_transaction.remove(CHAMP_CUUID);
-    //
-    // let mut flag_media = false;
-    //
-    // // Inserer document de version
-    // {
-    //     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    //     let mut doc_version = doc_bson_transaction.clone();
-    //     doc_version.insert(CHAMP_TUUID, &tuuid);
-    //     doc_version.insert(CHAMP_FUUIDS, &fuuids);
-    //
-    //     // Information optionnelle pour accelerer indexation/traitement media
-    //     if mimetype.starts_with("image") {
-    //         flag_media = true;
-    //         doc_version.insert(CHAMP_FLAG_MEDIA, "image");
-    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, true);
-    //     } else if mimetype.starts_with("video") {
-    //         flag_media = true;
-    //         doc_version.insert(CHAMP_FLAG_MEDIA, "video");
-    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, true);
-    //     } else if mimetype =="application/pdf" {
-    //         flag_media = true;
-    //         doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
-    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, true);
-    //     }
-    //     doc_version.insert(CHAMP_FLAG_INDEXE, false);
-    //
-    //     // Champs date
-    //     doc_version.insert(CHAMP_CREATION, Utc::now());
-    //
-    //     let ops = doc! {
-    //         "$setOnInsert": doc_version,
-    //         "$currentDate": {CHAMP_MODIFICATION: true}
-    //     };
-    //
-    //     let filtre = doc! {
-    //         "fuuid": &fuuid,
-    //     };
-    //     let options = UpdateOptions::builder()
-    //         .upsert(true)
-    //         .build();
-    //
-    //     match collection.update_one(filtre, ops, options).await {
-    //         Ok(resultat_update) => {
-    //             if resultat_update.upserted_id.is_none() && resultat_update.matched_count != 1 {
-    //                Err(format!("Erreur mise a jour versionsFichiers, echec insertion document (updated count == 0)"))?;
-    //             }
-    //         },
-    //         Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur update versionFichiers : {:?}", e))?
-    //     }
-    // }
-    //
     // // Retirer champs cles - ils sont inutiles dans la version
     // doc_bson_transaction.remove(CHAMP_TUUID);
     // doc_bson_transaction.remove(CHAMP_FUUID);

@@ -360,6 +360,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
     };
     let champs_index_versions_fuuid = vec!(
         ChampIndex {nom_champ: String::from(CHAMP_FUUID), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
     );
     middleware.create_index(
         NOM_COLLECTION_VERSIONS,
