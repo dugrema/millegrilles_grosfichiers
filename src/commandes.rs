@@ -520,7 +520,33 @@ async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction
     let mut resultat_fichiers = HashMap::new();
     for mut fichier in commande.fichiers {
         let fuuid = fichier.fuuid.as_str();
+
+        let mut etat_cle = false;
         if Some(&true) == reponse_preuves.get(fuuid) {
+            etat_cle = true;
+        } else {
+            // Tenter de sauvegarder la cle
+            if let Some(cle) = commande.cles.get(fuuid) {
+                debug!("commande_copier_fichier_tiers Sauvegarder cle fuuid {} : {:?}", fuuid, cle);
+                let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE)
+                    .exchanges(vec![Securite::L4Secure])
+                    .timeout_blocking(5000)
+                    .build();
+                let reponse_cle = middleware.transmettre_commande(routage, &cle, true).await?;
+                debug!("commande_copier_fichier_tiers Reponse sauvegarde cle : {:?}", reponse_cle);
+                if let Some(reponse) = reponse_cle {
+                    if let TypeMessage::Valide(mva) = reponse {
+                        debug!("Reponse valide : {:?}", mva);
+                        let reponse_mappee: ReponseCle = mva.message.get_msg().map_contenu(None)?;
+                        etat_cle = true;
+                    }
+                }
+            } else {
+                debug!("commande_copier_fichier_tiers Aucune cle trouvee pour fuuid {} : {:?}", fuuid, commande.cles);
+            }
+        }
+
+        if etat_cle {
             debug!("commande_copier_fichier_tiers Fuuid {} preuve OK", fuuid);
 
             // Injecter le user_id du certificat recu

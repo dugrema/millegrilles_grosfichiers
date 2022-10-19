@@ -294,3 +294,8 @@ pub struct JobVideo {
     pub date_modification: Value,
     pub flag_media_retry: i32,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReponseCle {
+    pub ok: Option<bool>
+}
