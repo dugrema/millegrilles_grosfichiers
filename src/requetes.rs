@@ -81,6 +81,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_SYNC_COLLECTION => requete_sync_collection(middleware, message, gestionnaire).await,
             REQUETE_SYNC_RECENTS => requete_sync_plusrecent(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CORBEILLE => requete_sync_corbeille(middleware, message, gestionnaire).await,
+            REQUETE_SYNC_CUUIDS => requete_sync_cuuids(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue pour exchanges 3.protege/4.secure : '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -91,6 +92,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
+            REQUETE_SYNC_CUUIDS => requete_sync_cuuids(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue pour exchange 2.prive : '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -1039,6 +1041,13 @@ struct RequeteSyncIntervalle {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteSyncCuuids {
+    user_id: Option<String>,
+    skip: Option<u64>,
+    limit: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct FichierSync {
     tuuid: String,
     #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
@@ -1048,6 +1057,21 @@ struct FichierSync {
     favoris: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
     supprime: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CuuidsSync {
+    tuuid: String,
+    #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
+    map_derniere_modification: DateTime<Utc>,
+    derniere_modification: Option<DateEpochSeconds>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    favoris: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    supprime: Option<bool>,
+    metadata: DataChiffre,
+    user_id: String,
+    cuuids: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1279,6 +1303,78 @@ async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValideAction, gesti
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ReponseRequeteSyncCuuids {
+    complete: bool,
+    liste: Vec<CuuidsSync>
+}
+
+async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    let uuid_transaction = m.correlation_id.clone();
+
+    match m.message.certificat.as_ref() {
+        Some(inner) => {
+            if let Some(domaines) = inner.get_domaines()? {
+                if ! domaines.contains(&String::from("GrosFichiers")) {
+                    error!("requete_sync_cuuids Permission refusee (domaines cert != GrosFichiers)");
+                    return Ok(None)
+                }
+            } else {
+                error!("requete_sync_cuuids Permission refusee (domaines cert None)");
+                return Ok(None)
+            }
+        },
+        None => {
+            error!("requete_sync_cuuids Permission refusee (certificat non charge)");
+            return Ok(None)
+        }
+    }
+
+    debug!("requete_sync_cuuids Message : {:?}", & m.message);
+    let requete: RequeteSyncCuuids = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_sync_cuuids cle parsed : {:?}", requete);
+
+    let limit = match requete.limit {
+        Some(l) => l,
+        None => 1000
+    };
+    let skip = match requete.skip {
+        Some(s) => s,
+        None => 0
+    };
+
+    let sort = doc! {CHAMP_CREATION: 1, CHAMP_TUUID: 1};
+    let projection = doc! {
+        CHAMP_TUUID: 1,
+        CHAMP_CREATION: 1,
+        CHAMP_MODIFICATION: 1,
+        CHAMP_FAVORIS: 1,
+        CHAMP_SUPPRIME: 1,
+        CHAMP_METADATA: 1,
+        CHAMP_USER_ID: 1,
+        CHAMP_CUUIDS: 1,
+    };
+    let opts = FindOptions::builder()
+        .projection(projection)
+        .sort(sort)
+        .skip(skip)
+        .limit(limit.clone())
+        .build();
+    let mut filtre = doc! {"supprime": false, "metadata": {"$exists": true}, "fuuid_v_courante": {"$exists": false}};
+
+    debug!("requete_sync_cuuids filtre : {:?}", filtre);
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut fichiers_confirmation = find_sync_cuuids(middleware, filtre, opts).await?;
+    let complete = fichiers_confirmation.len() < limit as usize;
+
+    let reponse = ReponseRequeteSyncCuuids { complete, liste: fichiers_confirmation };
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
 async fn find_sync_fichiers<M>(middleware: &M, filtre: Document, opts: FindOptions) -> Result<Vec<FichierSync>, Box<dyn Error>>
     where M: MongoDao
 {
@@ -1293,4 +1389,20 @@ async fn find_sync_fichiers<M>(middleware: &M, filtre: Document, opts: FindOptio
     }
 
     Ok(fichiers_confirmation)
+}
+
+async fn find_sync_cuuids<M>(middleware: &M, filtre: Document, opts: FindOptions) -> Result<Vec<CuuidsSync>, Box<dyn Error>>
+    where M: MongoDao
+{
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+    let mut curseur = collection.find(filtre, opts).await?;
+    let mut cuuids_confirmation = Vec::new();
+    while let Some(d) = curseur.next().await {
+        let mut record: CuuidsSync = convertir_bson_deserializable(d?)?;
+        record.derniere_modification = Some(DateEpochSeconds::from(record.map_derniere_modification.clone()));
+        cuuids_confirmation.push(record);
+    }
+
+    Ok(cuuids_confirmation)
 }
