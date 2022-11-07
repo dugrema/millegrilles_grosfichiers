@@ -93,6 +93,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CUUIDS => requete_sync_cuuids(middleware, message, gestionnaire).await,
+            REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue pour exchange 2.prive : '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -538,14 +539,35 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
                                       -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
-    let user_id = match m.get_user_id() {
-        Some(u) => u,
-        None => return Ok(Some(middleware.formatter_reponse(json!({"err": true, "message": "user_id n'est pas dans le certificat"}), None)?))
-    };
-
     debug!("requete_get_cles_fichiers Message : {:?}", &m.message);
     let requete: ParametresGetPermission = m.message.get_msg().map_contenu(None)?;
     debug!("requete_get_cles_fichiers cle parsed : {:?}", requete);
+
+    let mut conditions: Vec<Document> = Vec::new();
+    if let Some(tuuids) = requete.tuuids {
+        conditions.push(doc!{"tuuid": {"$in": tuuids}});
+    }
+    conditions.push(doc!{"fuuids": {"$in": &requete.fuuids}});
+    conditions.push(doc!{"metadata.ref_hachage_bytes": {"$in": &requete.fuuids}});
+
+    let mut filtre = match m.get_user_id() {
+        Some(u) => {
+            doc!{
+                "user_id": u,
+                "$or": conditions,
+            }
+        },
+        None => {
+            if m.verifier_roles(vec![RolesCertificats::Stream]) && m.verifier_exchanges(vec![Securite::L2Prive]) {
+                doc!{
+                    "mimetype": {"$regex": "video\\/"},
+                    "$or": conditions,
+                }
+            } else {
+                return Ok(Some(middleware.formatter_reponse(json!({"err": true, "message": "user_id n'est pas dans le certificat/certificat n'est pas de role stream"}), None)?))
+            }
+        }
+    };
 
     // Utiliser certificat du message client (requete) pour demande de rechiffrage
     let pem_rechiffrage: Vec<String> = match &m.message.certificat {
@@ -556,21 +578,6 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
         None => Err(format!(""))?
     };
 
-    let mut conditions: Vec<Document> = Vec::new();
-    if let Some(tuuids) = requete.tuuids {
-        conditions.push(doc!{"tuuid": {"$in": tuuids}});
-    }
-    //if let Some(fuuids) = requete.fuuids {
-        // conditions.push(doc!{"fuuids": {"$in": &fuuids}});
-        // conditions.push(doc!{"metadata.ref_hachage_bytes": {"$in": fuuids}});
-        conditions.push(doc!{"fuuids": {"$in": &requete.fuuids}});
-        conditions.push(doc!{"metadata.ref_hachage_bytes": {"$in": &requete.fuuids}});
-    //}
-
-    let mut filtre = doc!{
-        "user_id": &user_id,
-        "$or": conditions,
-    };
     debug!("requete_get_cles_fichiers Filtre : {:?}", filtre);
     let projection = doc! {"fuuids": true, "tuuid": true, "metadata": true};
     let opts = FindOptions::builder().projection(projection).limit(1000).build();
