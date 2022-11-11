@@ -27,7 +27,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
-use crate::traitement_index::{ElasticSearchDao, ParametresGetPermission, ParametresRecherche, ResultatHits, ResultatHitsDetail};
+use crate::traitement_index::{ElasticSearchDao, ParametresGetClesStream, ParametresGetPermission, ParametresRecherche, ResultatHits, ResultatHitsDetail};
 use crate::transactions::*;
 
 pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -78,6 +78,8 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
         match message.action.as_str() {
             REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
+            REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
+            REQUETE_GET_CLES_STREAM => requete_get_cles_stream(middleware, message, gestionnaire).await,
             REQUETE_SYNC_COLLECTION => requete_sync_collection(middleware, message, gestionnaire).await,
             REQUETE_SYNC_RECENTS => requete_sync_plusrecent(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CORBEILLE => requete_sync_corbeille(middleware, message, gestionnaire).await,
@@ -94,6 +96,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CUUIDS => requete_sync_cuuids(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
+            REQUETE_GET_CLES_STREAM => requete_get_cles_stream(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue pour exchange 2.prive : '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -558,13 +561,17 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
             }
         },
         None => {
-            if m.verifier_roles(vec![RolesCertificats::Stream]) && m.verifier_exchanges(vec![Securite::L2Prive]) {
-                doc!{
+            if m.verifier_exchanges(vec![Securite::L4Secure]) && m.verifier_roles(vec![RolesCertificats::Media]) {
+                doc! {
+                    "$or": conditions,
+                }
+            } else if m.verifier_exchanges(vec![Securite::L2Prive]) && m.verifier_roles(vec![RolesCertificats::Stream]) {
+                doc! {
                     "mimetype": {"$regex": "video\\/"},
                     "$or": conditions,
                 }
             } else {
-                return Ok(Some(middleware.formatter_reponse(json!({"err": true, "message": "user_id n'est pas dans le certificat/certificat n'est pas de role stream"}), None)?))
+                return Ok(Some(middleware.formatter_reponse(json!({"err": true, "message": "user_id n'est pas dans le certificat/certificat n'est pas de role media/stream"}), None)?))
             }
         }
     };
@@ -647,6 +654,97 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     //     .build();
     //
     // middleware.transmettre_requete(routage, &permission).await?;
+
+    Ok(None)  // Aucune reponse a transmettre, c'est le maitre des cles qui va repondre
+}
+
+async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+                                    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_get_cles_stream Message : {:?}", &m.message);
+    let requete: ParametresGetClesStream = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_get_cles_stream cle parsed : {:?}", requete);
+
+    if ! m.verifier_roles(vec![RolesCertificats::Stream]) {
+        let reponse = json!({"err": true, "message": "certificat doit etre de role stream"});
+        return Ok(Some(middleware.formatter_reponse(reponse, None)?));
+    }
+
+    let user_id = requete.user_id;
+
+    // let mut hachage_bytes = Vec::new();
+    // let mut hachage_bytes_demandes = HashSet::new();
+    // hachage_bytes_demandes.extend(requete.fuuids.iter().map(|f| f.to_string()));
+
+    let filtre = doc!{
+        "fuuids": {"$in": &requete.fuuids},
+        "user_id": &user_id,
+        // "mimetype": {"$regex": "(video\\/|audio\\/)"},
+        "mimetype": {"$regex": "video\\/"},
+    };
+
+    // Utiliser certificat du message client (requete) pour demande de rechiffrage
+    let pem_rechiffrage: Vec<String> = match &m.message.certificat {
+        Some(c) => {
+            let fp_certs = c.get_pem_vec();
+            fp_certs.into_iter().map(|cert| cert.pem).collect()
+        },
+        None => Err(format!(""))?
+    };
+
+    debug!("requete_get_cles_stream Filtre : {:?}", filtre);
+    let projection = doc! {"fuuids": true, "tuuid": true, "metadata": true};
+    let opts = FindOptions::builder().projection(projection).limit(1000).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut curseur = collection.find(filtre, Some(opts)).await?;
+
+    let mut hachage_bytes_demandes = HashSet::new();
+    hachage_bytes_demandes.extend(requete.fuuids.iter().map(|f| f.to_string()));
+    let mut hachage_bytes = Vec::new();
+    while let Some(fresult) = curseur.next().await {
+        debug!("requete_get_cles_stream document trouve pour permission cle : {:?}", fresult);
+        let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
+        if let Some(fuuids) = doc_mappe.fuuids {
+            for d in fuuids {
+                if hachage_bytes_demandes.remove(d.as_str()) {
+                    hachage_bytes.push(d);
+                }
+            }
+        }
+        if let Some(metadata) = doc_mappe.metadata {
+            if let Some(ref_hachage_bytes) = metadata.ref_hachage_bytes {
+                if hachage_bytes_demandes.remove(ref_hachage_bytes.as_str()) {
+                    hachage_bytes.push(ref_hachage_bytes);
+                }
+            }
+        }
+    }
+
+    let permission = json!({
+        "liste_hachage_bytes": hachage_bytes,
+        "certificat_rechiffrage": pem_rechiffrage,
+    });
+
+    // Emettre requete de rechiffrage de cle, reponse acheminee directement au demandeur
+    let reply_to = match m.reply_q {
+        Some(r) => r,
+        None => Err(format!("requetes.requete_get_cles_stream Pas de reply q pour message"))?
+    };
+    let correlation_id = match m.correlation_id {
+        Some(r) => r,
+        None => Err(format!("requetes.requete_get_cles_stream Pas de correlation_id pour message"))?
+    };
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE)
+        .exchanges(vec![Securite::L4Secure])
+        .reply_to(reply_to)
+        .correlation_id(correlation_id)
+        .blocking(false)
+        .build();
+
+    debug!("requete_get_cles_stream Transmettre requete permission dechiffrage cle : {:?}", permission);
+
+    middleware.transmettre_requete(routage, &permission).await?;
 
     Ok(None)  // Aucune reponse a transmettre, c'est le maitre des cles qui va repondre
 }

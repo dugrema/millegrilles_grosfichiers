@@ -578,6 +578,12 @@ pub struct ParametresGetPermission {
     pub fuuids: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ParametresGetClesStream {
+    pub user_id: Option<String>,
+    pub fuuids: Vec<String>,
+}
+
 pub async fn traiter_index_manquant<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, limite: i64)
     -> Result<Vec<String>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509
