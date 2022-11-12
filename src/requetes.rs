@@ -680,8 +680,8 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gest
     let filtre = doc!{
         "fuuids": {"$in": &requete.fuuids},
         "user_id": &user_id,
-        // "mimetype": {"$regex": "(video\\/|audio\\/)"},
-        "mimetype": {"$regex": "video\\/"},
+        "mimetype": {"$regex": "(video\\/|audio\\/)"},
+        // "mimetype": {"$regex": "video\\/"},
     };
 
     // Utiliser certificat du message client (requete) pour demande de rechiffrage
