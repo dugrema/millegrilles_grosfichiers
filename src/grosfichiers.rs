@@ -13,6 +13,7 @@ use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissi
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::{chrono, chrono::{DateTime, Utc}};
 use millegrilles_common_rust::chrono::Timelike;
+use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
@@ -78,7 +79,7 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
         true
     }
 
-    async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: MongoDao {
+    async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: MongoDao + ConfigMessages {
         preparer_index_mongodb_custom(middleware).await
     }
 
@@ -280,7 +281,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
 
 /// Creer index MongoDB
 pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), String>
-    where M: MongoDao
+    where M: MongoDao + ConfigMessages
 {
     // Index fuuids pour fichiers (liste par tuuid)
     let options_unique_fuuid = IndexOptions {
@@ -291,6 +292,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from("fuuids"), direction: 1},
     );
     middleware.create_index(
+        middleware,
         NOM_COLLECTION_FICHIERS_REP,
         champs_index_fuuid,
         Some(options_unique_fuuid)
@@ -305,6 +307,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from("cuuids"), direction: 1},
     );
     middleware.create_index(
+        middleware,
         NOM_COLLECTION_FICHIERS_REP,
         champs_index_cuuid,
         Some(options_unique_cuuid)
@@ -319,6 +322,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
     );
     middleware.create_index(
+        middleware,
         NOM_COLLECTION_FICHIERS_REP,
         champs_index_tuuid,
         Some(options_unique_tuuid)
@@ -335,6 +339,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},  // Tri stable
     );
     middleware.create_index(
+        middleware,
         NOM_COLLECTION_FICHIERS_REP,
         champs_recents,
         Some(options_recents)
@@ -350,6 +355,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from(CHAMP_FAVORIS), direction: 1},
     );
     middleware.create_index(
+        middleware,
         NOM_COLLECTION_FICHIERS_REP,
         champs_favoris,
         Some(options_favoris)
@@ -365,6 +371,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
     );
     middleware.create_index(
+        middleware,
         NOM_COLLECTION_VERSIONS,
         champs_index_versions_fuuid,
         Some(options_unique_versions_fuuid)
@@ -378,6 +385,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from("fuuids"), direction: 1},
     );
     middleware.create_index(
+        middleware,
         NOM_COLLECTION_VERSIONS,
         champs_index_fuuid,
         Some(options_unique_fuuid)
@@ -393,6 +401,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
     );
     middleware.create_index(
+        middleware,
         NOM_COLLECTION_VERSIONS,
         champs_index_indexe,
         Some(options_index_indexe)
@@ -408,6 +417,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
     );
     middleware.create_index(
+        middleware,
         NOM_COLLECTION_VERSIONS,
         champs_index_media_traite,
         Some(options_index_media_traite)
@@ -423,6 +433,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from(CHAMP_CLE_CONVERSION), direction: 1},
     );
     middleware.create_index(
+        middleware,
         NOM_COLLECTION_VIDEO_JOBS,
         champs_fuuids_params,
         Some(options_fuuids_params)
@@ -438,6 +449,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         ChampIndex {nom_champ: String::from(CHAMP_MODIFICATION), direction: 1},
     );
     middleware.create_index(
+        middleware,
         NOM_COLLECTION_VIDEO_JOBS,
         champs_jobs_params,
         Some(options_jobs_params)
