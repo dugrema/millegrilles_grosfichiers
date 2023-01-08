@@ -34,6 +34,7 @@ pub const REQUETE_SYNC_COLLECTION: &str = "syncCollection";
 pub const REQUETE_SYNC_RECENTS: &str = "syncRecents";
 pub const REQUETE_SYNC_CORBEILLE: &str = "syncCorbeille";
 pub const REQUETE_SYNC_CUUIDS: &str = "syncCuuids";
+pub const REQUETE_JOBS_VIDEO: &str = "requeteJobsVideo";
 
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";

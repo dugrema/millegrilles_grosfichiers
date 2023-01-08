@@ -4,16 +4,19 @@ use std::error::Error;
 
 use log::{debug, error, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
-use millegrilles_common_rust::bson::{doc, Document};
-use millegrilles_common_rust::certificats::ValidateurX509;
+use millegrilles_common_rust::bson::{Bson, doc, Document};
+use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOptions, Hint};
+use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio_stream::StreamExt;
+use millegrilles_common_rust::verificateur::VerificateurMessage;
+use crate::grosfichiers::GestionnaireGrosFichiers;
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::mapper_fichier_db;
@@ -316,4 +319,65 @@ pub async fn entretien_video_jobs<M>(middleware: &M) -> Result<(), Box<dyn Error
 struct JobCles {
     fuuid: String,
     cle_conversion: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct JobDetail {
+    fuuid: String,
+    tuuid: String,
+    cle_conversion: String,
+    user_id: Option<String>,
+    pct_progres: Option<usize>,
+    etat: Option<u16>,
+    flag_media_retry: Option<u16>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteJobsVideo {
+    toutes_jobs: Option<bool>,
+}
+
+pub async fn requete_jobs_video<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage
+{
+    debug!("requete_documents_par_tuuid Message : {:?}", & m.message);
+    let requete: RequeteJobsVideo = m.message.get_msg().map_contenu(None)?;
+    debug!("requete_documents_par_tuuid cle parsed : {:?}", requete);
+
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+
+    let mut filtre = doc! {};
+
+    if role_prive && user_id.is_some() {
+        // Ok
+        filtre.insert("user_id", Bson::String(user_id.expect("user_id")));
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+        let inserer_userid = match requete.toutes_jobs {
+            Some(b) => ! b,  // Ne pas ajouter le filtre user_id - chercher toutes les jobs
+            None => true
+        };
+        if user_id.is_none() && inserer_userid {
+            Err(format!("User_id manquant"))?
+        }
+        if inserer_userid {
+            filtre.insert("user_id", Bson::String(user_id.expect("user_id")));
+        }
+    } else {
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
+
+    let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+    let mut curseur = collection.find(filtre, None).await?;
+
+    let mut jobs = Vec::new();
+    while let Some(d) = curseur.next().await {
+        let job_detail: JobDetail = convertir_bson_deserializable(d?)?;
+        jobs.push(job_detail);
+    }
+
+    let reponse = json!({ "jobs":  jobs });
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
