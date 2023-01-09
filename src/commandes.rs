@@ -82,7 +82,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
 
         // Video
         COMMANDE_VIDEO_TRANSCODER => commande_video_convertir(middleware, m, gestionnaire).await,
-        COMMANDE_VIDEO_ARRETER_CONVERSION => commande_video_arreter_conversion(middleware, m, gestionnaire).await,
+        // COMMANDE_VIDEO_ARRETER_CONVERSION => commande_video_arreter_conversion(middleware, m, gestionnaire).await,
         COMMANDE_VIDEO_GET_JOB => commande_video_get_job(middleware, m, gestionnaire).await,
         COMMANDE_VIDEO_SUPPRIMER_JOB => commande_supprimer_job_video(middleware, m, gestionnaire).await,
 
@@ -1032,7 +1032,7 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
     // Conserver l'information de conversion, emettre nouveau message de job
     // Note : job lock fait plus tard avant conversion, duplication de messages est OK
     let insert_ops = doc! {
-        "tuuid": commande.tuuid,
+        "tuuid": &commande.tuuid,
         CHAMP_FUUID: fuuid,
         CHAMP_USER_ID: &user_id,
         CHAMP_MIMETYPE: commande.mimetype,
@@ -1070,22 +1070,25 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
         let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS, COMMANDE_VIDEO_DISPONIBLE)
             .exchanges(vec![Securite::L2Prive])
             .build();
-        let commande = json!({CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video});
-        middleware.transmettre_commande(routage, &commande, false).await?;
+        let commande_fichiers = json!({CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video});
+        middleware.transmettre_commande(routage, &commande_fichiers, false).await?;
+
+        if let Some(u) = user_id.as_ref() {
+            // Emettre evenement pour clients
+            let evenement = json!({
+                CHAMP_CLE_CONVERSION: &cle_video,
+                CHAMP_FUUID: fuuid,
+                "tuuid": &commande.tuuid,
+            });
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM, "jobAjoutee")
+                .exchanges(vec![Securite::L2Prive])
+                .partition(u)
+                .build();
+            middleware.emettre_evenement(routage, &evenement).await?;
+        }
     }
 
     Ok(middleware.reponse_ok()?)
-}
-
-async fn commande_video_arreter_conversion<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
-{
-    debug!("commande_video_arreter_conversion Consommer commande : {:?}", & m.message);
-    let commande: CommandeVideoArreterConversion = m.message.get_msg().map_contenu(None)?;
-    debug!("Commande commande_video_arreter_conversion parsed : {:?}", commande);
-
-    todo!("fix me")
 }
 
 async fn commande_video_get_job<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
