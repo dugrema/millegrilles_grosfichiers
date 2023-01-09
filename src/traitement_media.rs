@@ -381,3 +381,49 @@ pub async fn requete_jobs_video<M>(middleware: &M, m: MessageValideAction, gesti
     let reponse = json!({ "jobs":  jobs });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CommandeSupprimerJobVideo {
+    fuuid: String,
+    cle_conversion: String,
+}
+
+pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("commande_supprimer_job_video Consommer commande : {:?}", & m.message);
+    let commande: CommandeSupprimerJobVideo = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_supprimer_job_video parsed : {:?}", commande);
+
+    let fuuid = &commande.fuuid;
+    if ! m.verifier_roles(vec![RolesCertificats::ComptePrive]) {
+        Err(format!("traitement_media.commande_supprimer_job_video Certificat n'a pas le role prive"))?;
+    }
+    let user_id = match m.get_user_id() {
+        Some(u) => u,
+        None => Err(format!("traitement_media.commande_supprimer_job_video User_id manquant du certificat"))?
+    };
+
+    let filtre = doc! {
+        "fuuid": fuuid,
+        "cle_conversion": &commande.cle_conversion,
+        "user_id": &user_id,
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+    collection.delete_one(filtre, None).await?;
+
+    // Emettre un evenement pour clients
+    let evenement = json!({
+        "cle_conversion": commande.cle_conversion,
+        "fuuid": fuuid,
+    });
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM, "jobSupprimee")
+        .exchanges(vec![Securite::L2Prive])
+        .partition(user_id)
+        .build();
+    middleware.emettre_evenement(routage, &evenement).await?;
+
+    Ok(middleware.reponse_ok()?)
+}

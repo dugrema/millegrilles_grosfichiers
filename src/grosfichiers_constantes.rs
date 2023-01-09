@@ -61,6 +61,7 @@ pub const COMMANDE_VIDEO_TRANSCODER: &str = "transcoderVideo";
 pub const COMMANDE_VIDEO_ARRETER_CONVERSION: &str = "arreterVideo";
 pub const COMMANDE_VIDEO_DISPONIBLE: &str = "jobConversionVideoDisponible";
 pub const COMMANDE_VIDEO_GET_JOB: &str = "getJobVideo";
+pub const COMMANDE_VIDEO_SUPPRIMER_JOB: &str = "supprimerJobVideo";
 
 pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
 pub const EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION: &str = "fuuidAjouterFichierCollection";

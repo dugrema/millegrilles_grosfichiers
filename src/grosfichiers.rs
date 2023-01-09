@@ -194,6 +194,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         COMMANDE_VIDEO_ARRETER_CONVERSION,
         COMMANDE_VIDEO_GET_JOB,
         COMMANDE_COMPLETER_PREVIEWS,
+        COMMANDE_VIDEO_SUPPRIMER_JOB,
     ];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
