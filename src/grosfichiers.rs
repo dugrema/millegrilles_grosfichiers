@@ -475,6 +475,11 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
 {
     debug!("Traiter cedule {}", DOMAINE_NOM);
 
+    if middleware.get_mode_regeneration() == true {
+        debug!("traiter_cedule Mode regeneration, skip");
+        return Ok(());
+    }
+
     let mut prochain_entretien_index_media = chrono::Utc::now();
     let intervalle_entretien_index_media = chrono::Duration::minutes(5);
 

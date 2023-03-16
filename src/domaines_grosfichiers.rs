@@ -183,6 +183,10 @@ async fn entretien<M>(middleware: Arc<M>, gestionnaires: Vec<&'static TypeGestio
         debug!("domaines_grosfichiers.entretien Fin cycle, sleep {} secondes", DUREE_ATTENTE / 1000);
         let duration = DurationTokio::from_millis(DUREE_ATTENTE);
         sleep(duration).await;
+        if middleware.get_mode_regeneration() == true {
+            debug!("domaines_grosfichiers.entretien Mode regeneration, skip entretien");
+            continue;
+        }
 
         middleware.entretien_validateur().await;
 
