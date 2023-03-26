@@ -91,12 +91,12 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
     }
 }
 
-async fn commande_nouvelle_version<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_nouvelle_version Consommer commande : {:?}", & m.message);
-    let commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu(None)?;
+    let mut commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu(None)?;
     debug!("Commande nouvelle versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
@@ -108,6 +108,21 @@ async fn commande_nouvelle_version<M>(middleware: &M, m: MessageValideAction, ge
         // Ok
     } else {
         Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
+
+    if let Some(cle) = commande.cle.take() {
+        debug!("commande_nouvelle_version Sauvegarde cle fichier");
+        if let Some(partition) = cle.entete.partition.as_ref() {
+            debug!("Sauvegarder cle de notification avec partition {}", partition);
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE)
+                .exchanges(vec![Securite::L3Protege])
+                .partition(partition)
+                .build();
+            middleware.transmettre_commande(routage, &cle, true).await?;
+        }
+
+        // Retirer la cle de la transaction
+        m.message.parsed.contenu.remove("_cle");
     }
 
     // Traiter la transaction
