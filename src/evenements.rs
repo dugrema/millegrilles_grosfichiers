@@ -18,6 +18,8 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 
 use crate::grosfichiers_constantes::*;
 
+const LIMITE_FUUIDS_BATCH: usize = 10000;
+
 pub async fn consommer_evenement<M>(middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
 where
     M: ValidateurX509 + GenerateurMessages + MongoDao,
@@ -31,34 +33,35 @@ where
     }?;
 
     match m.action.as_str() {
-        EVENEMENT_CONFIRMER_ETAT_FUUIDS => {
-            evenement_confirmer_etat_fuuids(middleware, m).await?;
-            Ok(None)
-        },
+        // EVENEMENT_CONFIRMER_ETAT_FUUIDS => {
+        //     evenement_confirmer_etat_fuuids(middleware, m).await?;
+        //     Ok(None)
+        // },
         EVENEMENT_TRANSCODAGE_PROGRES => evenement_transcodage_progres(middleware, m).await,
+        EVENEMENT_FICHIERS_SYNCPRET => evenement_fichiers_syncpret(middleware, m).await,
         _ => Err(format!("grosfichiers.consommer_evenement: Mauvais type d'action pour un evenement : {}", m.action))?,
     }
 }
 
-async fn evenement_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao,
-{
-    let uuid_transaction = m.correlation_id.clone();
-
-    if !m.verifier_exchanges(vec![L2Prive]) {
-        error!("evenement_confirmer_etat_fuuids Acces refuse, certificat n'est pas d'un exchange L2 : {:?}", uuid_transaction);
-        return Ok(None)
-    }
-
-    debug!("evenement_confirmer_etat_fuuids Message : {:?}", & m.message);
-    let evenement: EvenementConfirmerEtatFuuids = m.message.get_msg().map_contenu(None)?;
-    debug!("evenement_confirmer_etat_fuuids parsed : {:?}", evenement);
-
-    repondre_fuuids(middleware, &evenement.fuuids).await?;
-
-    Ok(None)
-}
+// async fn evenement_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction)
+//     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+//     where M: GenerateurMessages + MongoDao,
+// {
+//     let uuid_transaction = m.correlation_id.clone();
+//
+//     if !m.verifier_exchanges(vec![L2Prive]) {
+//         error!("evenement_confirmer_etat_fuuids Acces refuse, certificat n'est pas d'un exchange L2 : {:?}", uuid_transaction);
+//         return Ok(None)
+//     }
+//
+//     debug!("evenement_confirmer_etat_fuuids Message : {:?}", & m.message);
+//     let evenement: EvenementConfirmerEtatFuuids = m.message.get_msg().map_contenu(None)?;
+//     debug!("evenement_confirmer_etat_fuuids parsed : {:?}", evenement);
+//
+//     repondre_fuuids(middleware, &evenement.fuuids).await?;
+//
+//     Ok(None)
+// }
 
 async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValideAction)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -117,56 +120,76 @@ async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValideAction
     Ok(None)
 }
 
-
-async fn repondre_fuuids<M>(middleware: &M, evenement_fuuids: &Vec<String>)
+async fn transmettre_fuuids_fichiers<M>(middleware: &M, fuuids: &Vec<String>, archive: bool)
     -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + MongoDao,
 {
-    let mut fuuids = HashSet::new();
-    for fuuid in evenement_fuuids.iter() {
-        fuuids.insert(fuuid.clone());
-    }
-
-    let opts = FindOptions::builder()
-        .hint(Hint::Name(String::from("fichiers_fuuid")))
-        .build();
-    let mut filtre = doc!{"fuuids": {"$in": evenement_fuuids}};
-
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let mut fichiers_confirmation = Vec::new();
-    let mut curseur = collection.find(filtre, opts).await?;
-    while let Some(d) = curseur.next().await {
-        let record: RowEtatFuuid = convertir_bson_deserializable(d?)?;
-        for fuuid in record.fuuids.into_iter() {
-            if fuuids.contains(&fuuid) {
-                fuuids.remove(&fuuid);
-                // Note: on ignore les fichiers supprimes == true, on va laisser la chance a
-                //       un autre module d'en garder possession.
-                if record.supprime == false {
-                    fichiers_confirmation.push(ConfirmationEtatFuuid { fuuid, supprime: record.supprime });
-                }
-            }
-        }
-    }
-
-    // // Ajouter tous les fuuids manquants (encore dans le set)
-    // // Ces fichiers sont inconnus et presumes supprimes
-    // for fuuid in fuuids.into_iter() {
-    //     fichiers_confirmation.push( ConfirmationEtatFuuid { fuuid, supprime: true } );
-    // }
-
-    if fichiers_confirmation.is_empty() {
-        debug!("repondre_fuuids Aucuns fuuids connus, on ne repond pas");
-        return Ok(());
-    }
-
-    let confirmation = ReponseConfirmerEtatFuuids { fuuids: fichiers_confirmation };
+    let confirmation = doc! {
+        "fuuids": fuuids,
+        "archive": archive,
+    };
     let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, COMMANDE_ACTIVITE_FUUIDS)
         .exchanges(vec![L2Prive])
         .build();
     middleware.transmettre_commande(routage, &confirmation, false).await?;
-
     Ok(())
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RowFichiersSyncpret {
+    fuuids: Vec<String>,
+    archive: Option<bool>,
+}
+
+async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValideAction)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao
+{
+    if !m.verifier_exchanges(vec![L2Prive]) {
+        error!("evenement_fichiers_syncpret Acces refuse, certificat n'est pas d'un exchange L2");
+        return Ok(None)
+    }
+    if !m.verifier_roles(vec![RolesCertificats::Fichiers]) {
+        error!("evenement_transcodage_progres Acces refuse, certificat n'est pas de role fichiers");
+        return Ok(None)
+    }
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+    let mut fichiers_actifs: Vec<String> = Vec::with_capacity(10000);
+    let mut fichiers_archives: Vec<String> = Vec::with_capacity(10000);
+
+    let projection = doc!{ CHAMP_ARCHIVE: 1, CHAMP_FUUIDS: 1 };
+    let options = FindOptions::builder().projection(projection).build();
+    let filtre = doc! { CHAMP_SUPPRIME: false, CHAMP_FUUIDS: {"$exists": true} };
+    let mut curseur = collection.find(filtre, Some(options)).await?;
+    while let Some(f) = curseur.next().await {
+        let info_fichier: RowFichiersSyncpret = convertir_bson_deserializable(f?)?;
+        let archive = match info_fichier.archive { Some(b) => b, None => false };
+        if archive {
+            fichiers_archives.extend(info_fichier.fuuids.into_iter());
+        } else {
+            fichiers_actifs.extend(info_fichier.fuuids.into_iter());
+        }
+
+        if fichiers_actifs.len() >= LIMITE_FUUIDS_BATCH {
+            transmettre_fuuids_fichiers(middleware, &fichiers_actifs, false).await?;
+            fichiers_actifs.clear();
+        }
+        if fichiers_archives.len() >= LIMITE_FUUIDS_BATCH {
+            transmettre_fuuids_fichiers(middleware, &fichiers_archives, true).await?;
+            fichiers_archives.clear();
+        }
+    }
+
+    if ! fichiers_actifs.is_empty() {
+        transmettre_fuuids_fichiers(middleware, &fichiers_actifs, false).await?;
+    }
+    if ! fichiers_archives.is_empty() {
+        transmettre_fuuids_fichiers(middleware, &fichiers_archives, true).await?;
+    }
+
+    Ok(None)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

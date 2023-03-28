@@ -62,6 +62,7 @@ pub const COMMANDE_VIDEO_ARRETER_CONVERSION: &str = "arreterVideo";
 pub const COMMANDE_VIDEO_DISPONIBLE: &str = "jobConversionVideoDisponible";
 pub const COMMANDE_VIDEO_GET_JOB: &str = "getJobVideo";
 pub const COMMANDE_VIDEO_SUPPRIMER_JOB: &str = "supprimerJobVideo";
+pub const COMMANDE_FUUIDS_DOMAINE_LISTE: &str = "fuuidsDomaineListe";
 
 pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
 pub const EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION: &str = "fuuidAjouterFichierCollection";
@@ -77,6 +78,7 @@ pub const EVENEMENT_FUUID_SUPPRIMER_DOCUMENT: &str = "fuuidSupprimerDocument";
 pub const EVENEMENT_AJOUTER_FICHIER: &str = "fuuidNouvelleVersion";
 pub const EVENEMENT_CONFIRMER_ETAT_FUUIDS: &str = "confirmerEtatFuuids";
 pub const EVENEMENT_TRANSCODAGE_PROGRES: &str = "transcodageProgres";
+pub const EVENEMENT_FICHIERS_SYNCPRET: &str = "syncPret";
 
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 pub const CHAMP_FUUIDS: &str = "fuuids";
@@ -85,6 +87,7 @@ pub const CHAMP_TUUIDS: &str = "tuuids";
 pub const CHAMP_CUUID: &str = "cuuid";  // UUID collection de tuuids
 pub const CHAMP_CUUIDS: &str = "cuuids";  // Liste de cuuids (e.g. appartenance a plusieurs collections)
 pub const CHAMP_SUPPRIME: &str = "supprime";
+pub const CHAMP_ARCHIVE: &str = "archive";
 pub const CHAMP_NOM: &str = "nom";
 pub const CHAMP_METADATA: &str = "metadata";
 pub const CHAMP_TITRE: &str = "titre";
