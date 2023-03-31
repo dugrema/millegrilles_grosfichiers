@@ -87,6 +87,7 @@ pub const CHAMP_TUUIDS: &str = "tuuids";
 pub const CHAMP_CUUID: &str = "cuuid";  // UUID collection de tuuids
 pub const CHAMP_CUUIDS: &str = "cuuids";  // Liste de cuuids (e.g. appartenance a plusieurs collections)
 pub const CHAMP_SUPPRIME: &str = "supprime";
+pub const CHAMP_SUPPRIME_PATH: &str = "supprime_cuuids_path";
 pub const CHAMP_ARCHIVE: &str = "archive";
 pub const CHAMP_NOM: &str = "nom";
 pub const CHAMP_METADATA: &str = "metadata";
@@ -137,6 +138,8 @@ pub struct FichierDetail {
     pub supprime: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub metadata: Option<DataChiffre>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub supprime_cuuids_path: Option<Vec<String>>,
 }
 
 impl TryFrom<Document> for FichierDetail {

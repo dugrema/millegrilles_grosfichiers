@@ -183,6 +183,7 @@ pub struct TransactionListeDocuments {
 pub struct TransactionSupprimerDocuments {
     pub tuuids: Vec<String>,    // Fichiers/rep a supprimer
     pub cuuid: Option<String>,  // Collection a retirer des documents (suppression conditionnelle)
+    pub cuuids_path: Option<Vec<String>>,  // Path du fichier lors de la suppression (breadcrumb)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -774,7 +775,10 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
         // Marquer tuuids supprime=true
         let filtre = doc! {CHAMP_TUUID: {"$in": &tuuids_supprimes}};
         let ops = doc! {
-            "$set": {CHAMP_SUPPRIME: true},
+            "$set": {
+                CHAMP_SUPPRIME: true,
+                CHAMP_SUPPRIME_PATH: transaction_collection.cuuids_path,
+            },
             "$currentDate": {CHAMP_MODIFICATION: true}
         };
         let resultat = match collection.update_many(filtre, ops, None).await {
