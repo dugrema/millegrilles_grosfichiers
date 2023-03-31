@@ -400,6 +400,11 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction,
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct RowFuuids {
+    fuuids: Option<Vec<String>>
+}
+
 async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
@@ -424,8 +429,56 @@ async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction,
         Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
     }
 
-    // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    // Emettre une commande de reactivation a fichiers (consignation)
+    // Attendre 1 succes, timeout 10 secondes pour echec
+    let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS, COMMANDE_FICHIERS_REACTIVER)
+        .exchanges(vec![Securite::L2Prive])
+        .timeout_blocking(5_000)
+        .build();
+
+    // Recuperer les fuuids pour tous les tuuids
+    let filtre = match user_id.as_ref() {
+        Some(u) => doc! { CHAMP_USER_ID: u, CHAMP_TUUID: {"$in": &commande.tuuids} },
+        None => doc! { CHAMP_TUUID: {"$in": &commande.tuuids} }
+    };
+    let projection = doc!{ CHAMP_FUUIDS: true };
+    let options = FindOptions::builder().projection(projection).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut fuuids = Vec::new();
+    let mut curseur = collection.find(filtre, Some(options)).await?;
+    while let Some(r) = curseur.next().await {
+        let row: RowFuuids = convertir_bson_deserializable(r?)?;
+        if let Some(fr) = row.fuuids {
+            fuuids.extend(fr.into_iter());
+        }
+    }
+
+    debug!("commande_recuperer_documents Liste fuuids a recuperer : {:?}", fuuids);
+
+    let commande = json!({ "fuuids": fuuids });
+    match middleware.transmettre_commande(routage, &commande, true).await {
+        Ok(r) => match r {
+            Some(r) => match r {
+                TypeMessage::Valide(reponse) => {
+                    // Traiter la transaction
+                    debug!("commande_recuperer_documents Reponse recuperer document OK : {:?}", reponse);
+                    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+                },
+                _ => {
+                    debug!("commande_recuperer_documents Reponse recuperer document est invalide");
+                    Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes"}), None)?))
+                }
+            },
+            None => {
+                debug!("commande_recuperer_documents Reponse recuperer : reponse vide");
+                Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Reponse des serveurs de fichiers vide (aucun contenu)"}), None)?))
+            }
+        },
+        Err(e) => {
+            debug!("commande_recuperer_documents Reponse recuperer document erreur : {:?}", e);
+            Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes/timeout"}), None)?))
+        }
+    }
 }
 
 async fn commande_changer_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
