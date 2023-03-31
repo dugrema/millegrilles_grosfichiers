@@ -44,6 +44,7 @@ where
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION |
         TRANSACTION_SUPPRIMER_DOCUMENTS |
         TRANSACTION_RECUPERER_DOCUMENTS |
+        TRANSACTION_ARCHIVER_DOCUMENTS |
         TRANSACTION_CHANGER_FAVORIS |
         TRANSACTION_DECRIRE_FICHIER |
         TRANSACTION_DECRIRE_COLLECTION |
@@ -83,6 +84,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => transaction_retirer_documents_collection(middleware, transaction).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, transaction).await,
         TRANSACTION_RECUPERER_DOCUMENTS => transaction_recuperer_documents(middleware, transaction).await,
+        TRANSACTION_ARCHIVER_DOCUMENTS => transaction_archiver_documents(middleware, transaction).await,
         TRANSACTION_CHANGER_FAVORIS => transaction_changer_favoris(middleware, transaction).await,
         TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, transaction).await,
         TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, transaction).await,
@@ -176,7 +178,7 @@ pub struct TransactionRetirerDocumentsCollection {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionListeDocuments {
-    pub tuuids: Vec<String>,  // Fichiers/rep a supprimer
+    pub tuuids: Vec<String>,  // Fichiers/rep a supprimer, archiver, etc
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -831,7 +833,7 @@ async fn transaction_recuperer_documents<M, T>(middleware: &M, transaction: T) -
     // Conserver champs transaction uniquement (filtrer champs meta)
     let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.tuuids}};
     let ops = doc! {
-        "$set": {CHAMP_SUPPRIME: false},
+        "$set": {CHAMP_SUPPRIME: false, CHAMP_ARCHIVE: false},
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
 
@@ -845,6 +847,47 @@ async fn transaction_recuperer_documents<M, T>(middleware: &M, transaction: T) -
     for tuuid in &transaction_collection.tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
         emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_RECUPERER).await?;
+    }
+
+    middleware.reponse_ok()
+}
+
+async fn transaction_archiver_documents<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_archiver_documents Consommer transaction : {:?}", &transaction);
+    let transaction_collection: TransactionListeDocuments = match transaction.clone().convertir::<TransactionListeDocuments>() {
+        Ok(t) => t,
+        Err(e) => Err(format!("transactions.transaction_archiver_documents Erreur conversion transaction : {:?}", e))?
+    };
+
+    let user_id = match transaction.get_enveloppe_certificat() {
+        Some(e) => e.get_user_id()?.to_owned(),
+        None => None
+    };
+
+    // Conserver champs transaction uniquement (filtrer champs meta)
+    let filtre = match user_id.as_ref() {
+        Some(u) => doc! {CHAMP_USER_ID: u, CHAMP_TUUID: {"$in": &transaction_collection.tuuids}},
+        None => doc! {CHAMP_TUUID: {"$in": &transaction_collection.tuuids}}
+    };
+    let ops = doc! {
+        "$set": {CHAMP_ARCHIVE: true},
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let resultat = match collection.update_many(filtre, ops, None).await {
+        Ok(r) => r,
+        Err(e) => Err(format!("transactions.transaction_archiver_documents Erreur update_many sur transcation : {:?}", e))?
+    };
+    debug!("transaction_archiver_documents Resultat transaction update : {:?}", resultat);
+
+    for tuuid in &transaction_collection.tuuids {
+        // Emettre fichier pour que tous les clients recoivent la mise a jour
+        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_ARCHIVER).await?;
     }
 
     middleware.reponse_ok()

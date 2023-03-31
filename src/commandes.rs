@@ -68,6 +68,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => commande_retirer_documents_collection(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => commande_supprimer_documents(middleware, m, gestionnaire).await,
         TRANSACTION_RECUPERER_DOCUMENTS => commande_recuperer_documents(middleware, m, gestionnaire).await,
+        TRANSACTION_ARCHIVER_DOCUMENTS => commande_archiver_documents(middleware, m, gestionnaire).await,
         TRANSACTION_CHANGER_FAVORIS => commande_changer_favoris(middleware, m, gestionnaire).await,
         TRANSACTION_DECRIRE_FICHIER => commande_decrire_fichier(middleware, m, gestionnaire).await,
         TRANSACTION_DECRIRE_COLLECTION => commande_decrire_collection(middleware, m, gestionnaire).await,
@@ -479,6 +480,33 @@ async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction,
             Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes/timeout"}), None)?))
         }
     }
+}
+
+async fn commande_archiver_documents<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_archiver_documents Consommer commande : {:?}", & m.message);
+    let commande: TransactionListeDocuments = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_archiver_documents versions parsed : {:?}", commande);
+
+    // Autorisation: Action usager avec compte prive ou delegation globale
+    let user_id = m.get_user_id();
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive && user_id.is_some() {
+        let user_id_str = user_id.as_ref().expect("user_id");
+        let tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
+        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
+        if err_reponse.is_some() {
+            return Ok(err_reponse)
+        }
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("commandes.commande_archiver_documents: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
+
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
 async fn commande_changer_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
