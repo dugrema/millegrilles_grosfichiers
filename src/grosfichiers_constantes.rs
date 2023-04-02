@@ -138,6 +138,7 @@ pub struct FichierDetail {
     pub date_creation: Option<DateEpochSeconds>,
     pub derniere_modification: Option<DateEpochSeconds>,
     pub supprime: Option<bool>,
+    pub archive: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub metadata: Option<DataChiffre>,
     #[serde(skip_serializing_if="Option::is_none")]
