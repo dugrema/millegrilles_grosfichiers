@@ -11,10 +11,11 @@ use millegrilles_common_rust::constantes::Securite::L2Prive;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
-use millegrilles_common_rust::mongodb::options::{FindOptions, Hint};
+use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio_stream::StreamExt;
+use crate::grosfichiers::emettre_evenement_maj_fichier;
 
 use crate::grosfichiers_constantes::*;
 
@@ -277,6 +278,9 @@ async fn evenement_visiter_fuuids<M>(middleware: &M, m: MessageValideAction)
 #[derive(Clone, Deserialize)]
 struct EvenementFichierConsigne { hachage_bytes: String }
 
+#[derive(Clone, Deserialize)]
+struct DocumentFichierDetailIds { tuuid: String }
+
 async fn evenement_fichier_consigne<M>(middleware: &M, m: MessageValideAction)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao
@@ -305,9 +309,24 @@ async fn evenement_fichier_consigne<M>(middleware: &M, m: MessageValideAction)
         None => Err(format!("evenements.evenement_visiter_fuuids Certificat sans commonName"))?
     };
 
+    let filtre = doc! { "fuuids": &evenement.hachage_bytes };
+    let projection = doc! {"tuuid": 1};
+    let options = FindOneOptions::builder().projection(projection).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let doc_fuuid: DocumentFichierDetailIds = match collection.find_one(filtre, Some(options)).await? {
+        Some(inner) => convertir_bson_deserializable(inner)?,
+        None => {
+            warn!("evenements.evenement_visiter_fuuids Le document fuuid {} n'existe pas, abort evenement", evenement.hachage_bytes);
+            return Ok(None)
+        }
+    };
+
     let fuuids = vec![evenement.hachage_bytes];
 
     marquer_visites_fuuids(middleware, &fuuids, date_visite, instance_id).await?;
+
+    // Emettre un evenement sur le fichier (tuuid)
+    emettre_evenement_maj_fichier(middleware, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
 
     Ok(None)
 }

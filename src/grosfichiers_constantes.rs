@@ -73,6 +73,7 @@ pub const EVENEMENT_FUUID_COPIER_FICHIER_TIERS: &str = "fuuidCopierFichierTiers"
 pub const EVENEMENT_FUUID_DECRIRE_FICHIER: &str = "fuuidDecrireFichier";
 pub const EVENEMENT_FUUID_DEPLACER_FICHIER_COLLECTION: &str = "fuuidDeplacerFichierCollection";
 pub const EVENEMENT_FUUID_NOUVELLE_VERSION: &str = "fuuidNouvelleVersion";
+pub const EVENEMENT_FUUID_CONSIGNE: &str = "fuuidConsigne";
 pub const EVENEMENT_FUUID_RECUPERER: &str = "fuuidRecuperer";
 pub const EVENEMENT_FUUID_ARCHIVER: &str = "fuuidArchiver";
 pub const EVENEMENT_FUUID_RETIRER_COLLECTION: &str = "fuuidRetirerCollection";
