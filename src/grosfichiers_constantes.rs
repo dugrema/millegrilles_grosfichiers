@@ -82,6 +82,7 @@ pub const EVENEMENT_CONFIRMER_ETAT_FUUIDS: &str = "confirmerEtatFuuids";
 pub const EVENEMENT_TRANSCODAGE_PROGRES: &str = "transcodageProgres";
 pub const EVENEMENT_FICHIERS_SYNCPRET: &str = "syncPret";
 pub const EVENEMENT_FICHIERS_VISITER_FUUIDS: &str = "visiterFuuids";
+pub const EVENEMENT_FICHIERS_CONSIGNE: &str = "consigne";
 
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 pub const CHAMP_FUUIDS: &str = "fuuids";
