@@ -39,6 +39,7 @@ where
         // },
         EVENEMENT_TRANSCODAGE_PROGRES => evenement_transcodage_progres(middleware, m).await,
         EVENEMENT_FICHIERS_SYNCPRET => evenement_fichiers_syncpret(middleware, m).await,
+        EVENEMENT_FICHIERS_VISITER_FUUIDS => evenement_visiter_fuuids(middleware, m).await,
         _ => Err(format!("grosfichiers.consommer_evenement: Mauvais type d'action pour un evenement : {}", m.action))?,
     }
 }
@@ -233,4 +234,67 @@ struct ReponseConfirmerEtatFuuids {
 struct ConfirmationEtatFuuid {
     fuuid: String,
     supprime: bool,
+}
+
+#[derive(Clone, Deserialize)]
+struct EvenementVisiterFuuids { fuuids: Vec<String> }
+
+async fn evenement_visiter_fuuids<M>(middleware: &M, m: MessageValideAction)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao
+{
+    if !m.verifier_exchanges(vec![L2Prive]) {
+        error!("evenement_visiter_fuuids Acces refuse, certificat n'est pas d'un exchange L2");
+        return Ok(None)
+    }
+    if !m.verifier_roles(vec![RolesCertificats::Fichiers]) {
+        error!("evenement_visiter_fuuids Acces refuse, certificat n'est pas de role fichiers");
+        return Ok(None)
+    }
+
+    debug!("evenements.evenement_visiter_fuuids Mapper EvenementVisiterFuuids a partir de {:?}", m.message);
+    let evenement: EvenementVisiterFuuids = m.message.parsed.map_contenu(None)?;
+    let date_visite = &m.message.get_entete().estampille;
+
+    // Recuperer instance_id
+    let instance_id = match m.message.certificat.as_ref() {
+        Some(inner) => {
+            match inner.subject()?.get("commonName") {
+                Some(inner) => inner.clone(),
+                None => Err(format!("evenements.evenement_visiter_fuuids Certificat sans commonName"))?
+            }
+        },
+        None => Err(format!("evenements.evenement_visiter_fuuids Certificat sans commonName"))?
+    };
+
+    debug!("evenement_visiter_fuuids  Visiter {} fuuids de l'instance {}", evenement.fuuids.len(), instance_id);
+
+    let ops = doc! {
+        "$set": {format!("visites.{}", instance_id): date_visite},
+        "$currentDate": {CHAMP_MODIFICATION: true},
+    };
+
+    // Marquer fichiersrep
+    {
+        let filtre_rep = doc! {
+            "fuuids": {"$in": &evenement.fuuids},  // Utiliser index
+            "fuuid_v_courante": {"$in": &evenement.fuuids}
+        };
+        debug!("evenement_visiter_fuuids Filtre fichierrep {:?}", filtre_rep);
+        let collection_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+        collection_rep.update_many(filtre_rep, ops.clone(), None).await?;
+    }
+
+    // Marquer versions
+    {
+        let filtre_versions = doc! {
+            "fuuids": {"$in": &evenement.fuuids},  // Utiliser index
+            "fuuid": {"$in": &evenement.fuuids}
+        };
+        debug!("evenement_visiter_fuuids Filtre versions {:?}", filtre_versions);
+        let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        collection_versions.update_many(filtre_versions, ops, None).await?;
+    }
+
+    Ok(None)
 }

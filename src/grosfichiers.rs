@@ -222,6 +222,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
 
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_FICHIERS_SYNCPRET), exchange: Securite::L2Prive});
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.*.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_TRANSCODAGE_PROGRES), exchange: Securite::L2Prive});
+    rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_FICHIERS_VISITER_FUUIDS), exchange: Securite::L2Prive});
 
     let mut queues = Vec::new();
 
