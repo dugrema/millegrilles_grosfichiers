@@ -144,6 +144,8 @@ pub struct FichierDetail {
     pub metadata: Option<DataChiffre>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub supprime_cuuids_path: Option<Vec<String>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub visites: Option<HashMap<String, DateEpochSeconds>>,
 }
 
 impl TryFrom<Document> for FichierDetail {
