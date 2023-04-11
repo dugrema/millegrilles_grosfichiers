@@ -1164,11 +1164,20 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
     };
 
     if emettre_job {
-        let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS, COMMANDE_VIDEO_DISPONIBLE)
-            .exchanges(vec![Securite::L2Prive])
-            .build();
-        let commande_fichiers = json!({CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video});
-        middleware.transmettre_commande(routage, &commande_fichiers, false).await?;
+        // Faire la liste des consignations avec le fichier disponible
+        let consignation_disponible = match info_fichier.visites.as_ref() {
+            Some(inner) => inner.keys().into_iter().collect(),
+            None => Vec::new()
+        };
+
+        for consignation in consignation_disponible {
+            let routage = RoutageMessageAction::builder(DOMAINE_MEDIA_NOM, COMMANDE_VIDEO_DISPONIBLE)
+                .exchanges(vec![Securite::L2Prive])
+                .partition(consignation)
+                .build();
+            let commande_fichiers = json!({CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video});
+            middleware.transmettre_commande(routage, &commande_fichiers, false).await?;
+        }
 
         if let Some(u) = user_id.as_ref() {
             // Emettre evenement pour clients

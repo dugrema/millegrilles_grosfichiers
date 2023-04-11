@@ -302,13 +302,23 @@ pub async fn entretien_video_jobs<M>(middleware: &M) -> Result<(), Box<dyn Error
         let options = FindOptions::builder().hint(hint).build();
         let mut curseur = collection.find(filtre, options).await?;
 
-        let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS, COMMANDE_VIDEO_DISPONIBLE)
-            .exchanges(vec![Securite::L2Prive])
-            .build();
         while let Some(d) = curseur.next().await {
             let job_cles: JobCles = convertir_bson_deserializable(d?)?;
+
+            // Faire la liste des consignations avec le fichier disponible
+            let consignation_disponible = match job_cles.visites.as_ref() {
+                Some(inner) => inner.keys().into_iter().collect(),
+                None => Vec::new()
+            };
+
             let commande = json!({CHAMP_FUUID: job_cles.fuuid, CHAMP_CLE_CONVERSION: job_cles.cle_conversion});
-            middleware.transmettre_commande(routage.clone(), &commande, false).await?;
+            for consignation in consignation_disponible {
+                let routage = RoutageMessageAction::builder(DOMAINE_MEDIA_NOM, COMMANDE_VIDEO_DISPONIBLE)
+                    .exchanges(vec![Securite::L2Prive])
+                    .partition(consignation)
+                    .build();
+                middleware.transmettre_commande(routage, &commande, false).await?;
+            }
         }
     }
 
@@ -321,6 +331,7 @@ pub async fn entretien_video_jobs<M>(middleware: &M) -> Result<(), Box<dyn Error
 struct JobCles {
     fuuid: String,
     cle_conversion: String,
+    visites: Option<HashMap<String, DateEpochSeconds>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
