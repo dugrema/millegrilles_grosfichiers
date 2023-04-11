@@ -14,6 +14,7 @@ pub const NOM_COLLECTION_DOCUMENTS: &str = "GrosFichiers/documents";
 pub const NOM_COLLECTION_VIDEO_JOBS: &str = "GrosFichiers/videoJobs";
 
 pub const DOMAINE_FICHIERS_NOM: &str = "fichiers";
+pub const DOMAINE_MEDIA_NOM: &str = "media";
 
 pub const NOM_Q_TRANSACTIONS: &str = "GrosFichiers/transactions";
 pub const NOM_Q_VOLATILS: &str = "GrosFichiers/volatils";

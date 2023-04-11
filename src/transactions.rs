@@ -395,13 +395,13 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
 
     if flag_duplication == false {
         // On emet les messages de traitement uniquement si la transaction est nouvelle
-        if flag_media == true {
-            debug!("Emettre une commande de conversion pour media {}", fuuid);
-            match emettre_commande_media(middleware, &tuuid, &fuuid, &mimetype, false).await {
-                Ok(()) => (),
-                Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
-            }
-        }
+        // if flag_media == true {
+        //     debug!("Emettre une commande de conversion pour media {}", fuuid);
+        //     match emettre_commande_media(middleware, &tuuid, &fuuid, &mimetype, false).await {
+        //         Ok(()) => (),
+        //         Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
+        //     }
+        // }
 
         debug!("Emettre une commande d'indexation pour {}", fuuid);
         match emettre_commande_indexation(gestionnaire, middleware, &tuuid, &fuuid).await {

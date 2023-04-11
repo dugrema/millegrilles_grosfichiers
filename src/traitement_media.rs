@@ -58,16 +58,18 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
     };
     let user_id = doc_fichier.user_id;
 
+    // Faire la liste des consignations avec le fichier disponible
+    let consignation_disponible = match doc_fichier.visites.as_ref() {
+        Some(inner) => inner.keys().into_iter().collect(),
+        None => Vec::new()
+    };
+
     let message = json!({
         "fuuid": fuuid_str,
         "tuuid": tuuid_str,
         "mimetype": mimetype_str,
         "user_id": &user_id,
-        // "extension": extension_fichier,
-
-        // Section permission de dechiffrage
-        //"permission_hachage_bytes": [fuuid_str],
-        //"permission_duree": 300,  // 300 secondes a partir de la signature de la commande
+        "consignations": consignation_disponible,
     });
 
     debug!("emettre_commande_media Emettre commande {:?}", message);
@@ -112,11 +114,13 @@ pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid:
         }
     };
 
-    let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, action)
-        .exchanges(vec![Securite::L3Protege])
-        .build();
-
-    middleware.transmettre_commande(routage, &message, false).await?;
+    for consignation in consignation_disponible {
+        let routage = RoutageMessageAction::builder(DOMAINE_MEDIA_NOM, action)
+            .exchanges(vec![Securite::L2Prive])
+            .partition(consignation)
+            .build();
+        middleware.transmettre_commande(routage, &message, false).await?;
+    }
 
     Ok(())
 }
@@ -160,8 +164,6 @@ pub async fn traiter_media_batch<M>(middleware: &M, limite: i64, reset: bool, fu
         }
     };
 
-    // let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    // let mut curseur = collection.find(filtre, Some(opts)).await?;
     let mut tuuids = Vec::new();
 
     let mut fuuids_media = Vec::new();

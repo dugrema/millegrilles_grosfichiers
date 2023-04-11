@@ -18,6 +18,7 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use crate::grosfichiers::emettre_evenement_maj_fichier;
 
 use crate::grosfichiers_constantes::*;
+use crate::traitement_media::emettre_commande_media;
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
 
@@ -279,7 +280,7 @@ async fn evenement_visiter_fuuids<M>(middleware: &M, m: MessageValideAction)
 struct EvenementFichierConsigne { hachage_bytes: String }
 
 #[derive(Clone, Deserialize)]
-struct DocumentFichierDetailIds { tuuid: String }
+struct DocumentFichierDetailIds { fuuid: String, tuuid: String, flag_media: Option<String>, flag_media_traite: Option<bool>, mimetype: Option<String> }
 
 async fn evenement_fichier_consigne<M>(middleware: &M, m: MessageValideAction)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -310,7 +311,7 @@ async fn evenement_fichier_consigne<M>(middleware: &M, m: MessageValideAction)
     };
 
     let filtre = doc! { "fuuids": &evenement.hachage_bytes };
-    let projection = doc! {"tuuid": 1};
+    let projection = doc! {"tuuid": 1, "fuuid": 1, "flag_media": 1, "flag_media_traite": 1, "mimetype": 1};
     let options = FindOneOptions::builder().projection(projection).build();
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     let doc_fuuid: DocumentFichierDetailIds = match collection.find_one(filtre, Some(options)).await? {
@@ -327,6 +328,15 @@ async fn evenement_fichier_consigne<M>(middleware: &M, m: MessageValideAction)
 
     // Emettre un evenement sur le fichier (tuuid)
     emettre_evenement_maj_fichier(middleware, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
+
+    if let Some(false) = doc_fuuid.flag_media_traite {
+        if let Some(mimetype) = doc_fuuid.mimetype.as_ref() {
+            debug!("Consignation sur fichier media non traite, emettre evenement pour tuuid {}", doc_fuuid.tuuid);
+            if let Err(e) = emettre_commande_media(middleware, &doc_fuuid.tuuid, &doc_fuuid.fuuid, mimetype, false).await {
+                error!("evenements.evenement_fichier_consigne Erreur emission commande generer image {} : {:?}", doc_fuuid.fuuid, e);
+            }
+        }
+    }
 
     Ok(None)
 }
