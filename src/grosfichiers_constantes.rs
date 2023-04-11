@@ -65,6 +65,7 @@ pub const COMMANDE_VIDEO_DISPONIBLE: &str = "jobConversionVideoDisponible";
 pub const COMMANDE_VIDEO_GET_JOB: &str = "getJobVideo";
 pub const COMMANDE_VIDEO_SUPPRIMER_JOB: &str = "supprimerJobVideo";
 pub const COMMANDE_FUUIDS_DOMAINE_LISTE: &str = "fuuidsDomaineListe";
+pub const COMMANDE_GET_CLE_JOB_CONVERSION: &str = "getCleJobConversion";
 
 pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
 pub const EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION: &str = "fuuidAjouterFichierCollection";
@@ -317,4 +318,10 @@ pub struct JobVideo {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReponseCle {
     pub ok: Option<bool>
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CommandeGetCleJobConversion {
+    pub fuuid: String,
+    pub nom_job: String,
 }

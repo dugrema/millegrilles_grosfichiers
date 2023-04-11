@@ -7,7 +7,7 @@ use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
-use millegrilles_common_rust::chrono::{DateTime, Utc};
+use millegrilles_common_rust::chrono::{DateTime, Duration, Utc};
 use millegrilles_common_rust::common_messages::RequeteVerifierPreuve;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L4Secure};
@@ -80,6 +80,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         COMMANDE_COMPLETER_PREVIEWS => commande_completer_previews(middleware, m, gestionnaire).await,
         COMMANDE_CONFIRMER_FICHIER_INDEXE => commande_confirmer_fichier_indexe(middleware, m, gestionnaire).await,
         COMMANDE_NOUVEAU_FICHIER => commande_nouveau_fichier(middleware, m, gestionnaire).await,
+        COMMANDE_GET_CLE_JOB_CONVERSION => commande_get_cle_job_conversion(middleware, m, gestionnaire).await,
 
         // Video
         COMMANDE_VIDEO_TRANSCODER => commande_video_convertir(middleware, m, gestionnaire).await,
@@ -1335,4 +1336,79 @@ async fn commande_supprimer_video<M>(middleware: &M, m: MessageValideAction, ges
     } else {
         Ok(middleware.reponse_ok()?)
     }
+}
+
+async fn commande_get_cle_job_conversion<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    debug!("commande_get_cle_job_conversion Consommer commande : {:?}", & m.message);
+    let commande: CommandeGetCleJobConversion = m.message.get_msg().map_contenu(None)?;
+    debug!("Commande commande_get_cle_job_conversion parsed : {:?}", commande);
+
+    // Verifier autorisation
+    if ! m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+        info!("commande_video_get_job Exchange n'est pas de niveau 3,4");
+        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
+    }
+    if ! m.verifier_roles(vec![RolesCertificats::Media]) {
+        info!("commande_video_get_job Role n'est pas media");
+        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre media)"}), None)?))
+    }
+
+    let expiration = Utc::now() - Duration::minutes(10);
+
+    // Faire une requete en tenter de reserver avec timestamp pour la job
+    // Si aucun resultat, la job existe deja et n'est pas expiree.
+    let filtre = doc!{
+        "fuuids": &commande.fuuid,
+        "$or": [
+            {format!("job.{}", commande.nom_job): {"$exists": false}},
+            {format!("job.{}", commande.nom_job): {"$lt": expiration}}
+        ]
+    };
+    let ops = doc! { "$set": {format!("job.{}", commande.nom_job): Utc::now()} };
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let doc_resultat = collection.update_one(filtre, ops, None).await?;
+    let reponse = if doc_resultat.modified_count == 1 {
+        debug!("Document reserve, on demande la cle");
+        // Emettre requete de rechiffrage de cle, reponse acheminee directement au demandeur
+        let reply_to = match m.reply_q {
+            Some(r) => r,
+            None => Err(format!("commandes.commande_get_cle_job_conversion Pas de reply q pour message"))?
+        };
+        let correlation_id = match m.correlation_id {
+            Some(r) => r,
+            None => Err(format!("commandes.commande_get_cle_job_conversion Pas de correlation_id pour message"))?
+        };
+        let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE)
+            .exchanges(vec![Securite::L4Secure])
+            .reply_to(reply_to)
+            .correlation_id(correlation_id)
+            .blocking(false)
+            .build();
+
+        // Utiliser certificat du message client (requete) pour demande de rechiffrage
+        let pem_rechiffrage: Vec<String> = match &m.message.certificat {
+            Some(c) => {
+                let fp_certs = c.get_pem_vec();
+                fp_certs.into_iter().map(|cert| cert.pem).collect()
+            },
+            None => Err(format!("commandes.commande_get_cle_job_conversion PEM rechiffrage manquant"))?
+        };
+
+        let permission = json!({
+            "liste_hachage_bytes": vec![commande.fuuid],
+            "certificat_rechiffrage": pem_rechiffrage,
+        });
+
+        debug!("Transmettre requete permission dechiffrage cle : {:?}", permission);
+        middleware.transmettre_requete(routage, &permission).await?;
+
+        None
+    } else {
+        Some(middleware.formatter_reponse(json!({"ok": false, "err": "Echec reservation job", "acces": "5.duplication"}), None)?)
+    };
+
+    Ok(reponse)
 }

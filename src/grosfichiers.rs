@@ -204,6 +204,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     let commandes_protegees: Vec<&str> = vec![
         COMMANDE_INDEXER,
         COMMANDE_CONFIRMER_FICHIER_INDEXE,
+        COMMANDE_GET_CLE_JOB_CONVERSION,
     ];
     for cmd in commandes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
