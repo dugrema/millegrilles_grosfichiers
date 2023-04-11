@@ -302,22 +302,37 @@ pub async fn entretien_video_jobs<M>(middleware: &M) -> Result<(), Box<dyn Error
         let options = FindOptions::builder().hint(hint).build();
         let mut curseur = collection.find(filtre, options).await?;
 
+        let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+
         while let Some(d) = curseur.next().await {
             let job_cles: JobCles = convertir_bson_deserializable(d?)?;
 
-            // Faire la liste des consignations avec le fichier disponible
-            let consignation_disponible = match job_cles.visites.as_ref() {
-                Some(inner) => inner.keys().into_iter().collect(),
-                None => Vec::new()
-            };
+            // Charger liste serveurs consignations pour ce fichier
+            let filtre_version = doc! { "fuuids": &job_cles.fuuid };
+            if let Some(doc_version) = collection_versions.find_one(filtre_version, None).await? {
+                let info: FichierDetail = convertir_bson_deserializable(doc_version)?;
 
-            let commande = json!({CHAMP_FUUID: job_cles.fuuid, CHAMP_CLE_CONVERSION: job_cles.cle_conversion});
-            for consignation in consignation_disponible {
-                let routage = RoutageMessageAction::builder(DOMAINE_MEDIA_NOM, COMMANDE_VIDEO_DISPONIBLE)
-                    .exchanges(vec![Securite::L2Prive])
-                    .partition(consignation)
-                    .build();
-                middleware.transmettre_commande(routage, &commande, false).await?;
+                // Faire la liste des consignations avec le fichier disponible
+                let consignation_disponible = match info.visites.as_ref() {
+                    Some(inner) => inner.keys().into_iter().collect(),
+                    None => Vec::new()
+                };
+
+                let commande = json!({
+                    CHAMP_FUUID: job_cles.fuuid,
+                    CHAMP_CLE_CONVERSION: job_cles.cle_conversion,
+                    "consignations": &consignation_disponible
+                });
+
+                debug!("entretien_video_jobs Re-emettre job video {:?}", commande);
+
+                for consignation in consignation_disponible {
+                    let routage = RoutageMessageAction::builder(DOMAINE_MEDIA_NOM, COMMANDE_VIDEO_DISPONIBLE)
+                        .exchanges(vec![Securite::L2Prive])
+                        .partition(consignation)
+                        .build();
+                    middleware.transmettre_commande(routage, &commande, false).await?;
+                }
             }
         }
     }
