@@ -1071,7 +1071,12 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
         let delegation_globale = m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE);
         if delegation_globale || m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
             // Ok, on utilise le user_id de la commande
-            user_id = commande.user_id;
+            match commande.user_id {
+                Some(inner) => {
+                    user_id = Some(inner);  // Remplacer user_id pour celui demande
+                },
+                None => ()
+            }
         } else if user_id.is_some() {
             let u = user_id.as_ref().expect("commande_video_convertir user_id");
             let resultat = verifier_acces_usager(middleware, u, vec![fuuid]).await?;
