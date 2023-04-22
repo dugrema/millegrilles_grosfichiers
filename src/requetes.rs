@@ -135,7 +135,7 @@ async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, ges
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_activite_recente Message : {:?}", & m.message);
-    let requete: RequetePlusRecente = m.message.get_msg().map_contenu(None)?;
+    let requete: RequetePlusRecente = m.message.get_msg().map_contenu()?;
     debug!("requete_activite_recente cle parsed : {:?}", requete);
 
     let user_id = m.get_user_id();
@@ -289,7 +289,7 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_documents_par_tuuid Message : {:?}", & m.message);
-    let requete: RequeteDocumentsParTuuids = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteDocumentsParTuuids = m.message.get_msg().map_contenu()?;
     debug!("requete_documents_par_tuuid cle parsed : {:?}", requete);
 
     let user_id = m.get_user_id();
@@ -319,7 +319,7 @@ async fn requete_documents_par_fuuid<M>(middleware: &M, m: MessageValideAction, 
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_documents_par_fuuid Message : {:?}", & m.message);
-    let requete: RequeteDocumentsParFuuids = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteDocumentsParFuuids = m.message.get_msg().map_contenu()?;
     debug!("requete_documents_par_fuuid cle parsed : {:?}", requete);
 
     let user_id = m.get_user_id();
@@ -351,7 +351,7 @@ async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValideAction
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_verifier_acces_fuuids Message : {:?}", & m.message);
-    let requete: RequeteVerifierAccesFuuids = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteVerifierAccesFuuids = m.message.get_msg().map_contenu()?;
     debug!("requete_verifier_acces_fuuids cle parsed : {:?}", requete);
 
     let user_id_option = m.get_user_id();
@@ -383,7 +383,7 @@ async fn requete_contenu_collection<M>(middleware: &M, m: MessageValideAction, g
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_contenu_collection Message : {:?}", & m.message);
-    let requete: RequeteContenuCollection = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteContenuCollection = m.message.get_msg().map_contenu()?;
     debug!("requete_contenu_collection cle parsed : {:?}", requete);
 
     let user_id = m.get_user_id();
@@ -447,7 +447,7 @@ async fn requete_get_corbeille<M>(middleware: &M, m: MessageValideAction, gestio
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_get_corbeille Message : {:?}", & m.message);
-    let requete: RequetePlusRecente = m.message.get_msg().map_contenu(None)?;
+    let requete: RequetePlusRecente = m.message.get_msg().map_contenu()?;
     debug!("requete_get_corbeille cle parsed : {:?}", requete);
 
     let user_id = m.get_user_id();
@@ -493,7 +493,7 @@ async fn requete_recherche_index<M>(middleware: &M, m: MessageValideAction, gest
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_recherche_index Message : {:?}", & m.message);
-    let mut requete: ParametresRecherche = m.message.get_msg().map_contenu(None)?;
+    let mut requete: ParametresRecherche = m.message.get_msg().map_contenu()?;
     debug!("requete_recherche_index cle parsed : {:?}", requete);
 
     let user_id = m.get_user_id();
@@ -546,7 +546,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_get_cles_fichiers Message : {:?}", &m.message);
-    let requete: ParametresGetPermission = m.message.get_msg().map_contenu(None)?;
+    let requete: ParametresGetPermission = m.message.get_msg().map_contenu()?;
     debug!("requete_get_cles_fichiers cle parsed : {:?}", requete);
 
     let mut conditions: Vec<Document> = Vec::new();
@@ -666,7 +666,7 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gest
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
     debug!("requete_get_cles_stream Message : {:?}", &m.message);
-    let requete: ParametresGetClesStream = m.message.get_msg().map_contenu(None)?;
+    let requete: ParametresGetClesStream = m.message.get_msg().map_contenu()?;
     debug!("requete_get_cles_stream cle parsed : {:?}", requete);
 
     if ! m.verifier_roles(vec![RolesCertificats::Stream]) {
@@ -1030,7 +1030,7 @@ async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction
     }
 
     debug!("requete_confirmer_etat_fuuids Message : {:?}", & m.message);
-    let requete: RequeteConfirmerEtatFuuids = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteConfirmerEtatFuuids = m.message.get_msg().map_contenu()?;
     debug!("requete_confirmer_etat_fuuids cle parsed : {:?}", requete);
 
     let mut fuuids = HashSet::new();
@@ -1198,7 +1198,7 @@ async fn requete_sync_collection<M>(middleware: &M, m: MessageValideAction, gest
     let uuid_transaction = m.correlation_id.clone();
 
     debug!("requete_confirmer_etat_fuuids Message : {:?}", & m.message);
-    let requete: RequeteSyncCollection = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteSyncCollection = m.message.get_msg().map_contenu()?;
     debug!("requete_confirmer_etat_fuuids cle parsed : {:?}", requete);
 
     let user_id = {
@@ -1271,7 +1271,7 @@ async fn requete_sync_plusrecent<M>(middleware: &M, m: MessageValideAction, gest
     let uuid_transaction = m.correlation_id.clone();
 
     debug!("requete_sync_plusrecent Message : {:?}", & m.message);
-    let requete: RequeteSyncIntervalle = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteSyncIntervalle = m.message.get_msg().map_contenu()?;
     debug!("requete_sync_plusrecent cle parsed : {:?}", requete);
 
     let user_id = {
@@ -1354,7 +1354,7 @@ async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValideAction, gesti
     let uuid_transaction = m.correlation_id.clone();
 
     debug!("requete_sync_corbeille Message : {:?}", & m.message);
-    let requete: RequeteSyncIntervalle = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteSyncIntervalle = m.message.get_msg().map_contenu()?;
     debug!("requete_sync_corbeille cle parsed : {:?}", requete);
 
     let user_id = {
@@ -1445,7 +1445,7 @@ async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValideAction, gestionn
     }
 
     debug!("requete_sync_cuuids Message : {:?}", & m.message);
-    let requete: RequeteSyncCuuids = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteSyncCuuids = m.message.get_msg().map_contenu()?;
     debug!("requete_sync_cuuids cle parsed : {:?}", requete);
 
     let limit = match requete.limit {

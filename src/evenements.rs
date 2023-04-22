@@ -83,7 +83,7 @@ async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValideAction
     }
 
     debug!("evenement_transcodage_progres Message : {:?}", & m.message);
-    let evenement: EvenementTranscodageProgres = m.message.get_msg().map_contenu(None)?;
+    let evenement: EvenementTranscodageProgres = m.message.get_msg().map_contenu()?;
     debug!("evenement_transcodage_progres parsed : {:?}", evenement);
 
     let height = match evenement.height {
@@ -256,8 +256,8 @@ async fn evenement_visiter_fuuids<M>(middleware: &M, m: MessageValideAction)
     }
 
     debug!("evenements.evenement_visiter_fuuids Mapper EvenementVisiterFuuids a partir de {:?}", m.message);
-    let evenement: EvenementVisiterFuuids = m.message.parsed.map_contenu(None)?;
-    let date_visite = &m.message.get_entete().estampille;
+    let evenement: EvenementVisiterFuuids = m.message.parsed.map_contenu()?;
+    let date_visite = &m.message.parsed.estampille;
 
     // Recuperer instance_id
     let instance_id = match m.message.certificat.as_ref() {
@@ -296,8 +296,8 @@ async fn evenement_fichier_consigne<M>(middleware: &M, m: MessageValideAction)
     }
 
     debug!("evenements.evenement_fichier_consigne Mapper EvenementVisiterFuuids a partir de {:?}", m.message);
-    let evenement: EvenementFichierConsigne = m.message.parsed.map_contenu(None)?;
-    let date_visite = &m.message.get_entete().estampille;
+    let evenement: EvenementFichierConsigne = m.message.parsed.map_contenu()?;
+    let date_visite = &m.message.parsed.estampille;
 
     // Recuperer instance_id
     let instance_id = match m.message.certificat.as_ref() {

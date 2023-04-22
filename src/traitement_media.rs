@@ -370,7 +370,7 @@ pub async fn requete_jobs_video<M>(middleware: &M, m: MessageValideAction, gesti
     where M: GenerateurMessages + MongoDao + VerificateurMessage
 {
     debug!("requete_documents_par_tuuid Message : {:?}", & m.message);
-    let requete: RequeteJobsVideo = m.message.get_msg().map_contenu(None)?;
+    let requete: RequeteJobsVideo = m.message.get_msg().map_contenu()?;
     debug!("requete_documents_par_tuuid cle parsed : {:?}", requete);
 
     let user_id = m.get_user_id();
@@ -421,7 +421,7 @@ pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAct
     where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_supprimer_job_video Consommer commande : {:?}", & m.message);
-    let commande: CommandeSupprimerJobVideo = m.message.get_msg().map_contenu(None)?;
+    let commande: CommandeSupprimerJobVideo = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_supprimer_job_video parsed : {:?}", commande);
 
     let fuuid = &commande.fuuid;

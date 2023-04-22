@@ -98,7 +98,7 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValideAction
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_nouvelle_version Consommer commande : {:?}", & m.message);
-    let mut commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu(None)?;
+    let mut commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu()?;
     debug!("Commande nouvelle versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
@@ -114,17 +114,20 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValideAction
 
     if let Some(cle) = commande.cle.take() {
         debug!("commande_nouvelle_version Sauvegarde cle fichier");
-        if let Some(partition) = cle.entete.partition.as_ref() {
-            debug!("Sauvegarder cle de notification avec partition {}", partition);
-            let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE)
-                .exchanges(vec![Securite::L3Protege])
-                .partition(partition)
-                .build();
-            middleware.transmettre_commande(routage, &cle, true).await?;
+        if let Some(routage) = cle.routage.as_ref() {
+            if let Some(partition) = routage.partition.as_ref() {
+                debug!("Sauvegarder cle de notification avec partition {}", partition);
+                let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE)
+                    .exchanges(vec![Securite::L3Protege])
+                    .partition(partition)
+                    .build();
+                middleware.transmettre_commande(routage, &cle, true).await?;
+            }
         }
 
         // Retirer la cle de la transaction
-        m.message.parsed.contenu.remove("_cle");
+        //m.message.parsed.contenu.remove("_cle");
+        warn!("commandes.commande_nouvelle_version TODO Fix handling _cle");
     }
 
     // Traiter la transaction
@@ -136,7 +139,7 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValideAction, ges
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_decrire_fichier Consommer commande : {:?}", & m.message);
-    let commande: TransactionDecrireFichier = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionDecrireFichier = m.message.get_msg().map_contenu()?;
     debug!("Commande decrire_fichier parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
@@ -164,7 +167,7 @@ async fn commande_nouvelle_collection<M>(middleware: &M, m: MessageValideAction,
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_nouvelle_collection Consommer commande : {:?}", & m.message);
-    let commande: TransactionNouvelleCollection = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionNouvelleCollection = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_nouvelle_collection versions parsed : {:?}", commande);
 
     // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
@@ -195,7 +198,7 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValideAction
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_associer_conversions Consommer commande : {:?}", & m.message);
-    let commande: TransactionAssocierConversions = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionAssocierConversions = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_associer_conversions versions parsed : {:?}", commande);
 
     if ! m.verifier_exchanges(vec![L4Secure]) {
@@ -216,7 +219,7 @@ async fn commande_associer_video<M>(middleware: &M, m: MessageValideAction, gest
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_associer_video Consommer commande : {:?}", & m.message);
-    let commande: TransactionAssocierVideo = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionAssocierVideo = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_associer_video versions parsed : {:?}", commande);
 
     // Autorisation
@@ -281,7 +284,7 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_ajouter_fichiers_collection Consommer commande : {:?}", & m.message);
-    let commande: TransactionAjouterFichiersCollection = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionAjouterFichiersCollection = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_ajouter_fichiers_collection versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
@@ -310,7 +313,7 @@ async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageVali
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_deplacer_fichiers_collection Consommer commande : {:?}", & m.message);
-    let commande: TransactionDeplacerFichiersCollection = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionDeplacerFichiersCollection = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_deplacer_fichiers_collection versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
@@ -374,7 +377,7 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction,
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_supprimer_documents Consommer commande : {:?}", & m.message);
-    let commande: TransactionSupprimerDocuments = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionSupprimerDocuments = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_supprimer_documents versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
@@ -412,7 +415,7 @@ async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction,
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_recuperer_documents Consommer commande : {:?}", & m.message);
-    let commande: TransactionListeDocuments = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionListeDocuments = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_recuperer_documents versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
@@ -488,7 +491,7 @@ async fn commande_archiver_documents<M>(middleware: &M, m: MessageValideAction, 
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_archiver_documents Consommer commande : {:?}", & m.message);
-    let commande: TransactionListeDocuments = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionListeDocuments = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_archiver_documents versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
@@ -515,7 +518,7 @@ async fn commande_changer_favoris<M>(middleware: &M, m: MessageValideAction, ges
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_changer_favoris Consommer commande : {:?}", & m.message);
-    let commande: TransactionChangerFavoris = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionChangerFavoris = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_changer_favoris versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
@@ -543,7 +546,7 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValideAction, 
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_decrire_collection Consommer commande : {:?}", & m.message);
-    let commande: TransactionDecrireCollection = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionDecrireCollection = m.message.get_msg().map_contenu()?;
     debug!("Commande decrire_collection parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
@@ -571,7 +574,7 @@ async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_copier_fichier_tiers Consommer commande : {:?}", & m.message);
-    let commande: CommandeCopierFichierTiers = m.message.get_msg().map_contenu(None)?;
+    let commande: CommandeCopierFichierTiers = m.message.get_msg().map_contenu()?;
     debug!("commande_copier_fichier_tiers parsed : {:?}", commande);
     // debug!("Commande en json (DEBUG) : \n{:?}", serde_json::to_string(&commande));
 
@@ -599,7 +602,7 @@ async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction
                     Some(c) => {
                         if c.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
                             debug!("commande_copier_fichier_tiers Reponse preuve : {:?}", m);
-                            let preuve_value: ReponsePreuvePossessionCles = m.message.get_msg().map_contenu(None)?;
+                            let preuve_value: ReponsePreuvePossessionCles = m.message.get_msg().map_contenu()?;
                             Ok(preuve_value)
                         } else {
                             Err(format!("commandes.commande_copier_fichier_tiers Erreur chargement certificat de reponse verification preuve, certificat n'est pas de role maitre des cles"))
@@ -635,7 +638,7 @@ async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction
                 if let Some(reponse) = reponse_cle {
                     if let TypeMessage::Valide(mva) = reponse {
                         debug!("Reponse valide : {:?}", mva);
-                        let reponse_mappee: ReponseCle = mva.message.get_msg().map_contenu(None)?;
+                        let reponse_mappee: ReponseCle = mva.message.get_msg().map_contenu()?;
                         etat_cle = true;
                     }
                 }
@@ -652,7 +655,7 @@ async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction
 
             // Convertir le fichier en transaction
             let transaction_copier_message = middleware.formatter_message(
-                &fichier, DOMAINE_NOM.into(), "copierFichierTiers".into(), None, None, false)?;
+                MessageKind::Commande, &fichier, DOMAINE_NOM.into(), "copierFichierTiers".into(), None, None, false)?;
             let transaction_copier_message = MessageSerialise::from_parsed(transaction_copier_message)?;
 
             let mva = MessageValideAction::new(
@@ -709,7 +712,7 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionna
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
     debug!("commande_reindexer Consommer commande : {:?}", & m.message);
-    let commande: CommandeIndexerContenu = m.message.get_msg().map_contenu(None)?;
+    let commande: CommandeIndexerContenu = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_reindexer parsed : {:?}", commande);
 
     // Autorisation : doit etre un message provenant d'un usager avec delegation globale
@@ -760,7 +763,7 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, 
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_completer_previews Consommer commande : {:?}", & m.message);
-    let commande: CommandeCompleterPreviews = m.message.get_msg().map_contenu(None)?;
+    let commande: CommandeCompleterPreviews = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_completer_previews parsed : {:?}", commande);
 
     // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
@@ -853,7 +856,7 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAc
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_confirmer_fichier_indexe Consommer commande : {:?}", & m.message);
-    let commande: CommandeConfirmerFichierIndexe = m.message.get_msg().map_contenu(None)?;
+    let commande: CommandeConfirmerFichierIndexe = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_confirmer_fichier_indexe parsed : {:?}", commande);
 
     // Autorisation : doit etre un message provenant d'un composant protege
@@ -880,7 +883,7 @@ async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValideAction, ges
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_nouveau_fichier Consommer commande : {:?}", & m.message);
-    let commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_nouveau_fichier parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
@@ -953,7 +956,7 @@ async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValideAction, g
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_favoris_creerpath Consommer commande : {:?}", & m.message);
-    let commande: TransactionFavorisCreerpath = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionFavorisCreerpath = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_favoris_creerpath parsed : {:?}", commande);
 
     // Autorisation : si user_id fourni dans la commande, on verifie que le certificat est 4.secure ou delegation globale
@@ -1061,7 +1064,7 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
     where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_video_convertir Consommer commande : {:?}", & m.message);
-    let commande: CommandeVideoConvertir = m.message.get_msg().map_contenu(None)?;
+    let commande: CommandeVideoConvertir = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_video_convertir parsed : {:?}", commande);
 
     let fuuid = commande.fuuid.as_str();
@@ -1207,7 +1210,7 @@ async fn commande_video_get_job<M>(middleware: &M, m: MessageValideAction, gesti
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_video_get_job Consommer commande : {:?}", & m.message);
-    let commande: CommandeVideoGetJob = m.message.get_msg().map_contenu(None)?;
+    let commande: CommandeVideoGetJob = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_video_get_job parsed : {:?}", commande);
 
     // Verifier autorisation
@@ -1317,7 +1320,7 @@ async fn commande_supprimer_video<M>(middleware: &M, m: MessageValideAction, ges
     where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_supprimer_video Consommer commande : {:?}", & m.message);
-    let commande: TransactionSupprimerVideo = m.message.get_msg().map_contenu(None)?;
+    let commande: TransactionSupprimerVideo = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_supprimer_video parsed : {:?}", commande);
 
     let fuuid = &commande.fuuid_video;
@@ -1357,7 +1360,7 @@ async fn commande_get_cle_job_conversion<M>(middleware: &M, m: MessageValideActi
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_get_cle_job_conversion Consommer commande : {:?}", & m.message);
-    let commande: CommandeGetCleJobConversion = m.message.get_msg().map_contenu(None)?;
+    let commande: CommandeGetCleJobConversion = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_get_cle_job_conversion parsed : {:?}", commande);
 
     // Verifier autorisation
