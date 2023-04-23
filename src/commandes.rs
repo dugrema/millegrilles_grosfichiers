@@ -12,7 +12,7 @@ use millegrilles_common_rust::common_messages::RequeteVerifierPreuve;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L4Secure};
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageSerialise};
-use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, transmettre_cle_attachee};
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
 use millegrilles_common_rust::mongodb::Collection;
@@ -162,7 +162,7 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValideAction, ges
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_nouvelle_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
@@ -187,6 +187,26 @@ async fn commande_nouvelle_collection<M>(middleware: &M, m: MessageValideAction,
         // Ok
     } else {
         Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
+
+    // Traiter la cle
+    match m.message.parsed.attachements.take() {
+        Some(mut attachements) => match attachements.remove("cle") {
+            Some(cle) => {
+                if let Some(reponse) = transmettre_cle_attachee(middleware, cle).await? {
+                    error!("Erreur sauvegarde cle : {:?}", reponse);
+                    return Ok(Some(reponse));
+                }
+            },
+            None => {
+                error!("Cle de nouvelle collection manquante (1)");
+                return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cle manquante"}), None)?));
+            }
+        },
+        None => {
+            error!("Cle de nouvelle collection manquante (2)");
+            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cle manquante"}), None)?));
+        }
     }
 
     // Traiter la transaction
