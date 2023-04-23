@@ -112,22 +112,42 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValideAction
         Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
     }
 
-    if let Some(cle) = commande.cle.take() {
-        debug!("commande_nouvelle_version Sauvegarde cle fichier");
-        if let Some(routage) = cle.routage.as_ref() {
-            if let Some(partition) = routage.partition.as_ref() {
-                debug!("Sauvegarder cle de notification avec partition {}", partition);
-                let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE)
-                    .exchanges(vec![Securite::L3Protege])
-                    .partition(partition)
-                    .build();
-                middleware.transmettre_commande(routage, &cle, true).await?;
-            }
-        }
+    // if let Some(cle) = commande.cle.take() {
+    //     debug!("commande_nouvelle_version Sauvegarde cle fichier");
+    //     if let Some(routage) = cle.routage.as_ref() {
+    //         if let Some(partition) = routage.partition.as_ref() {
+    //             debug!("Sauvegarder cle de notification avec partition {}", partition);
+    //             let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE)
+    //                 .exchanges(vec![Securite::L3Protege])
+    //                 .partition(partition)
+    //                 .build();
+    //             middleware.transmettre_commande(routage, &cle, true).await?;
+    //         }
+    //     }
+    //
+    //     // Retirer la cle de la transaction
+    //     //m.message.parsed.contenu.remove("_cle");
+    //     warn!("commandes.commande_nouvelle_version TODO Fix handling _cle");
+    // }
 
-        // Retirer la cle de la transaction
-        //m.message.parsed.contenu.remove("_cle");
-        warn!("commandes.commande_nouvelle_version TODO Fix handling _cle");
+    // Traiter la cle
+    match m.message.parsed.attachements.take() {
+        Some(mut attachements) => match attachements.remove("cle") {
+            Some(cle) => {
+                if let Some(reponse) = transmettre_cle_attachee(middleware, cle).await? {
+                    error!("Erreur sauvegarde cle : {:?}", reponse);
+                    return Ok(Some(reponse));
+                }
+            },
+            None => {
+                error!("Cle de nouvelle collection manquante (1)");
+                return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cle manquante"}), None)?));
+            }
+        },
+        None => {
+            error!("Cle de nouvelle collection manquante (2)");
+            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cle manquante"}), None)?));
+        }
     }
 
     // Traiter la transaction

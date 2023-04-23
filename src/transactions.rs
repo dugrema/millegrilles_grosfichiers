@@ -129,8 +129,8 @@ pub struct TransactionNouvelleVersion {
     pub taille: u64,
     #[serde(rename="dateFichier", skip_serializing_if="Option::is_none")]
     pub date_fichier: Option<DateEpochSeconds>,
-    #[serde(rename = "_cle", skip_serializing_if = "Option::is_none")]
-    pub cle: Option<MessageMilleGrille>,
+    // #[serde(rename = "_cle", skip_serializing_if = "Option::is_none")]
+    // pub cle: Option<MessageMilleGrille>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
