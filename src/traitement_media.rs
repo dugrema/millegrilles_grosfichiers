@@ -425,8 +425,8 @@ pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAct
     debug!("Commande commande_supprimer_job_video parsed : {:?}", commande);
 
     let fuuid = &commande.fuuid;
-    if ! m.verifier_roles(vec![RolesCertificats::ComptePrive]) {
-        Err(format!("traitement_media.commande_supprimer_job_video Certificat n'a pas le role prive"))?;
+    if ! m.verifier_roles(vec![RolesCertificats::ComptePrive]) && ! m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        Err(format!("traitement_media.commande_supprimer_job_video Certificat n'a pas le role prive ni delegation proprietaire"))?;
     }
     let user_id = match m.get_user_id() {
         Some(u) => u,
