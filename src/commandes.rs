@@ -95,7 +95,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
 
 async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_nouvelle_version Consommer commande : {:?}", & m.message);
     let mut commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu()?;
@@ -156,7 +156,7 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValideAction
 
 async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_decrire_fichier Consommer commande : {:?}", & m.message);
     let commande: TransactionDecrireFichier = m.message.get_msg().map_contenu()?;
@@ -184,7 +184,7 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValideAction, ges
 
 async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_nouvelle_collection Consommer commande : {:?}", & m.message);
     let commande: TransactionNouvelleCollection = m.message.get_msg().map_contenu()?;
@@ -235,7 +235,7 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValideAct
 
 async fn commande_associer_conversions<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_associer_conversions Consommer commande : {:?}", & m.message);
     let commande: TransactionAssocierConversions = m.message.get_msg().map_contenu()?;
@@ -256,7 +256,7 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValideAction
 
 async fn commande_associer_video<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_associer_video Consommer commande : {:?}", & m.message);
     let commande: TransactionAssocierVideo = m.message.get_msg().map_contenu()?;
@@ -321,7 +321,7 @@ async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuid
 
 async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_ajouter_fichiers_collection Consommer commande : {:?}", & m.message);
     let commande: TransactionAjouterFichiersCollection = m.message.get_msg().map_contenu()?;
@@ -350,7 +350,7 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
 
 async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_deplacer_fichiers_collection Consommer commande : {:?}", & m.message);
     let commande: TransactionDeplacerFichiersCollection = m.message.get_msg().map_contenu()?;
@@ -414,7 +414,7 @@ async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageVali
 
 async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_supprimer_documents Consommer commande : {:?}", & m.message);
     let commande: TransactionSupprimerDocuments = m.message.get_msg().map_contenu()?;
@@ -452,7 +452,7 @@ struct RowFuuids {
 
 async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_recuperer_documents Consommer commande : {:?}", & m.message);
     let commande: TransactionListeDocuments = m.message.get_msg().map_contenu()?;
@@ -528,7 +528,7 @@ async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction,
 
 async fn commande_archiver_documents<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_archiver_documents Consommer commande : {:?}", & m.message);
     let commande: TransactionListeDocuments = m.message.get_msg().map_contenu()?;
@@ -555,7 +555,7 @@ async fn commande_archiver_documents<M>(middleware: &M, m: MessageValideAction, 
 
 async fn commande_changer_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_changer_favoris Consommer commande : {:?}", & m.message);
     let commande: TransactionChangerFavoris = m.message.get_msg().map_contenu()?;
@@ -583,7 +583,7 @@ async fn commande_changer_favoris<M>(middleware: &M, m: MessageValideAction, ges
 
 async fn commande_decrire_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_decrire_collection Consommer commande : {:?}", & m.message);
     let commande: TransactionDecrireCollection = m.message.get_msg().map_contenu()?;
@@ -611,7 +611,7 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValideAction, 
 
 async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_copier_fichier_tiers Consommer commande : {:?}", & m.message);
     let commande: CommandeCopierFichierTiers = m.message.get_msg().map_contenu()?;
@@ -993,7 +993,7 @@ async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValideAction, ges
 
 async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_favoris_creerpath Consommer commande : {:?}", & m.message);
     let commande: TransactionFavorisCreerpath = m.message.get_msg().map_contenu()?;

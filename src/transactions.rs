@@ -30,7 +30,7 @@ use crate::traitement_index::emettre_commande_indexation;
 
 pub async fn consommer_transaction<M>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
 where
-    M: ValidateurX509 + GenerateurMessages + MongoDao,
+    M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
 {
     debug!("transactions.consommer_transaction Consommer transaction : {:?}", &m.message);
 
