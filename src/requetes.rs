@@ -10,10 +10,12 @@ use millegrilles_common_rust::bson::{Bson, doc, Document};
 use millegrilles_common_rust::bson::serde_helpers::deserialize_chrono_datetime_from_bson_datetime;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{Date, DateTime, Utc};
+use millegrilles_common_rust::common_messages::RequeteDechiffrage;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::messages_generiques::CommandeDechiffrerCle;
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, filtrer_doc_id, MongoDao};
 use millegrilles_common_rust::mongodb::Cursor;
@@ -616,12 +618,18 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
         }
     }
 
-    let permission = json!({
-        "liste_hachage_bytes": hachage_bytes,
-        "certificat_rechiffrage": pem_rechiffrage,
-        // Condition d'identite
-        // "user_id": user_id,
-    });
+    // let permission = json!({
+    //     "liste_hachage_bytes": hachage_bytes,
+    //     "certificat_rechiffrage": pem_rechiffrage,
+    //     // Condition d'identite
+    //     // "user_id": user_id,
+    // });
+
+    let permission = RequeteDechiffrage {
+        domaine: DOMAINE_NOM.to_string(),
+        liste_hachage_bytes: hachage_bytes,
+        certificat_rechiffrage: Some(pem_rechiffrage),
+    };
 
     // Emettre requete de rechiffrage de cle, reponse acheminee directement au demandeur
     let reply_to = match m.reply_q {
@@ -724,10 +732,16 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gest
         }
     }
 
-    let permission = json!({
-        "liste_hachage_bytes": hachage_bytes,
-        "certificat_rechiffrage": pem_rechiffrage,
-    });
+    let permission = RequeteDechiffrage {
+        domaine: DOMAINE_NOM.to_string(),
+        liste_hachage_bytes: hachage_bytes,
+        certificat_rechiffrage: Some(pem_rechiffrage),
+    };
+
+    // let permission = json!({
+    //     "liste_hachage_bytes": hachage_bytes,
+    //     "certificat_rechiffrage": pem_rechiffrage,
+    // });
 
     // Emettre requete de rechiffrage de cle, reponse acheminee directement au demandeur
     let reply_to = match m.reply_q {

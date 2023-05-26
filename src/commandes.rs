@@ -8,7 +8,7 @@ use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::chrono::{DateTime, Duration, Utc};
-use millegrilles_common_rust::common_messages::RequeteVerifierPreuve;
+use millegrilles_common_rust::common_messages::{RequeteDechiffrage, RequeteVerifierPreuve};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L4Secure};
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageSerialise};
@@ -1454,10 +1454,16 @@ async fn commande_get_cle_job_conversion<M>(middleware: &M, m: MessageValideActi
             None => Err(format!("commandes.commande_get_cle_job_conversion PEM rechiffrage manquant"))?
         };
 
-        let permission = json!({
-            "liste_hachage_bytes": vec![commande.fuuid],
-            "certificat_rechiffrage": pem_rechiffrage,
-        });
+        // let permission = json!({
+        //     "liste_hachage_bytes": vec![commande.fuuid],
+        //     "certificat_rechiffrage": pem_rechiffrage,
+        // });
+
+        let permission = RequeteDechiffrage {
+            domaine: DOMAINE_NOM.to_string(),
+            liste_hachage_bytes: vec![commande.fuuid],
+            certificat_rechiffrage: Some(pem_rechiffrage),
+        };
 
         debug!("Transmettre requete permission dechiffrage cle : {:?}", permission);
         middleware.transmettre_requete(routage, &permission).await?;
