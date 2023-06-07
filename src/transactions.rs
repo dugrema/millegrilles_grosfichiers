@@ -1510,8 +1510,35 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur conversion transaction : {:?}", e))?
     };
 
-    // Nouveau tuuid, utiliser uuid_transaction
-    let tuuid = transaction.get_uuid_transaction();
+    let user_id = match transaction_fichier.user_id.as_ref() {
+        Some(inner) => inner,
+        None => Err(format!("transactions.transaction_copier_fichier_tiers user_id manquant"))?
+    };
+
+    // Detecter si le fichier existe deja pour l'usager (par fuuid)
+    let tuuid = {
+        let filtre = doc!{CHAMP_USER_ID: &user_id, CHAMP_FUUIDS: &transaction_fichier.fuuid};
+        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+        match collection.find_one(filtre, None).await {
+            Ok(inner) => {
+                match inner {
+                    Some(doc) => {
+                        // Le document existe deja, reutiliser le tuuid et ajouter au nouveau cuuid
+                        let fichier: FichierDetail = match convertir_bson_deserializable(doc) {
+                            Ok(inner) => inner,
+                            Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur mapping a FichierDetail : {:?}", e))?
+                        };
+                        fichier.tuuid
+                    },
+                    None => {
+                        // Nouveau fichier, utiliser uuid_transaction pour le tuuid
+                        transaction.get_uuid_transaction().to_string()
+                    }
+                }
+            },
+            Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur verification fuuid existant : {:?}", e))?
+        }
+    };
 
     // Conserver champs transaction uniquement (filtrer champs meta)
     let mut doc_bson_transaction = match convertir_to_bson(&transaction_fichier) {
@@ -1525,7 +1552,6 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     let cuuid = transaction_fichier.cuuid;
     let metadata = transaction_fichier.metadata;
     let mimetype = transaction_fichier.mimetype;
-    let user_id = transaction_fichier.user_id;
 
     let mut fuuids = HashSet::new();
     fuuids.insert(fuuid.as_str());
@@ -1570,13 +1596,13 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         // Information optionnelle pour accelerer indexation/traitement media
         if mimetype.starts_with("image") {
             doc_version.insert(CHAMP_FLAG_MEDIA, "image");
-            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, true);
+            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
         } else if mimetype.starts_with("video") {
             doc_version.insert(CHAMP_FLAG_MEDIA, "video");
-            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, true);
+            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
         } else if mimetype =="application/pdf" {
             doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
-            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, true);
+            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
         }
         doc_version.insert(CHAMP_FLAG_INDEXE, false);
 

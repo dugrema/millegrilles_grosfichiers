@@ -710,8 +710,18 @@ async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction
             // Conserver transaction
             match sauvegarder_traiter_transaction(middleware, mva, gestionnaire).await {
                 Ok(r) => {
-                    debug!("Reponse sauvegarde fichier {} : {:?}", fuuid, r);
+                    debug!("commande_copier_fichier_tiers Reponse sauvegarde fichier {} : {:?}", fuuid, r);
                     resultat_fichiers.insert(fuuid.to_string(), true);
+
+                    // Demander visite de presence du fichier par consignation_fichiers
+                    let params = json!({ "visiter": true, "fuuids": vec![&fuuid] });
+                    debug!("commande_copier_fichier_tiers Emettre demande visite fichier {}", fuuid);
+                    let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, "fuuidVerifierExistance")
+                        .exchanges(vec![Securite::L2Prive])
+                        .build();
+                    if let Err(e) = middleware.transmettre_requete(routage, &params).await {
+                        info!("commande_copier_fichier_tiers Erreur visite fichier {} : {:?}", fuuid, e);
+                    }
                 },
                 Err(e) => {
                     error!("commande.commande_copier_fichier_tiers Erreur sauvegarder_traiter_transaction {} : {:?}", fuuid, e);

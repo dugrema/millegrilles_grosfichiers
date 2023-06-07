@@ -1596,7 +1596,7 @@ dependencies = [
 
 [[package]]
 name = "millegrilles_grosfichiers"
-version = "2023.6.2"
+version = "2023.6.3"
 dependencies = [
  "env_logger",
  "log",
