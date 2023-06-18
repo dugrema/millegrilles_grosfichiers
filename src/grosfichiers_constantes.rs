@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use millegrilles_common_rust::bson::Document;
+use millegrilles_common_rust::chiffrage_cle::InformationCle;
 use millegrilles_common_rust::formatteur_messages::DateEpochSeconds;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
@@ -66,6 +67,8 @@ pub const COMMANDE_VIDEO_GET_JOB: &str = "getJobVideo";
 pub const COMMANDE_VIDEO_SUPPRIMER_JOB: &str = "supprimerJobVideo";
 pub const COMMANDE_FUUIDS_DOMAINE_LISTE: &str = "fuuidsDomaineListe";
 pub const COMMANDE_GET_CLE_JOB_CONVERSION: &str = "getCleJobConversion";
+pub const COMMANDE_INDEXATION_GET_JOB: &str = "getJobIndexation";
+
 
 pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
 pub const EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION: &str = "fuuidAjouterFichierCollection";
@@ -324,4 +327,28 @@ pub struct ReponseCle {
 pub struct CommandeGetCleJobConversion {
     pub fuuid: String,
     pub nom_job: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeIndexationGetJob {
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JobIndexation {
+    pub tuuid: String,
+    pub fuuid: String,
+    pub etat: i32,
+    #[serde(rename="_mg-derniere-modification", skip_serializing)]
+    pub date_modification: Value,
+    pub flag_media_retry: i32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReponseJobIndexation {
+    pub tuuid: String,
+    pub fuuid: String,
+    pub user_ids: Vec<String>,
+    pub mimetype: String,
+    pub metadata: DataChiffre,
+    pub cle: InformationCle,
 }
