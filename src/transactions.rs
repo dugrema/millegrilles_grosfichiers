@@ -26,7 +26,7 @@ use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenemen
 use crate::grosfichiers_constantes::*;
 use crate::requetes::verifier_acces_usager;
 use crate::traitement_media::emettre_commande_media;
-use crate::traitement_index::emettre_commande_indexation;
+// use crate::traitement_index::emettre_commande_indexation;
 
 pub async fn consommer_transaction<M>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
 where
@@ -408,11 +408,11 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         //     }
         // }
 
-        debug!("Emettre une commande d'indexation pour {}", fuuid);
-        match emettre_commande_indexation(gestionnaire, middleware, &tuuid, &fuuid).await {
-            Ok(()) => (),
-            Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
-        }
+        // debug!("Emettre une commande d'indexation pour {}", fuuid);
+        // match emettre_commande_indexation(gestionnaire, middleware, &tuuid, &fuuid).await {
+        //     Ok(()) => (),
+        //     Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
+        // }
 
         // Emettre fichier pour que tous les clients recoivent la mise a jour
         emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;

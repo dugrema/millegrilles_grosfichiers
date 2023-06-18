@@ -23,7 +23,7 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
-use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl};
+// use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl};
 
 const DUREE_ATTENTE: u64 = 20000;
 
@@ -54,19 +54,19 @@ pub async fn run() {
 /// Conserve les gestionnaires dans la variable GESTIONNAIRES 'static
 fn charger_gestionnaire() -> &'static TypeGestionnaire {
     // Charger une version simplifiee de la configuration - on veut le certificat associe a l'enveloppe privee
-    let config = charger_configuration().expect("config");
-    let config_noeud = config.get_configuration_noeud();
-    let elastic_search_url = match &config_noeud.elastic_search_url {
-        Some(inner) => inner,
-        None => panic!("URL MG_ELASTICSEARCH_URL doit etre fourni")
-    };
+    // let config = charger_configuration().expect("config");
+    // let config_noeud = config.get_configuration_noeud();
+    // let elastic_search_url = match &config_noeud.elastic_search_url {
+    //     Some(inner) => inner,
+    //     None => panic!("URL MG_ELASTICSEARCH_URL doit etre fourni")
+    // };
 
     // Index dao
-    let index_dao = Arc::new(ElasticSearchDaoImpl::new(elastic_search_url.as_str()).expect("index"));
+    // let index_dao = Arc::new(ElasticSearchDaoImpl::new(elastic_search_url.as_str()).expect("index"));
 
     // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
     unsafe {
-        GESTIONNAIRE = TypeGestionnaire::PartitionConsignation(Arc::new(GestionnaireGrosFichiers {index_dao}));
+        GESTIONNAIRE = TypeGestionnaire::PartitionConsignation(Arc::new(GestionnaireGrosFichiers {}));
 
         // let mut vec_gestionnaires = Vec::new();
         // vec_gestionnaires.extend(&GESTIONNAIRES);
@@ -218,19 +218,19 @@ async fn entretien<M>(middleware: Arc<M>, gestionnaires: Vec<&'static TypeGestio
         for g in &gestionnaires {
             match g {
                 TypeGestionnaire::PartitionConsignation(g) => {
-                    debug!("Entretien SenseursPassifs noeud protege");
-                    if prochain_entretien_elasticsearch < maintenant {
-                        prochain_entretien_elasticsearch = maintenant + intervalle_entretien_elasticsearch;
-                        if !g.es_est_pret() {
-                            info!("Preparer ElasticSearch");
-                            match g.es_preparer().await {
-                                Ok(()) => {
-                                    info!("Index ElasticSearch prets");
-                                },
-                                Err(e) => warn!("domaines_grosfichiers.entretien Erreur preparation ElasticSearch : {:?}", e)
-                            }
-                        }
-                    }
+                    debug!("Entretien GestionnaireGrosFichiers");
+                    // if prochain_entretien_elasticsearch < maintenant {
+                    //     prochain_entretien_elasticsearch = maintenant + intervalle_entretien_elasticsearch;
+                    //     if !g.es_est_pret() {
+                    //         info!("Preparer ElasticSearch");
+                    //         match g.es_preparer().await {
+                    //             Ok(()) => {
+                    //                 info!("Index ElasticSearch prets");
+                    //             },
+                    //             Err(e) => warn!("domaines_grosfichiers.entretien Erreur preparation ElasticSearch : {:?}", e)
+                    //         }
+                    //     }
+                    // }
                 },
                 _ => ()
             }

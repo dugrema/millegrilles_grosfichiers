@@ -36,14 +36,14 @@ use crate::commandes::consommer_commande;
 use crate::evenements::consommer_evenement;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{consommer_requete, mapper_fichier_db};
-use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl, InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche, traiter_index_manquant};
+use crate::traitement_index::{InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche};
 use crate::traitement_media::{entretien_video_jobs, traiter_media_batch};
 use crate::transactions::*;
 
 #[derive(Clone, Debug)]
 pub struct GestionnaireGrosFichiers {
     // pub consignation: String,
-    pub index_dao: Arc<ElasticSearchDaoImpl>,
+    // pub index_dao: Arc<ElasticSearchDaoImpl>,
 }
 
 #[async_trait]
@@ -118,32 +118,32 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
     }
 }
 
-#[async_trait]
-impl ElasticSearchDao for GestionnaireGrosFichiers {
-    async fn es_preparer(&self) -> Result<(), String> {
-        self.index_dao.es_preparer().await
-    }
-
-    fn es_est_pret(&self) -> bool {
-        self.index_dao.es_est_pret()
-    }
-
-    async fn es_indexer<S, T>(&self, nom_index: S, id_doc: T, info_doc: InfoDocumentIndexation)
-        -> Result<(), String>
-        where S: AsRef<str> + Send, T: AsRef<str> + Send
-    {
-        self.index_dao.es_indexer(nom_index, id_doc, info_doc).await
-    }
-
-    async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresRecherche)
-        -> Result<ResultatRecherche, String>
-        where S: AsRef<str> + Send
-    {
-        self.index_dao.es_rechercher(nom_index, params).await
-    }
-
-    async fn es_reset_index(&self) -> Result<(), String> { self.index_dao.es_reset_index().await }
-}
+// #[async_trait]
+// impl ElasticSearchDao for GestionnaireGrosFichiers {
+//     async fn es_preparer(&self) -> Result<(), String> {
+//         self.index_dao.es_preparer().await
+//     }
+//
+//     fn es_est_pret(&self) -> bool {
+//         self.index_dao.es_est_pret()
+//     }
+//
+//     async fn es_indexer<S, T>(&self, nom_index: S, id_doc: T, info_doc: InfoDocumentIndexation)
+//         -> Result<(), String>
+//         where S: AsRef<str> + Send, T: AsRef<str> + Send
+//     {
+//         self.index_dao.es_indexer(nom_index, id_doc, info_doc).await
+//     }
+//
+//     async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresRecherche)
+//         -> Result<ResultatRecherche, String>
+//         where S: AsRef<str> + Send
+//     {
+//         self.index_dao.es_rechercher(nom_index, params).await
+//     }
+//
+//     async fn es_reset_index(&self) -> Result<(), String> { self.index_dao.es_reset_index().await }
+// }
 
 pub fn preparer_queues() -> Vec<QueueType> {
     let mut rk_volatils = Vec::new();
@@ -500,9 +500,6 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
         if let Err(e) = entretien_video_jobs(middleware).await {
             warn!("Erreur traitement media entretien_video_jobs : {:?}", e);
         }
-        if let Err(e) = traiter_index_manquant(middleware, gestionnaire, 1000).await {
-            warn!("Erreur traitement index manquant batch : {:?}", e);
-        }
     }
 
     Ok(())
@@ -529,17 +526,11 @@ where
         Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_fichier Erreur collection.find_one pour {} : {:?}", tuuid_str, e))?
     };
 
-    // // Extraire liste de fuuids directement
-    // let routage_action = RoutageMessageAction::builder("grosfichiers", action_str)
-    //     .exchanges(vec![Securite::L2Prive])
-    //     .build();
-
-    // match doc_fichier.fuuids {
-    //     Ok(fuuids) => {
-    //         middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: fuuids})).await?;
-    //     },
-    //     Err(_) => ()
-    // };
+    // Extraire liste de fuuids directement
+    let routage_action = RoutageMessageAction::builder(DOMAINE_NOM, action_str)
+        .exchanges(vec![Securite::L2Prive])
+        .build();
+    middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: vec![&doc_fichier.fuuid_v_courante]})).await?;
 
     // let fichier_mappe = match mapper_fichier_db(inner) {
     //     Ok(inner) => inner,

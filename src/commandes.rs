@@ -27,7 +27,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{mapper_fichier_db, verifier_acces_usager};
-use crate::traitement_index::{ElasticSearchDao, emettre_commande_indexation, set_flag_indexe, traiter_index_manquant};
+use crate::traitement_index::{set_flag_indexe};
 use crate::traitement_media::{commande_supprimer_job_video, emettre_commande_media, traiter_media_batch};
 use crate::transactions::*;
 
@@ -782,18 +782,17 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionna
             debug!("commande_reindexer Reset flag indexes, resultat {:?}", resultat);
 
             // Delete index, recreer
-            gestionnaire.es_reset_index().await?;
+            todo!("Transmettre commande reindexer");
         }
     }
 
-    let limite = match commande.limit {
-        Some(inner) => inner,
-        None => MEDIA_IMAGE_BACTH_DEFAULT,
-    };
+    // let limite = match commande.limit {
+    //     Some(inner) => inner,
+    //     None => MEDIA_IMAGE_BACTH_DEFAULT,
+    // };
+    // let tuuids = traiter_index_manquant(middleware, gestionnaire, limite).await?;
 
-    let tuuids = traiter_index_manquant(middleware, gestionnaire, limite).await?;
-
-    let reponse = ReponseCommandeReindexer {tuuids: Some(tuuids)};
+    let reponse = ReponseCommandeReindexer {ok: true, tuuids: None};
     Ok(Some(middleware.formatter_reponse(reponse, None)?))
 }
 
@@ -806,6 +805,7 @@ struct CommandeIndexerContenu {
 #[derive(Clone, Debug, Serialize)]
 struct ReponseCommandeReindexer {
     tuuids: Option<Vec<String>>,
+    ok: bool,
 }
 
 async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -879,7 +879,7 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, 
     let tuuids = traiter_media_batch(middleware, limite, reset, commande.fuuids, user_id).await?;
 
     // Reponse generer preview
-    let reponse = ReponseCommandeReindexer {tuuids: Some(tuuids)};
+    let reponse = ReponseCommandeReindexer {ok: true, tuuids: Some(tuuids)};
     Ok(Some(middleware.formatter_reponse(reponse, None)?))
 }
 

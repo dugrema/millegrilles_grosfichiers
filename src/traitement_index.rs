@@ -24,82 +24,82 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
 
-pub async fn emettre_commande_indexation<M, S, U>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, tuuid: U, fuuid: S)
-    -> Result<(), String>
-    where
-        M: GenerateurMessages + MongoDao,
-        S: AsRef<str>,
-        U: AsRef<str>
-{
-    let tuuid_str = tuuid.as_ref();
-    let fuuid_str = fuuid.as_ref();
-
-    // domaine_action = 'commande.fichiers.indexerContenu'
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let doc_fichier = match collection.find_one(doc!{CHAMP_TUUID: tuuid_str}, None).await {
-        Ok(inner) => inner,
-        Err(e) => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Erreur chargement fichier : {:?}", e))?
-    };
-    let fichier = match doc_fichier {
-        Some(inner) => {
-            match convertir_bson_deserializable::<FichierDetail>(inner) {
-                Ok(inner) => inner,
-                Err(e) => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Erreur conversion vers bson : {:?}", e))?
-            }
-        },
-        None => Err(format!("Aucun fichier avec tuuid {}", tuuid_str))?
-    };
-
-    // Verifier si on doit chargement une version different
-    let fuuid_v_courante = match &fichier.fuuid_v_courante {
-        Some(inner) => inner.as_str(),
-        None => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Fuuid v courante manquant"))?
-    };
-
-    if fuuid_v_courante != fuuid_str {
-        todo!("Charger version precedente du document")
-    }
-
-    let mimetype = {
-        let version_courante = match &fichier.version_courante {
-            Some(inner) => inner,
-            None => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Version courante manquante"))?
-        };
-
-        version_courante.mimetype.clone()
-    };
-
-    // let mut document_indexation: DocumentIndexation = version_courante.try_into()?;
-    // document_indexation.merge_fichier(&fichier);
-    let document_indexation: DocumentIndexation = fichier.try_into()?;
-
-    let info_index = InfoDocumentIndexation {
-        tuuid: tuuid_str.to_owned(),
-        fuuid: fuuid_str.to_owned(),
-        doc: document_indexation,
-
-        permission_duree: Some(30 * 60),  // 30 minutes
-        permission_hachage_bytes: Some(vec![fuuid_str.to_owned()]),
-    };
-
-    match mimetype.as_str().to_ascii_lowercase().as_str() {
-        "application/pdf" => {
-            debug!("Indexation document contenu pdf : {}", fuuid_str);
-            let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, COMMANDE_INDEXER)
-                .exchanges(vec![Securite::L3Protege])
-                .build();
-            middleware.transmettre_commande(routage, &info_index, false).await?;
-        },
-        _ => {
-            // Format de document de base, aucun contenu a indexer
-            debug!("Indexation document metadata seulement : {}", fuuid_str);
-            gestionnaire.es_indexer("grosfichiers", fuuid_str, info_index).await?;
-            set_flag_indexe(middleware, fuuid_str).await?;
-        }
-    }
-
-    Ok(())
-}
+// pub async fn emettre_commande_indexation<M, S, U>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, tuuid: U, fuuid: S)
+//     -> Result<(), String>
+//     where
+//         M: GenerateurMessages + MongoDao,
+//         S: AsRef<str>,
+//         U: AsRef<str>
+// {
+//     let tuuid_str = tuuid.as_ref();
+//     let fuuid_str = fuuid.as_ref();
+//
+//     // domaine_action = 'commande.fichiers.indexerContenu'
+//     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+//     let doc_fichier = match collection.find_one(doc!{CHAMP_TUUID: tuuid_str}, None).await {
+//         Ok(inner) => inner,
+//         Err(e) => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Erreur chargement fichier : {:?}", e))?
+//     };
+//     let fichier = match doc_fichier {
+//         Some(inner) => {
+//             match convertir_bson_deserializable::<FichierDetail>(inner) {
+//                 Ok(inner) => inner,
+//                 Err(e) => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Erreur conversion vers bson : {:?}", e))?
+//             }
+//         },
+//         None => Err(format!("Aucun fichier avec tuuid {}", tuuid_str))?
+//     };
+//
+//     // Verifier si on doit chargement une version different
+//     let fuuid_v_courante = match &fichier.fuuid_v_courante {
+//         Some(inner) => inner.as_str(),
+//         None => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Fuuid v courante manquant"))?
+//     };
+//
+//     if fuuid_v_courante != fuuid_str {
+//         todo!("Charger version precedente du document")
+//     }
+//
+//     let mimetype = {
+//         let version_courante = match &fichier.version_courante {
+//             Some(inner) => inner,
+//             None => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Version courante manquante"))?
+//         };
+//
+//         version_courante.mimetype.clone()
+//     };
+//
+//     // let mut document_indexation: DocumentIndexation = version_courante.try_into()?;
+//     // document_indexation.merge_fichier(&fichier);
+//     let document_indexation: DocumentIndexation = fichier.try_into()?;
+//
+//     let info_index = InfoDocumentIndexation {
+//         tuuid: tuuid_str.to_owned(),
+//         fuuid: fuuid_str.to_owned(),
+//         doc: document_indexation,
+//
+//         permission_duree: Some(30 * 60),  // 30 minutes
+//         permission_hachage_bytes: Some(vec![fuuid_str.to_owned()]),
+//     };
+//
+//     match mimetype.as_str().to_ascii_lowercase().as_str() {
+//         "application/pdf" => {
+//             debug!("Indexation document contenu pdf : {}", fuuid_str);
+//             let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, COMMANDE_INDEXER)
+//                 .exchanges(vec![Securite::L3Protege])
+//                 .build();
+//             middleware.transmettre_commande(routage, &info_index, false).await?;
+//         },
+//         _ => {
+//             // Format de document de base, aucun contenu a indexer
+//             debug!("Indexation document metadata seulement : {}", fuuid_str);
+//             gestionnaire.es_indexer("grosfichiers", fuuid_str, info_index).await?;
+//             set_flag_indexe(middleware, fuuid_str).await?;
+//         }
+//     }
+//
+//     Ok(())
+// }
 
 // Set le flag indexe a true pour le fuuid (version)
 pub async fn set_flag_indexe<M, S>(middleware: &M, fuuid: S) -> Result<(), String>
@@ -215,235 +215,235 @@ pub trait ElasticSearchDao {
 
 }
 
-#[derive(Debug)]
-pub struct ElasticSearchDaoImpl {
-    url: String,
-    est_pret: Mutex<bool>,
-    client: reqwest::Client,
-}
+// #[derive(Debug)]
+// pub struct ElasticSearchDaoImpl {
+//     url: String,
+//     est_pret: Mutex<bool>,
+//     client: reqwest::Client,
+// }
 
-impl ElasticSearchDaoImpl {
-    pub fn new<S>(url: S) -> Result<Self, Box<dyn Error>>
-        where S: Into<String>
-    {
-        let client = reqwest::Client::builder()
-            .timeout(core::time::Duration::new(20, 0))
-            .build()?;
+// impl ElasticSearchDaoImpl {
+//     pub fn new<S>(url: S) -> Result<Self, Box<dyn Error>>
+//         where S: Into<String>
+//     {
+//         let client = reqwest::Client::builder()
+//             .timeout(core::time::Duration::new(20, 0))
+//             .build()?;
+//
+//         Ok(ElasticSearchDaoImpl {
+//             url: url.into(),
+//             est_pret: Mutex::new(false),
+//             client,
+//         })
+//     }
+// }
 
-        Ok(ElasticSearchDaoImpl {
-            url: url.into(),
-            est_pret: Mutex::new(false),
-            client,
-        })
-    }
-}
-
-#[async_trait]
-impl ElasticSearchDao for ElasticSearchDaoImpl {
-    async fn es_preparer(&self) -> Result<(), String> {
-        debug!("ElasticSearchDaoImpl preparer index");
-
-        let index_json = index_grosfichiers();
-
-        let mut url_post = match Url::parse(&self.url) {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur preparation url template index '{}' : {:?}", self.url, e))?
-        };
-        url_post.set_path("_index_template/grosfichiers");
-
-        // let url_post = format!("{}/_index_template/grosfichiers", self.url);
-        let response = match self.client.put(url_post).json(&index_json).send().await {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest : {:?}", e))?
-        };
-
-        debug!("ElasticSearchDaoImpl.es_preparer status: {}, {:?}", response.status(), response);
-        if response.status().is_client_error() {
-            warn!("ElasticSearchDaoImpl.es_preparer Erreur preparation index grosfichiers, contenu invalide. On le reset");
-            self.es_reset_index().await?;
-            Err(format!("Index grosfichiers supprime, va etre recree prochaine fois"))?
-        }
-
-        let mut guard = match self.est_pret.lock() {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("traitement_index.ElasticSearchDao Erreur lock est_pret : {:?}", e))?
-        };
-        *guard = true;
-
-        Ok(())
-    }
-
-    fn es_est_pret(&self) -> bool {
-        match self.est_pret.lock() {
-            Ok(inner) => *inner,
-            Err(e) => {
-                warn!("traitement_index.ElasticSearchDaoImpl Erreur lecture mutex est_pret : {:?}", e);
-                false
-            }
-        }
-    }
-
-    async fn es_indexer<S, T>(&self, nom_index: S, id_doc: T, info_doc: InfoDocumentIndexation)
-        -> Result<(), String>
-        where S: AsRef<str> + Send, T: AsRef<str> + Send
-    {
-        if ! self.es_est_pret() {
-            debug!("es_indexer search n'est pas disponible, rien a faire");
-            return Ok(());
-        }
-
-        let id_doc_str = id_doc.as_ref();
-
-        let doc_index = match serde_json::to_value(info_doc.doc) {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur conversion json info_doc : {:?}", e))?
-        };
-
-        debug!("Indexer document {:?}", doc_index);
-
-        let mut url_post = match Url::parse(&self.url) {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur preparation url indexation '{}' : {:?}", self.url, e))?
-        };
-        url_post.set_path(format!("{}/_doc/{}", nom_index.as_ref(), id_doc_str).as_str());
-
-        // let url_post = format!("{}{}/_doc/{}", self.url, nom_index.as_ref(), id_doc_str);
-        let response = match self.client.post(url_post.clone()).json(&doc_index).send().await {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur reqwest sur url '{}' : {:?}", url_post, e))?
-        };
-
-        if ! response.status().is_success() {
-            Err(format!("ElasticSearchDaoImpl.es_indexer Erreur indexation (status {}) avec search index grosfichiers : {:?}", response.status(), response))?
-        }
-
-        debug!("ElasticSearchDaoImpl.es_indexer OK, response : {:?}", response);
-
-        Ok(())
-    }
-
-    async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresRecherche)
-        -> Result<ResultatRecherche, String>
-        where S: AsRef<str> + Send
-    {
-        if ! self.es_est_pret() {
-            debug!("es_rechercher search n'est pas disponible, rien a faire");
-            return Err(format!("ElasticSearch n'est pas disponible"));
-        }
-
-        let from_idx = match params.from_idx { Some(inner) => inner, None => 0 };
-        let size = match params.size { Some(inner) => inner, None => 20 };
-
-        let mut url_post = match Url::parse(&self.url) {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("ElasticSearchDaoImpl.es_rechercher Erreur recherche avec url de base '{}' : {:?}", self.url, e))?
-        };
-        url_post.set_path(format!("{}/_search", nom_index.as_ref()).as_str());
-        url_post.set_query(Some(format!("from={}&size={}", from_idx, size).as_str()));
-
-        // let url_post = format!("{}/{}/_search?from={}&size={}", self.url, nom_index.as_ref(), from_idx, size);
-        let mut bool_params = Map::new();
-
-        let must_params = json!([
-            {"term": {"userid": &params.user_id.as_ref().expect("user_id").to_ascii_lowercase()}},
-            // {"match": {"nom": "p-101_001.1080.jpg"}},
-        ]);
-        bool_params.insert("filter".into(), must_params);
-
-        if params.mots_cles.is_some() {
-            let mots_cles = params.mots_cles.as_ref().expect("mots_cles");
-            let should_params = json!([
-                {"match": {"contenu": mots_cles}},
-                {"match": {"nom": mots_cles}},
-                {"match": {"titre._combine": mots_cles}},
-                {"match": {"description._combine": mots_cles}},
-            ]);
-            bool_params.insert("should".into(), should_params);
-        }
-
-        bool_params.insert("minimum_should_match".into(), 1.into());
-
-        let query = json!({
-            "query": {
-                "bool": bool_params,
-            }
-        });
-
-        debug!("es_rechercher Query : {:?}", query);
-
-        // '%s/%s/_search?from=%d&size=%d' % (self.__url, nom_index, from_idx, size),
-        let response = match self.client.get(url_post.clone()).json(&query).send().await {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest '{:?}' : {:?}", url_post, e))?
-        };
-
-        if ! response.status().is_success() {
-            Err(format!("ElasticSearchDaoImpl.es_preparer Erreur search index grosfichiers : {:?}", response))?
-        }
-
-        let resultat: ResultatRecherche = match response.text().await {
-            Ok(inner) => {
-                debug!("Resultat recherche(str) : {}", inner);
-                match serde_json::from_str(inner.as_str()) {
-                    Ok(v) => v,
-                    Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur conversion json search grosfichiers : {:?}", e))?
-                }
-            },
-            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur search grosfichiers, conversion text : {:?}", e))?
-        };
-
-        debug!("Resultat recherche : {:?}", resultat);
-
-        Ok(resultat)
-    }
-
-    async fn es_reset_index(&self) -> Result<(), String> {
-
-        if ! self.es_est_pret() {
-            debug!("es_reset_index search n'est pas disponible, rien a faire");
-            return Ok(());
-        }
-
-        info!("Reset index fichiers");
-        let url_post = format!("{}/_index_template/grosfichiers", self.url);
-        match self.client.delete(&url_post).send().await {
-            Ok(inner) => {
-                if inner.status().is_success() {
-                    info!("Reponse reset index : {:?}", inner);
-                    self.es_preparer().await?;
-                } else {
-                    if inner.status() == 404 {
-                        info!("ElasticSearchDaoImpl.es_reset_index Template index absent (404), on peut le creer");
-                        self.es_preparer().await?;
-                    } else {
-                        Err(format!("Template grosfichiers ne peut pas etre supprimer, code : {:?}", inner))?
-                    }
-                }
-            },
-            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest delete template grosfichiers : {:?}", e))?
-        }
-
-        // Supprimer index documents grosfichiers
-        let url_post = format!("{}/grosfichiers", self.url);
-        match self.client.delete(&url_post).send().await {
-            Ok(inner) => {
-                let status = inner.status();
-                if status.is_success() {
-                    info!("Reponse reset index : {:?}", inner);
-                } else {
-                    if status == 404 || status == 405 {
-                        info!("ElasticSearchDaoImpl.es_reset_index Index absent (404/405), on peut le creer");
-                    } else {
-                        Err(format!("Index grosfichiers ne peut pas etre supprimer, code : {:?}", inner))?
-                    }
-                }
-            },
-            Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest delete index grosfichiers : {:?}", e))?
-        }
-
-        Ok(())
-    }
-}
+// #[async_trait]
+// impl ElasticSearchDao for ElasticSearchDaoImpl {
+//     async fn es_preparer(&self) -> Result<(), String> {
+//         debug!("ElasticSearchDaoImpl preparer index");
+//
+//         let index_json = index_grosfichiers();
+//
+//         let mut url_post = match Url::parse(&self.url) {
+//             Ok(inner) => inner,
+//             Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur preparation url template index '{}' : {:?}", self.url, e))?
+//         };
+//         url_post.set_path("_index_template/grosfichiers");
+//
+//         // let url_post = format!("{}/_index_template/grosfichiers", self.url);
+//         let response = match self.client.put(url_post).json(&index_json).send().await {
+//             Ok(inner) => inner,
+//             Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest : {:?}", e))?
+//         };
+//
+//         debug!("ElasticSearchDaoImpl.es_preparer status: {}, {:?}", response.status(), response);
+//         if response.status().is_client_error() {
+//             warn!("ElasticSearchDaoImpl.es_preparer Erreur preparation index grosfichiers, contenu invalide. On le reset");
+//             self.es_reset_index().await?;
+//             Err(format!("Index grosfichiers supprime, va etre recree prochaine fois"))?
+//         }
+//
+//         let mut guard = match self.est_pret.lock() {
+//             Ok(inner) => inner,
+//             Err(e) => Err(format!("traitement_index.ElasticSearchDao Erreur lock est_pret : {:?}", e))?
+//         };
+//         *guard = true;
+//
+//         Ok(())
+//     }
+//
+//     fn es_est_pret(&self) -> bool {
+//         match self.est_pret.lock() {
+//             Ok(inner) => *inner,
+//             Err(e) => {
+//                 warn!("traitement_index.ElasticSearchDaoImpl Erreur lecture mutex est_pret : {:?}", e);
+//                 false
+//             }
+//         }
+//     }
+//
+//     async fn es_indexer<S, T>(&self, nom_index: S, id_doc: T, info_doc: InfoDocumentIndexation)
+//         -> Result<(), String>
+//         where S: AsRef<str> + Send, T: AsRef<str> + Send
+//     {
+//         if ! self.es_est_pret() {
+//             debug!("es_indexer search n'est pas disponible, rien a faire");
+//             return Ok(());
+//         }
+//
+//         let id_doc_str = id_doc.as_ref();
+//
+//         let doc_index = match serde_json::to_value(info_doc.doc) {
+//             Ok(inner) => inner,
+//             Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur conversion json info_doc : {:?}", e))?
+//         };
+//
+//         debug!("Indexer document {:?}", doc_index);
+//
+//         let mut url_post = match Url::parse(&self.url) {
+//             Ok(inner) => inner,
+//             Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur preparation url indexation '{}' : {:?}", self.url, e))?
+//         };
+//         url_post.set_path(format!("{}/_doc/{}", nom_index.as_ref(), id_doc_str).as_str());
+//
+//         // let url_post = format!("{}{}/_doc/{}", self.url, nom_index.as_ref(), id_doc_str);
+//         let response = match self.client.post(url_post.clone()).json(&doc_index).send().await {
+//             Ok(inner) => inner,
+//             Err(e) => Err(format!("ElasticSearchDaoImpl.es_indexer Erreur reqwest sur url '{}' : {:?}", url_post, e))?
+//         };
+//
+//         if ! response.status().is_success() {
+//             Err(format!("ElasticSearchDaoImpl.es_indexer Erreur indexation (status {}) avec search index grosfichiers : {:?}", response.status(), response))?
+//         }
+//
+//         debug!("ElasticSearchDaoImpl.es_indexer OK, response : {:?}", response);
+//
+//         Ok(())
+//     }
+//
+//     async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresRecherche)
+//         -> Result<ResultatRecherche, String>
+//         where S: AsRef<str> + Send
+//     {
+//         if ! self.es_est_pret() {
+//             debug!("es_rechercher search n'est pas disponible, rien a faire");
+//             return Err(format!("ElasticSearch n'est pas disponible"));
+//         }
+//
+//         let from_idx = match params.from_idx { Some(inner) => inner, None => 0 };
+//         let size = match params.size { Some(inner) => inner, None => 20 };
+//
+//         let mut url_post = match Url::parse(&self.url) {
+//             Ok(inner) => inner,
+//             Err(e) => Err(format!("ElasticSearchDaoImpl.es_rechercher Erreur recherche avec url de base '{}' : {:?}", self.url, e))?
+//         };
+//         url_post.set_path(format!("{}/_search", nom_index.as_ref()).as_str());
+//         url_post.set_query(Some(format!("from={}&size={}", from_idx, size).as_str()));
+//
+//         // let url_post = format!("{}/{}/_search?from={}&size={}", self.url, nom_index.as_ref(), from_idx, size);
+//         let mut bool_params = Map::new();
+//
+//         let must_params = json!([
+//             {"term": {"userid": &params.user_id.as_ref().expect("user_id").to_ascii_lowercase()}},
+//             // {"match": {"nom": "p-101_001.1080.jpg"}},
+//         ]);
+//         bool_params.insert("filter".into(), must_params);
+//
+//         if params.mots_cles.is_some() {
+//             let mots_cles = params.mots_cles.as_ref().expect("mots_cles");
+//             let should_params = json!([
+//                 {"match": {"contenu": mots_cles}},
+//                 {"match": {"nom": mots_cles}},
+//                 {"match": {"titre._combine": mots_cles}},
+//                 {"match": {"description._combine": mots_cles}},
+//             ]);
+//             bool_params.insert("should".into(), should_params);
+//         }
+//
+//         bool_params.insert("minimum_should_match".into(), 1.into());
+//
+//         let query = json!({
+//             "query": {
+//                 "bool": bool_params,
+//             }
+//         });
+//
+//         debug!("es_rechercher Query : {:?}", query);
+//
+//         // '%s/%s/_search?from=%d&size=%d' % (self.__url, nom_index, from_idx, size),
+//         let response = match self.client.get(url_post.clone()).json(&query).send().await {
+//             Ok(inner) => inner,
+//             Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest '{:?}' : {:?}", url_post, e))?
+//         };
+//
+//         if ! response.status().is_success() {
+//             Err(format!("ElasticSearchDaoImpl.es_preparer Erreur search index grosfichiers : {:?}", response))?
+//         }
+//
+//         let resultat: ResultatRecherche = match response.text().await {
+//             Ok(inner) => {
+//                 debug!("Resultat recherche(str) : {}", inner);
+//                 match serde_json::from_str(inner.as_str()) {
+//                     Ok(v) => v,
+//                     Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur conversion json search grosfichiers : {:?}", e))?
+//                 }
+//             },
+//             Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur search grosfichiers, conversion text : {:?}", e))?
+//         };
+//
+//         debug!("Resultat recherche : {:?}", resultat);
+//
+//         Ok(resultat)
+//     }
+//
+//     async fn es_reset_index(&self) -> Result<(), String> {
+//
+//         if ! self.es_est_pret() {
+//             debug!("es_reset_index search n'est pas disponible, rien a faire");
+//             return Ok(());
+//         }
+//
+//         info!("Reset index fichiers");
+//         let url_post = format!("{}/_index_template/grosfichiers", self.url);
+//         match self.client.delete(&url_post).send().await {
+//             Ok(inner) => {
+//                 if inner.status().is_success() {
+//                     info!("Reponse reset index : {:?}", inner);
+//                     self.es_preparer().await?;
+//                 } else {
+//                     if inner.status() == 404 {
+//                         info!("ElasticSearchDaoImpl.es_reset_index Template index absent (404), on peut le creer");
+//                         self.es_preparer().await?;
+//                     } else {
+//                         Err(format!("Template grosfichiers ne peut pas etre supprimer, code : {:?}", inner))?
+//                     }
+//                 }
+//             },
+//             Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest delete template grosfichiers : {:?}", e))?
+//         }
+//
+//         // Supprimer index documents grosfichiers
+//         let url_post = format!("{}/grosfichiers", self.url);
+//         match self.client.delete(&url_post).send().await {
+//             Ok(inner) => {
+//                 let status = inner.status();
+//                 if status.is_success() {
+//                     info!("Reponse reset index : {:?}", inner);
+//                 } else {
+//                     if status == 404 || status == 405 {
+//                         info!("ElasticSearchDaoImpl.es_reset_index Index absent (404/405), on peut le creer");
+//                     } else {
+//                         Err(format!("Index grosfichiers ne peut pas etre supprimer, code : {:?}", inner))?
+//                     }
+//                 }
+//             },
+//             Err(e) => Err(format!("ElasticSearchDaoImpl.es_preparer Erreur reqwest delete index grosfichiers : {:?}", e))?
+//         }
+//
+//         Ok(())
+//     }
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ParametresIndex {
@@ -584,41 +584,41 @@ pub struct ParametresGetClesStream {
     pub fuuids: Vec<String>,
 }
 
-pub async fn traiter_index_manquant<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, limite: i64)
-    -> Result<Vec<String>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509
-{
-    if ! gestionnaire.es_est_pret() {
-        debug!("traiter_index_manquantElastic search n'est pas disponible, rien a faire");
-        return Ok(vec![]);
-    }
-
-    let opts = FindOptions::builder()
-        .hint(Hint::Name(String::from("flag_indexe")))
-        .sort(doc! {CHAMP_FLAG_INDEXE: 1, CHAMP_CREATION: 1})
-        .limit(limite)
-        .build();
-
-    let filtre = doc! { CHAMP_FLAG_INDEXE: false };
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    let mut curseur = collection.find(filtre, Some(opts)).await?;
-    let mut tuuids = Vec::new();
-
-    while let Some(d) = curseur.next().await {
-        let doc_version = d?;
-        let version_mappe: DBFichierVersionDetail = convertir_bson_deserializable(doc_version)?;
-        let tuuid = version_mappe.tuuid;
-        let fuuid = version_mappe.fuuid;
-        if let Some(t) = tuuid {
-            if let Some(f) = fuuid {
-                emettre_commande_indexation(gestionnaire, middleware, &t, f).await?;
-                tuuids.push(t);
-            }
-        }
-    }
-
-    Ok(tuuids)
-}
+// pub async fn traiter_index_manquant<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, limite: i64)
+//     -> Result<Vec<String>, Box<dyn Error>>
+//     where M: GenerateurMessages + MongoDao + ValidateurX509
+// {
+//     // if ! gestionnaire.es_est_pret() {
+//     //     debug!("traiter_index_manquantElastic search n'est pas disponible, rien a faire");
+//     //     return Ok(vec![]);
+//     // }
+//
+//     let opts = FindOptions::builder()
+//         .hint(Hint::Name(String::from("flag_indexe")))
+//         .sort(doc! {CHAMP_FLAG_INDEXE: 1, CHAMP_CREATION: 1})
+//         .limit(limite)
+//         .build();
+//
+//     let filtre = doc! { CHAMP_FLAG_INDEXE: false };
+//     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+//     let mut curseur = collection.find(filtre, Some(opts)).await?;
+//     let mut tuuids = Vec::new();
+//
+//     while let Some(d) = curseur.next().await {
+//         let doc_version = d?;
+//         let version_mappe: DBFichierVersionDetail = convertir_bson_deserializable(doc_version)?;
+//         let tuuid = version_mappe.tuuid;
+//         let fuuid = version_mappe.fuuid;
+//         if let Some(t) = tuuid {
+//             if let Some(f) = fuuid {
+//                 emettre_commande_indexation(gestionnaire, middleware, &t, f).await?;
+//                 tuuids.push(t);
+//             }
+//         }
+//     }
+//
+//     Ok(tuuids)
+// }
 
 // #[cfg(test)]
 // mod test_integration_index {
