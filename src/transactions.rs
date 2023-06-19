@@ -25,6 +25,7 @@ use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenemen
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::verifier_acces_usager;
+use crate::traitement_index::ajout_job_indexation;
 use crate::traitement_media::emettre_commande_media;
 // use crate::traitement_index::emettre_commande_indexation;
 
@@ -391,12 +392,12 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
     };
     let opts = UpdateOptions::builder().upsert(true).build();
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    debug!("nouveau fichier update ops : {:?}", ops);
+    debug!("transaction_nouvelle_version nouveau fichier update ops : {:?}", ops);
     let resultat = match collection.update_one(filtre, ops, opts).await {
         Ok(r) => r,
         Err(e) => Err(format!("grosfichiers.transaction_cle Erreur update_one sur transcation : {:?}", e))?
     };
-    debug!("nouveau fichier Resultat transaction update : {:?}", resultat);
+    debug!("transaction_nouvelle_version nouveau fichier Resultat transaction update : {:?}", resultat);
 
     if flag_duplication == false {
         // On emet les messages de traitement uniquement si la transaction est nouvelle
@@ -413,6 +414,11 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         //     Ok(()) => (),
         //     Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
         // }
+
+        // Conserver information pour indexer le fichier
+        if let Err(e) = ajout_job_indexation(middleware, &tuuid, &fuuid, &user_id, &mimetype).await {
+            error!("transaction_nouvelle_version Erreur ajout_job_indexation : {:?}", e);
+        }
 
         // Emettre fichier pour que tous les clients recoivent la mise a jour
         emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
@@ -1308,18 +1314,18 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Res
         filtre.insert("user_id", inner);
     }
 
-    {
-        // Reset flag indexe
-        let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-        let ops = doc! {
-            "$set": { CHAMP_FLAG_INDEX: false },
-            "$unset": { CHAMP_FLAG_INDEX_ERREUR: true },
-            "$currentDate": { CHAMP_MODIFICATION: true },
-        };
-        if let Err(e) = collection_versions.update_one(filtre.clone(), ops, None).await {
-            Err(format!("transactions.transaction_decire_collection Erreur maj versions fichiers tuuid {} : {:?}", tuuid, e))?
-        }
-    }
+    // {
+    //     // Reset flag indexe
+    //     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    //     let ops = doc! {
+    //         "$set": { CHAMP_FLAG_INDEX: false },
+    //         "$unset": { CHAMP_FLAG_INDEX_ERREUR: true },
+    //         "$currentDate": { CHAMP_MODIFICATION: true },
+    //     };
+    //     if let Err(e) = collection_versions.update_one(filtre.clone(), ops, None).await {
+    //         Err(format!("transactions.transaction_decire_collection Erreur maj versions fichiers tuuid {} : {:?}", tuuid, e))?
+    //     }
+    // }
 
     let mut set_ops = doc! {};
 
@@ -1368,6 +1374,19 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Res
     match collection.find_one_and_update(filtre, ops, None).await {
         Ok(inner) => {
             debug!("transaction_decire_fichier Update description : {:?}", inner);
+            if let Some(doc_fichier) = inner {
+                if let Ok(inner) = convertir_bson_deserializable::<FichierDetail>(doc_fichier) {
+                    if let Some(user_id) = inner.user_id {
+                        if let Some(fuuid) = inner.fuuid_v_courante {
+                            if let Some(mimetype) = inner.mimetype {
+                                if let Err(e) = ajout_job_indexation(middleware, tuuid, fuuid, user_id, mimetype).await {
+                                    error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // if let Some(d) = inner {
             //     // Emettre evenement de maj contenu sur chaque cuuid
             //     match convertir_bson_deserializable::<FichierDetail>(d) {

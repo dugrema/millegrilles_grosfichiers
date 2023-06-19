@@ -57,6 +57,59 @@ pub async fn set_flag_indexe<M,S,T>(middleware: &M, fuuid: S, user_id: T) -> Res
     Ok(())
 }
 
+// Set le flag indexe a true pour le fuuid (version)
+pub async fn ajout_job_indexation<M,S,T,U,V>(middleware: &M, tuuid: T, fuuid: S, user_id: U, mimetype: V) -> Result<(), Box<dyn Error>>
+    where
+        M: MongoDao,
+        S: AsRef<str>,
+        T: AsRef<str>,
+        U: AsRef<str>,
+        V: AsRef<str>
+{
+    let tuuid = tuuid.as_ref();
+    let fuuid = fuuid.as_ref();
+    let user_id = user_id.as_ref();
+    let mimetype = mimetype.as_ref();
+
+    let filtre = doc! { CHAMP_FUUID: fuuid, CHAMP_USER_ID: user_id };
+    let ops = doc! {
+        "$set": { CHAMP_FLAG_INDEX: true },
+        "$currentDate": { CHAMP_MODIFICATION: true },
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    match collection.update_one(filtre.clone(), ops, None).await {
+        Ok(_) => (),
+        Err(e) => Err(format!("traitement_index.set_flag_indexe Erreur {:?}", e))?
+    }
+
+    // Supprimer job indexation
+    let collection_jobs = middleware.get_collection(NOM_COLLECTION_INDEXATION_JOBS)?;
+    let now = Utc::now();
+    let ops_job = doc! {
+        "$setOnInsert": {
+            CHAMP_FUUID: fuuid,
+            CHAMP_USER_ID: user_id,
+            CHAMP_CREATION: &now,
+        },
+        "$set": {
+            CHAMP_TUUID: tuuid,
+            CHAMP_MIMETYPE: mimetype,
+            CHAMP_FLAG_INDEX_ETAT: VIDEO_CONVERSION_ETAT_PENDING,
+            CHAMP_FLAG_INDEX_RETRY: 0,
+        },
+        "$currentDate": {
+            CHAMP_MODIFICATION: true,
+        }
+    };
+    let options = UpdateOptions::builder()
+        .upsert(true)
+        .build();
+    collection_jobs.update_one(filtre.clone(), ops_job, options).await?;
+
+    Ok(())
+}
+
 /// Format de document pret a etre indexe
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InfoDocumentIndexation {
