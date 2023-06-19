@@ -57,6 +57,36 @@ pub async fn set_flag_indexe<M,S,T>(middleware: &M, fuuid: S, user_id: T) -> Res
     Ok(())
 }
 
+pub async fn reset_flag_indexe<M>(middleware: &M) -> Result<(), Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao
+{
+    debug!("reset_flag_indexe Reset flags pour tous les fichiers");
+
+    let filtre = doc! {};
+    let ops = doc! {
+        "$set": { CHAMP_FLAG_INDEX: false },
+        "$unset": { CHAMP_FLAG_INDEX_ERREUR: true },
+        "$currentDate": { CHAMP_MODIFICATION: true },
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    match collection.update_many(filtre.clone(), ops, None).await {
+        Ok(_) => (),
+        Err(e) => Err(format!("traitement_index.set_flag_indexe Erreur {:?}", e))?
+    }
+
+    // Commencer a creer les jobs d'indexation
+    traiter_indexation_batch(middleware, LIMITE_INDEXATION_BATCH).await?;
+
+    // Emettre un evenement pour indiquer que de nouvelles jobs sont disponibles
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_REINDEXER_CONSIGNATION)
+        .exchanges(vec![Securite::L4Secure])
+        .build();
+    middleware.emettre_evenement(routage, &json!({})).await?;
+
+    Ok(())
+}
+
 // Set le flag indexe a true pour le fuuid (version)
 pub async fn ajout_job_indexation<M,S,T,U,V>(middleware: &M, tuuid: T, fuuid: S, user_id: U, mimetype: V) -> Result<(), Box<dyn Error>>
     where
@@ -183,30 +213,30 @@ impl TryFrom<DBFichierVersionDetail> for DocumentIndexation {
     }
 }
 
-#[async_trait]
-pub trait ElasticSearchDao {
-    async fn es_preparer(&self) -> Result<(), String>;
+// #[async_trait]
+// pub trait ElasticSearchDao {
+//     async fn es_preparer(&self) -> Result<(), String>;
+//
+//     /// Retourne true si le serveur est pret (accessible, index generes)
+//     fn es_est_pret(&self) -> bool;
+//
+//     async fn es_indexer<S, T>(&self, nom_index: S, id_doc: T, info_doc: InfoDocumentIndexation)
+//         -> Result<(), String>
+//         where S: AsRef<str> + Send, T: AsRef<str> + Send;
+//
+//     async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresRecherche)
+//         -> Result<ResultatRecherche, String>
+//         where S: AsRef<str> + Send;
+//
+//     async fn es_reset_index(&self) -> Result<(), String>;
+//
+// }
 
-    /// Retourne true si le serveur est pret (accessible, index generes)
-    fn es_est_pret(&self) -> bool;
-
-    async fn es_indexer<S, T>(&self, nom_index: S, id_doc: T, info_doc: InfoDocumentIndexation)
-        -> Result<(), String>
-        where S: AsRef<str> + Send, T: AsRef<str> + Send;
-
-    async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresRecherche)
-        -> Result<ResultatRecherche, String>
-        where S: AsRef<str> + Send;
-
-    async fn es_reset_index(&self) -> Result<(), String>;
-
-}
-
-pub async fn traiter_indexation_batch<M>(middleware: &M, limite: i64, reset: bool)
+pub async fn traiter_indexation_batch<M>(middleware: &M, limite: i64)
     -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("traiter_indexation_batch limite {}, reset {}", limite, reset);
+    debug!("traiter_indexation_batch limite {}", limite);
 
     // let mut tuuids = Vec::new();
     // let mut fuuids_media = Vec::new();
@@ -215,15 +245,15 @@ pub async fn traiter_indexation_batch<M>(middleware: &M, limite: i64, reset: boo
     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     let collection_indexation = middleware.get_collection(NOM_COLLECTION_INDEXATION_JOBS)?;
 
-    if reset == true {
-        // Reset les flags de traitement media de tous les fichiers
-        let ops = doc!{
-            "$set": { CHAMP_FLAG_INDEX: false },
-            "$unset": { CHAMP_FLAG_MEDIA_ERREUR: true },
-            "$currentDate": { CHAMP_MODIFICATION: true },
-        };
-        collection_versions.update_many(doc!{}, ops, None).await?;
-    }
+    // if reset == true {
+    //     // Reset les flags de traitement media de tous les fichiers
+    //     let ops = doc!{
+    //         "$set": { CHAMP_FLAG_INDEX: false },
+    //         "$unset": { CHAMP_FLAG_MEDIA_ERREUR: true },
+    //         "$currentDate": { CHAMP_MODIFICATION: true },
+    //     };
+    //     collection_versions.update_many(doc!{}, ops, None).await?;
+    // }
 
     // Reset jobs indexation avec start_date expire
     {
@@ -266,21 +296,19 @@ pub async fn traiter_indexation_batch<M>(middleware: &M, limite: i64, reset: boo
                 None => None
             };
 
-            if reset == false {
-                if let Some(job) = job_existante {
-                    if job.index_retry > MEDIA_RETRY_LIMIT {
-                        warn!("traiter_indexation_batch Expirer indexation sur document user_id {} tuuid {} : {} retries",
-                            user_id, tuuid_ref, job.index_retry);
-                        let ops = doc!{
-                            "$set": {
-                                CHAMP_FLAG_INDEX: true,
-                                CHAMP_FLAG_INDEX_ERREUR: ERREUR_MEDIA_TOOMANYRETRIES,
-                            }
-                        };
-                        collection_versions.update_one(filtre.clone(), ops, None).await?;
-                        collection_indexation.delete_one(filtre.clone(), None).await?;
-                        continue;
-                    }
+            if let Some(job) = job_existante {
+                if job.index_retry > MEDIA_RETRY_LIMIT {
+                    warn!("traiter_indexation_batch Expirer indexation sur document user_id {} tuuid {} : {} retries",
+                        user_id, tuuid_ref, job.index_retry);
+                    let ops = doc!{
+                        "$set": {
+                            CHAMP_FLAG_INDEX: true,
+                            CHAMP_FLAG_INDEX_ERREUR: ERREUR_MEDIA_TOOMANYRETRIES,
+                        }
+                    };
+                    collection_versions.update_one(filtre.clone(), ops, None).await?;
+                    collection_indexation.delete_one(filtre.clone(), None).await?;
+                    continue;
                 }
             }
 

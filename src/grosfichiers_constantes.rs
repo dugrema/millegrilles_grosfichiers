@@ -57,7 +57,7 @@ pub const TRANSACTION_COPIER_FICHIER_TIERS: &str = "copierFichierTiers";
 pub const TRANSACTION_FAVORIS_CREERPATH: &str = "favorisCreerPath";
 pub const TRANSACTION_SUPPRIMER_VIDEO: &str = "supprimerVideo";
 
-pub const COMMANDE_INDEXER: &str = "indexerContenu";
+pub const COMMANDE_REINDEXER: &str = "reindexerConsignation";
 pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";
 pub const COMMANDE_CONFIRMER_FICHIER_INDEXE: &str = "confirmerFichierIndexe";
 pub const COMMANDE_NOUVEAU_FICHIER: &str = "commandeNouveauFichier";
@@ -91,6 +91,7 @@ pub const EVENEMENT_TRANSCODAGE_PROGRES: &str = "transcodageProgres";
 pub const EVENEMENT_FICHIERS_SYNCPRET: &str = "syncPret";
 pub const EVENEMENT_FICHIERS_VISITER_FUUIDS: &str = "visiterFuuids";
 pub const EVENEMENT_FICHIERS_CONSIGNE: &str = "consigne";
+pub const EVENEMENT_REINDEXER_CONSIGNATION: &str = "reindexerConsignation";
 
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 pub const CHAMP_FUUIDS: &str = "fuuids";

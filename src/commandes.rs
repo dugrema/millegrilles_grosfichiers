@@ -27,7 +27,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{mapper_fichier_db, verifier_acces_usager};
-use crate::traitement_index::{commande_indexation_get_job, set_flag_indexe};
+use crate::traitement_index::{commande_indexation_get_job, reset_flag_indexe, set_flag_indexe};
 use crate::traitement_media::{commande_supprimer_job_video, emettre_commande_media, traiter_media_batch};
 use crate::transactions::*;
 
@@ -87,7 +87,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         COMMANDE_VIDEO_SUPPRIMER_JOB => commande_supprimer_job_video(middleware, m, gestionnaire).await,
 
         // Indexation
-        COMMANDE_INDEXER => commande_reindexer(middleware, m, gestionnaire).await,
+        COMMANDE_REINDEXER => commande_reindexer(middleware, m, gestionnaire).await,
         COMMANDE_INDEXATION_GET_JOB => commande_indexation_get_job(middleware, m, gestionnaire).await,
         COMMANDE_CONFIRMER_FICHIER_INDEXE => commande_confirmer_fichier_indexe(middleware, m, gestionnaire).await,
 
@@ -775,22 +775,7 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionna
         false => Err(format!("commandes.commande_reindexer: Commande autorisation invalide pour message {:?}", m.correlation_id)),
     }?;
 
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    if let Some(r) = commande.reset {
-        if r == true {
-            info!("Reset flag indexe sur tous les documents");
-            let filtre = doc! { CHAMP_FLAG_INDEX: true };
-            let ops = doc! { "$set": { CHAMP_FLAG_INDEX: false } };
-            let resultat = collection.update_many(filtre, ops, None).await?;
-            debug!("commande_reindexer Reset flag indexes, resultat {:?}", resultat);
-        }
-    }
-
-    // let limite = match commande.limit {
-    //     Some(inner) => inner,
-    //     None => MEDIA_IMAGE_BACTH_DEFAULT,
-    // };
-    // let tuuids = traiter_index_manquant(middleware, gestionnaire, limite).await?;
+    reset_flag_indexe(middleware).await?;
 
     let reponse = ReponseCommandeReindexer {ok: true, tuuids: None};
     Ok(Some(middleware.formatter_reponse(reponse, None)?))

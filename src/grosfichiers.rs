@@ -190,7 +190,6 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_ASSOCIER_VIDEO,
         TRANSACTION_SUPPRIMER_VIDEO,
         COMMANDE_NOUVEAU_FICHIER,
-        COMMANDE_INDEXER,
         COMMANDE_VIDEO_TRANSCODER,
         // COMMANDE_VIDEO_ARRETER_CONVERSION,
         COMMANDE_VIDEO_GET_JOB,
@@ -202,7 +201,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     }
 
     let commandes_protegees: Vec<&str> = vec![
-        COMMANDE_INDEXER,
+        COMMANDE_REINDEXER,
         COMMANDE_GET_CLE_JOB_CONVERSION,
     ];
     for cmd in commandes_protegees {
@@ -498,7 +497,7 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
     let date_epoch = trigger.get_date();
     let minutes = date_epoch.get_datetime().minute();
 
-    if let Err(e) = traiter_indexation_batch(middleware, LIMITE_INDEXATION_BATCH, false).await {
+    if let Err(e) = traiter_indexation_batch(middleware, LIMITE_INDEXATION_BATCH).await {
         warn!("Erreur traitement indexation batch : {:?}", e);
     }
 
