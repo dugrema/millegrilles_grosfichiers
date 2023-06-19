@@ -1303,7 +1303,23 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Res
     };
 
     let tuuid = transaction_mappee.tuuid.as_str();
-    let filtre = doc! { CHAMP_TUUID: tuuid };
+    let mut filtre = doc! { CHAMP_TUUID: tuuid };
+    if let Some(inner) = &user_id {
+        filtre.insert("user_id", inner);
+    }
+
+    {
+        // Reset flag indexe
+        let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        let ops = doc! {
+            "$set": { CHAMP_FLAG_INDEX: false },
+            "$unset": { CHAMP_FLAG_INDEX_ERREUR: true },
+            "$currentDate": { CHAMP_MODIFICATION: true },
+        };
+        if let Err(e) = collection_versions.update_one(filtre.clone(), ops, None).await {
+            Err(format!("transactions.transaction_decire_collection Erreur maj versions fichiers tuuid {} : {:?}", tuuid, e))?
+        }
+    }
 
     let mut set_ops = doc! {};
 
@@ -1415,44 +1431,6 @@ async fn transaction_decire_collection<M, T>(middleware: &M, transaction: T) -> 
     let mut set_ops = doc! {
         "metadata": doc_metadata,
     };
-
-    // Modifier champ nom si present
-    // if let Some(nom) = &transaction_mappee.nom {
-    //     set_ops.insert("nom", nom);
-    // }
-
-    // Modifier champ titre si present
-    // if let Some(titre) = &transaction_mappee.titre {
-    //     let titre_bson = match bson::to_bson(titre) {
-    //         Ok(inner) => inner,
-    //         Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion titre vers bson : {:?}", e))?
-    //     };
-    //     set_ops.insert("titre", titre_bson);
-    // }
-
-    // Modifier champ securite si present
-    // if let Some(securite) = &transaction_mappee.securite {
-    //     // Valider le champ securite
-    //     let _: Securite = match securite.as_str().try_into() {
-    //         Ok(s) => s,
-    //         Err(e) => Err(format!("transactions.transaction_decire_collection Champ securite invalide '{}' : {:?}", securite, e))?
-    //     };
-    //
-    //     let titre_bson = match bson::to_bson(securite) {
-    //         Ok(inner) => inner,
-    //         Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion securite vers bson : {:?}", e))?
-    //     };
-    //     set_ops.insert("securite", titre_bson);
-    // }
-
-    // Modifier champ description si present
-    // if let Some(description) = &transaction_mappee.description {
-    //     let description_bson = match bson::to_bson(description) {
-    //         Ok(inner) => inner,
-    //         Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion titre vers bson : {:?}", e))?
-    //     };
-    //     set_ops.insert("description", description_bson);
-    // }
 
     let ops = doc! {
         "$set": set_ops,
