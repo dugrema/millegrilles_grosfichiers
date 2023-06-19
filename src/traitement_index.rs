@@ -289,8 +289,10 @@ pub async fn traiter_indexation_batch<M>(middleware: &M, limite: i64, reset: boo
                         warn!("traiter_indexation_batch Expirer indexation sur document user_id {} tuuid {} : {} retries",
                             user_id, tuuid_ref, job.index_retry);
                         let ops = doc!{
-                            CHAMP_FLAG_INDEX: true,
-                            CHAMP_FLAG_INDEX_ERREUR: ERREUR_MEDIA_TOOMANYRETRIES,
+                            "$set": {
+                                CHAMP_FLAG_INDEX: true,
+                                CHAMP_FLAG_INDEX_ERREUR: ERREUR_MEDIA_TOOMANYRETRIES,
+                            }
                         };
                         collection_versions.update_one(filtre.clone(), ops, None).await?;
                         collection_indexation.delete_one(filtre.clone(), None).await?;
@@ -554,7 +556,7 @@ pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValideActi
 
             Ok(Some(middleware.formatter_reponse(reponse_job, None)?))
         },
-        None => Ok(None)
+        None => Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Aucun fichier a indexer"}), None)?))
     }
 }
 
