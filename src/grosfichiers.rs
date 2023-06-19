@@ -203,7 +203,6 @@ pub fn preparer_queues() -> Vec<QueueType> {
 
     let commandes_protegees: Vec<&str> = vec![
         COMMANDE_INDEXER,
-        COMMANDE_CONFIRMER_FICHIER_INDEXE,
         COMMANDE_GET_CLE_JOB_CONVERSION,
     ];
     for cmd in commandes_protegees {
@@ -211,6 +210,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
     }
 
     let commandes_secures: Vec<&str> = vec![
+        COMMANDE_CONFIRMER_FICHIER_INDEXE,
         COMMANDE_INDEXATION_GET_JOB,
     ];
     for cmd in commandes_secures {

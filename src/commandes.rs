@@ -910,12 +910,12 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAc
     debug!("Commande commande_confirmer_fichier_indexe parsed : {:?}", commande);
 
     // Autorisation : doit etre un message provenant d'un composant protege
-    match m.verifier_exchanges(vec![Securite::L3Protege]) {
+    match m.verifier_exchanges(vec![Securite::L4Secure]) {
         true => Ok(()),
         false => Err(format!("commandes.commande_completer_previews: Commande autorisation invalide pour message {:?}", m.correlation_id)),
     }?;
 
-    set_flag_indexe(middleware, &commande.fuuid).await?;
+    set_flag_indexe(middleware, &commande.fuuid, &commande.user_id).await?;
 
     // Traiter la commande
     Ok(None)
@@ -924,6 +924,7 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAc
 #[derive(Clone, Debug, Deserialize)]
 struct CommandeConfirmerFichierIndexe {
     fuuid: String,
+    user_id: String,
 }
 
 /// Commande qui indique la creation _en cours_ d'un nouveau fichier. Permet de creer un

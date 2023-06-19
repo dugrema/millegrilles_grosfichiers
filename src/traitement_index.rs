@@ -28,101 +28,31 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
 
-// pub async fn emettre_commande_indexation<M, S, U>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, tuuid: U, fuuid: S)
-//     -> Result<(), String>
-//     where
-//         M: GenerateurMessages + MongoDao,
-//         S: AsRef<str>,
-//         U: AsRef<str>
-// {
-//     let tuuid_str = tuuid.as_ref();
-//     let fuuid_str = fuuid.as_ref();
-//
-//     // domaine_action = 'commande.fichiers.indexerContenu'
-//     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-//     let doc_fichier = match collection.find_one(doc!{CHAMP_TUUID: tuuid_str}, None).await {
-//         Ok(inner) => inner,
-//         Err(e) => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Erreur chargement fichier : {:?}", e))?
-//     };
-//     let fichier = match doc_fichier {
-//         Some(inner) => {
-//             match convertir_bson_deserializable::<FichierDetail>(inner) {
-//                 Ok(inner) => inner,
-//                 Err(e) => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Erreur conversion vers bson : {:?}", e))?
-//             }
-//         },
-//         None => Err(format!("Aucun fichier avec tuuid {}", tuuid_str))?
-//     };
-//
-//     // Verifier si on doit chargement une version different
-//     let fuuid_v_courante = match &fichier.fuuid_v_courante {
-//         Some(inner) => inner.as_str(),
-//         None => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Fuuid v courante manquant"))?
-//     };
-//
-//     if fuuid_v_courante != fuuid_str {
-//         todo!("Charger version precedente du document")
-//     }
-//
-//     let mimetype = {
-//         let version_courante = match &fichier.version_courante {
-//             Some(inner) => inner,
-//             None => Err(format!("InfoDocumentIndexation.emettre_commande_indexation Version courante manquante"))?
-//         };
-//
-//         version_courante.mimetype.clone()
-//     };
-//
-//     // let mut document_indexation: DocumentIndexation = version_courante.try_into()?;
-//     // document_indexation.merge_fichier(&fichier);
-//     let document_indexation: DocumentIndexation = fichier.try_into()?;
-//
-//     let info_index = InfoDocumentIndexation {
-//         tuuid: tuuid_str.to_owned(),
-//         fuuid: fuuid_str.to_owned(),
-//         doc: document_indexation,
-//
-//         permission_duree: Some(30 * 60),  // 30 minutes
-//         permission_hachage_bytes: Some(vec![fuuid_str.to_owned()]),
-//     };
-//
-//     match mimetype.as_str().to_ascii_lowercase().as_str() {
-//         "application/pdf" => {
-//             debug!("Indexation document contenu pdf : {}", fuuid_str);
-//             let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, COMMANDE_INDEXER)
-//                 .exchanges(vec![Securite::L3Protege])
-//                 .build();
-//             middleware.transmettre_commande(routage, &info_index, false).await?;
-//         },
-//         _ => {
-//             // Format de document de base, aucun contenu a indexer
-//             debug!("Indexation document metadata seulement : {}", fuuid_str);
-//             gestionnaire.es_indexer("grosfichiers", fuuid_str, info_index).await?;
-//             set_flag_indexe(middleware, fuuid_str).await?;
-//         }
-//     }
-//
-//     Ok(())
-// }
-
 // Set le flag indexe a true pour le fuuid (version)
-pub async fn set_flag_indexe<M, S>(middleware: &M, fuuid: S) -> Result<(), String>
+pub async fn set_flag_indexe<M,S,T>(middleware: &M, fuuid: S, user_id: T) -> Result<(), Box<dyn Error>>
     where
-        M: GenerateurMessages + MongoDao,
-        S: AsRef<str>
+        M: MongoDao,
+        S: AsRef<str>,
+        T: AsRef<str>
 {
-    let fuuid_str = fuuid.as_ref();
-    let filtre = doc! { CHAMP_FUUID: fuuid_str };
+    let fuuid = fuuid.as_ref();
+    let user_id = user_id.as_ref();
+
+    let filtre = doc! { CHAMP_FUUID: fuuid, CHAMP_USER_ID: user_id };
     let ops = doc! {
         "$set": { CHAMP_FLAG_INDEX: true },
         "$currentDate": { CHAMP_MODIFICATION: true },
     };
 
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    match collection.update_one(filtre, ops, None).await {
+    match collection.update_one(filtre.clone(), ops, None).await {
         Ok(_) => (),
         Err(e) => Err(format!("traitement_index.set_flag_indexe Erreur {:?}", e))?
     }
+
+    // Supprimer job indexation
+    let collection_jobs = middleware.get_collection(NOM_COLLECTION_INDEXATION_JOBS)?;
+    collection_jobs.delete_one(filtre, None).await?;
 
     Ok(())
 }
