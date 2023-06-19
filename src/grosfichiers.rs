@@ -210,6 +210,13 @@ pub fn preparer_queues() -> Vec<QueueType> {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
     }
 
+    let commandes_secures: Vec<&str> = vec![
+        COMMANDE_INDEXATION_GET_JOB,
+    ];
+    for cmd in commandes_secures {
+        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L4Secure});
+    }
+
     // RK 2.prive
     let requetes_protegees: Vec<&str> = vec![
         REQUETE_SYNC_COLLECTION,

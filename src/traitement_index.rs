@@ -246,7 +246,7 @@ pub async fn traiter_indexation_batch<M>(middleware: &M, limite: i64, reset: boo
     {
         let filtre_start_expire = doc! {
             CHAMP_FLAG_INDEX_ETAT: VIDEO_CONVERSION_ETAT_RUNNING,
-            CHAMP_INDEX_START: { "lte": Utc::now() - Duration::seconds(300) },
+            CHAMP_INDEX_START: { "$lte": Utc::now() - Duration::seconds(300) },
         };
         let ops_expire = doc! {
             "$set": { CHAMP_FLAG_INDEX_ETAT: VIDEO_CONVERSION_ETAT_PENDING },
@@ -524,9 +524,12 @@ pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValideActi
                 }
             };
 
-            let metadata = match fichier_detail.metadata {
-                Some(inner) => inner,
-                None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans metadata user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+            let metadata = match fichier_detail.version_courante {
+                Some(inner) => match inner.metadata {
+                    Some(inner) => inner,
+                    None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans metadata (1) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+                },
+                None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans metadata (2) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
             };
 
             let mimetype = match fichier_detail.mimetype.as_ref() {

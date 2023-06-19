@@ -1,6 +1,7 @@
 use std::collections::HashMap;
-use millegrilles_common_rust::bson::Document;
+use millegrilles_common_rust::bson::{DateTime, Document};
 use millegrilles_common_rust::chiffrage_cle::InformationCle;
+use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::formatteur_messages::DateEpochSeconds;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
@@ -349,7 +350,7 @@ pub struct JobIndexation {
     pub etat: i32,
     #[serde(rename="_mg-derniere-modification", skip_serializing)]
     pub date_modification: Value,
-    pub index_start: Value,
+    pub index_start: Option<DateTime>,
     pub index_retry: i32,
 }
 
