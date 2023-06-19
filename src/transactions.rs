@@ -345,7 +345,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
             doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
             doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
         }
-        doc_version.insert(CHAMP_FLAG_INDEXE, false);
+        doc_version.insert(CHAMP_FLAG_INDEX, false);
 
         match collection.insert_one(doc_version, None).await {
             Ok(_) => (),
@@ -1604,7 +1604,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
             doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
             doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
         }
-        doc_version.insert(CHAMP_FLAG_INDEXE, false);
+        doc_version.insert(CHAMP_FLAG_INDEX, false);
 
         // Champs date
         doc_version.insert(CHAMP_CREATION, Utc::now());

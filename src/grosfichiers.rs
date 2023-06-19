@@ -36,7 +36,7 @@ use crate::commandes::consommer_commande;
 use crate::evenements::consommer_evenement;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{consommer_requete, mapper_fichier_db};
-use crate::traitement_index::{InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche};
+use crate::traitement_index::{InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche, traiter_indexation_batch};
 use crate::traitement_media::{entretien_video_jobs, traiter_media_batch};
 use crate::transactions::*;
 
@@ -404,7 +404,7 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         unique: false
     };
     let champs_index_indexe = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_FLAG_INDEXE), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_FLAG_INDEX), direction: 1},
         ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
     );
     middleware.create_index(
@@ -490,6 +490,10 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
 
     let date_epoch = trigger.get_date();
     let minutes = date_epoch.get_datetime().minute();
+
+    if let Err(e) = traiter_indexation_batch(middleware, LIMITE_INDEXATION_BATCH, false).await {
+        warn!("Erreur traitement indexation batch : {:?}", e);
+    }
 
     // Executer a toutes les 5 minutes
     if minutes % 5 == 0 {

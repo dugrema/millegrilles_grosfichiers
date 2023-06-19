@@ -13,6 +13,7 @@ pub const NOM_COLLECTION_FICHIERS_REP: &str = "GrosFichiers/fichiersRep";
 pub const NOM_COLLECTION_VERSIONS: &str = "GrosFichiers/versionsFichiers";
 pub const NOM_COLLECTION_DOCUMENTS: &str = "GrosFichiers/documents";
 pub const NOM_COLLECTION_VIDEO_JOBS: &str = "GrosFichiers/videoJobs";
+pub const NOM_COLLECTION_INDEXATION_JOBS: &str = "GrosFichiers/indexationJobs";
 
 pub const DOMAINE_FICHIERS_NOM: &str = "fichiers";
 pub const DOMAINE_MEDIA_NOM: &str = "media";
@@ -106,7 +107,11 @@ pub const CHAMP_MIMETYPE: &str = "mimetype";
 pub const CHAMP_FUUID_V_COURANTE: &str = "fuuid_v_courante";
 pub const CHAMP_FAVORIS: &str = "favoris";
 // pub const CHAMP_FUUID_MIMETYPES: &str = "fuuidMimetypes";
-pub const CHAMP_FLAG_INDEXE: &str = "flag_indexe";
+pub const CHAMP_FLAG_INDEX: &str = "flag_index";
+pub const CHAMP_FLAG_INDEX_RETRY: &str = "index_retry";
+pub const CHAMP_FLAG_INDEX_ERREUR: &str = "flag_index_erreur";
+pub const CHAMP_INDEX_START: &str = "index_start";
+pub const CHAMP_FLAG_INDEX_ETAT: &str = "etat";
 pub const CHAMP_FLAG_MEDIA: &str = "flag_media";
 pub const CHAMP_FLAG_MEDIA_TRAITE: &str = "flag_media_traite";
 pub const CHAMP_FLAG_MEDIA_RETRY: &str = "flag_media_retry";
@@ -118,6 +123,7 @@ pub const ERREUR_MEDIA_TOOMANYRETRIES: i32 = 1;
 
 pub const MEDIA_RETRY_LIMIT: i32 = 5;
 pub const MEDIA_IMAGE_BACTH_DEFAULT: i64 = 50;
+pub const LIMITE_INDEXATION_BATCH: i64 = 1000;
 
 pub const VIDEO_CONVERSION_ETAT_PENDING: i32 = 1;
 pub const VIDEO_CONVERSION_ETAT_RUNNING: i32 = 2;
@@ -174,6 +180,8 @@ pub struct DBFichierVersionDetail {
     pub fuuid: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub tuuid: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub user_id: Option<String>,
     pub mimetype: String,
     pub taille: usize,
     #[serde(rename="dateFichier")]
@@ -337,17 +345,20 @@ pub struct CommandeIndexationGetJob {
 pub struct JobIndexation {
     pub tuuid: String,
     pub fuuid: String,
+    pub user_id: String,
     pub etat: i32,
     #[serde(rename="_mg-derniere-modification", skip_serializing)]
     pub date_modification: Value,
-    pub flag_media_retry: i32,
+    pub index_start: Value,
+    pub index_retry: i32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReponseJobIndexation {
+    pub ok: bool,
     pub tuuid: String,
     pub fuuid: String,
-    pub user_ids: Vec<String>,
+    pub user_id: String,
     pub mimetype: String,
     pub metadata: DataChiffre,
     pub cle: InformationCle,

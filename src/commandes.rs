@@ -27,7 +27,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{mapper_fichier_db, verifier_acces_usager};
-use crate::traitement_index::{set_flag_indexe};
+use crate::traitement_index::{commande_indexation_get_job, set_flag_indexe};
 use crate::traitement_media::{commande_supprimer_job_video, emettre_commande_media, traiter_media_batch};
 use crate::transactions::*;
 
@@ -779,13 +779,10 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionna
     if let Some(r) = commande.reset {
         if r == true {
             info!("Reset flag indexe sur tous les documents");
-            let filtre = doc! { CHAMP_FLAG_INDEXE: true };
-            let ops = doc! { "$set": { CHAMP_FLAG_INDEXE: false } };
+            let filtre = doc! { CHAMP_FLAG_INDEX: true };
+            let ops = doc! { "$set": { CHAMP_FLAG_INDEX: false } };
             let resultat = collection.update_many(filtre, ops, None).await?;
             debug!("commande_reindexer Reset flag indexes, resultat {:?}", resultat);
-
-            // Delete index, recreer
-            todo!("Transmettre commande reindexer");
         }
     }
 
@@ -1487,132 +1484,4 @@ async fn commande_get_cle_job_conversion<M>(middleware: &M, m: MessageValideActi
     };
 
     Ok(reponse)
-}
-
-async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<ReponseJobIndexation>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
-{
-    debug!("commande_indexation_get_job Consommer commande : {:?}", & m.message);
-    let commande: CommandeIndexationGetJob = m.message.get_msg().map_contenu()?;
-
-    // Verifier autorisation
-    if ! m.verifier_exchanges(vec![Securite::L4Secure]) {
-        info!("commande_indexation_get_job Exchange n'est pas de niveau 4");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
-    }
-
-    if ! m.verifier_roles(vec![RolesCertificats::SolrRelai]) {
-        info!("commande_indexation_get_job Role n'est pas solrrelai");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre solrrelai)"}), None)?))
-    }
-
-    let certificat = match m.message.certificat {
-        Some(inner) => inner,
-        None => Err(format!("commandes.commande_indexation_get_job Certificat absent du message"))?
-    };
-
-    let prochaine_job = trouver_prochaine_job_indexation(middleware).await?;
-
-    debug!("commande_video_get_job Prochaine job : {:?}", prochaine_job);
-
-    match prochaine_job {
-        Some(job) => {
-
-            // Recuperer les metadonnees
-
-            // Recuperer la cle de dechiffrage du fichier
-            let cle = get_cle_job_indexation(
-                middleware, job.fuuid.as_str(), certificat.as_ref()).await?;
-
-            let reponse_job = ReponseJobIndexation {
-                tuuid: job.tuuid,
-                fuuid: job.fuuid,
-                user_ids: Vec<String>,
-                mimetype: String,
-                metadata: DataChiffre,
-                cle,
-            };
-            debug!("Reponse job : {:?}", reponse_job);
-
-            Ok(Some(reponse_job))
-        },
-        None => Ok(None)
-    }
-}
-
-async fn trouver_prochaine_job_indexation<M>(middleware: &M)
-    -> Result<Option<JobIndexation>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509
-{
-    let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
-
-    let job: Option<JobIndexation> = {
-        // Tenter de trouver la prochaine job disponible
-        let filtre = doc! {"etat": VIDEO_CONVERSION_ETAT_PENDING};
-        let hint = Some(Hint::Name("etat_jobs".into()));
-        let options = FindOneAndUpdateOptions::builder()
-            .hint(hint)
-            .return_document(ReturnDocument::Before)
-            .build();
-        let ops = doc! {
-            "$set": {"etat": VIDEO_CONVERSION_ETAT_RUNNING},
-            "$inc": {"flag_media_retry": 1},
-            "$currentDate": {CHAMP_MODIFICATION: true, "debut_running": true}
-        };
-        match collection.find_one_and_update(filtre, ops, options).await? {
-            Some(d) => {
-                debug!("trouver_prochaine_job_indexation (1) Charger job : {:?}", d);
-                Some(convertir_bson_deserializable(d)?)
-            },
-            None => None
-        }
-    };
-
-    Ok(job)
-}
-
-async fn get_cle_job_indexation<M,S>(middleware: &M, fuuid: &S, certificat: &EnveloppeCertificat)
-    -> Result<InformationCle, Box<dyn Error>>
-    where
-        M: GenerateurMessages + MongoDao + ValidateurX509,
-        S: AsRef<str>
-{
-    let fuuid = fuuid.as_ref();
-
-    let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE)
-        .exchanges(vec![Securite::L4Secure])
-        .build();
-
-    // Utiliser certificat du message client (requete) pour demande de rechiffrage
-    let pem_rechiffrage: Vec<String> = {
-        let fp_certs = certificat.get_pem_vec();
-        fp_certs.into_iter().map(|cert| cert.pem).collect()
-    };
-
-    let permission = RequeteDechiffrage {
-        domaine: DOMAINE_NOM.to_string(),
-        liste_hachage_bytes: vec![fuuid.to_string()],
-        certificat_rechiffrage: Some(pem_rechiffrage),
-    };
-
-    debug!("get_cle_job_indexation Transmettre requete permission dechiffrage cle : {:?}", permission);
-    let cle = if let TypeMessage::Valide(reponse) = middleware.transmettre_requete(routage, &permission).await? {
-        let reponse: ReponseDechiffrageCles = reponse.message.parsed.map_contenu()?;
-        if reponse.acces.as_str() != "1.permis" {
-            Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : acces refuse ({}) a cle {}", reponse.acces, fuuid))?
-        }
-
-        match reponse.cles {
-            Some(mut inner) => match inner.remove(fuuid) {
-                Some(inner) => inner,
-                None => Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : cle non recue pour {}", fuuid))?
-            },
-            None => Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : cles vides pour {}", fuuid))?
-        }
-    } else {
-        Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : mauvais type message recu"))?
-    };
-
-    Ok(cle)
 }
