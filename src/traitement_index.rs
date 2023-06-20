@@ -649,10 +649,9 @@ pub async fn get_cle_job_indexation<M,S>(middleware: &M, fuuid: S, certificat: &
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ParametresRecherche {
-    mots_cles: Option<String>,
-    from_idx: Option<u32>,
-    size: Option<u32>,
-    pub user_id: Option<String>,
+    pub mots_cles: String,
+    pub from_idx: Option<u32>,
+    pub size: Option<u32>
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

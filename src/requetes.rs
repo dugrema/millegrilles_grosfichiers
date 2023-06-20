@@ -66,7 +66,6 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
             REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
-            // REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
             REQUETE_SYNC_COLLECTION => requete_sync_collection(middleware, message, gestionnaire).await,
@@ -114,7 +113,6 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
             REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
-            // REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
             REQUETE_SYNC_COLLECTION => requete_sync_collection(middleware, message, gestionnaire).await,
@@ -489,59 +487,6 @@ async fn requete_get_corbeille<M>(middleware: &M, m: MessageValideAction, gestio
     let reponse = json!({ "fichiers": fichiers_mappes });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
-
-// async fn requete_recherche_index<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-//     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-//     where M: GenerateurMessages + MongoDao + VerificateurMessage,
-// {
-//     debug!("requete_recherche_index Message : {:?}", & m.message);
-//     let mut requete: ParametresRecherche = m.message.get_msg().map_contenu()?;
-//     debug!("requete_recherche_index cle parsed : {:?}", requete);
-//
-//     let user_id = m.get_user_id();
-//     let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
-//     if role_prive && user_id.is_some() {
-//         // Ok
-//     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-//         // Ok
-//     } else {
-//         Err(format!("grosfichiers.requete_recherche_index: Autorisation invalide pour message {:?}", m.correlation_id))?
-//     }
-//
-//     // Ajouter user_id a la requete
-//     requete.user_id = user_id.clone();
-//
-//     let info = match gestionnaire.es_rechercher("grosfichiers", &requete).await {
-//         Ok(resultats) => {
-//             match resultats.hits {
-//                 Some(inner) => {
-//                     let total = inner.total.value;
-//                     match inner.hits {
-//                         Some(hits) => {
-//                             let resultats = mapper_fichiers_resultat(middleware, hits, user_id).await?;
-//                             Some((total, resultats))
-//                         },
-//                         None => None
-//                     }
-//                 },
-//                 None => None
-//             }
-//         },
-//         Err(e) => {
-//             error!("requetes.requete_recherche_index Erreur recherche index grosfichiers : {}", e);
-//             return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": e.clone()}), None)?))
-//         }
-//     };
-//
-//     let reponse = match info {
-//         Some((total, hits)) => {
-//             json!({"ok": true, "total": total, "hits": hits})
-//         },
-//         None => json!({"ok": true, "total": 0})
-//     };
-//
-//     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
-// }
 
 async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
                                       -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
