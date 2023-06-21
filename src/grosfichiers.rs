@@ -435,6 +435,21 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         Some(options_index_media_traite)
     ).await?;
 
+    let options_index_video_traite = IndexOptions {
+        nom_index: Some(format!("flag_video_traite")),
+        unique: false
+    };
+    let champs_index_video_traite = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_FLAG_VIDEO_TRAITE), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_VERSIONS,
+        champs_index_video_traite,
+        Some(options_index_video_traite)
+    ).await?;
+
     // Index conversion video cles
     let options_fuuids_params = IndexOptions {
         nom_index: Some(format!("fuuid_params")),

@@ -13,6 +13,7 @@ pub const NOM_COLLECTION_TRANSACTIONS: &str = "GrosFichiers";
 pub const NOM_COLLECTION_FICHIERS_REP: &str = "GrosFichiers/fichiersRep";
 pub const NOM_COLLECTION_VERSIONS: &str = "GrosFichiers/versionsFichiers";
 pub const NOM_COLLECTION_DOCUMENTS: &str = "GrosFichiers/documents";
+pub const NOM_COLLECTION_IMAGES_JOBS: &str = "GrosFichiers/imagesJobs";
 pub const NOM_COLLECTION_VIDEO_JOBS: &str = "GrosFichiers/videoJobs";
 pub const NOM_COLLECTION_INDEXATION_JOBS: &str = "GrosFichiers/indexationJobs";
 
@@ -115,6 +116,7 @@ pub const CHAMP_INDEX_START: &str = "index_start";
 pub const CHAMP_FLAG_INDEX_ETAT: &str = "etat";
 pub const CHAMP_FLAG_MEDIA: &str = "flag_media";
 pub const CHAMP_FLAG_MEDIA_TRAITE: &str = "flag_media_traite";
+pub const CHAMP_FLAG_VIDEO_TRAITE: &str = "flag_video_traite";
 pub const CHAMP_FLAG_MEDIA_RETRY: &str = "flag_media_retry";
 pub const CHAMP_FLAG_MEDIA_ERREUR: &str = "flag_media_erreur";
 pub const CHAMP_USER_ID: &str = "user_id";

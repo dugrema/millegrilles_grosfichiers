@@ -341,6 +341,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
             flag_media = true;
             doc_version.insert(CHAMP_FLAG_MEDIA, "video");
             doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
+            doc_version.insert(CHAMP_FLAG_VIDEO_TRAITE, false);
         } else if mimetype =="application/pdf" {
             flag_media = true;
             doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
@@ -1010,9 +1011,9 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
 
         // Si on a le thumbnail, on va marquer media_traite
         debug!("Traiter images : {:?}", transaction_mappee.images);
-        if transaction_mappee.images.contains_key("thumb") {
+        //if transaction_mappee.images.contains_key("thumb") {
             set_ops.insert("flag_media_traite", true);
-        }
+        //}
 
         // Inserer images par cle dans set_ops
         for (k, v) in &doc_images {
@@ -1597,6 +1598,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         } else if mimetype.starts_with("video") {
             doc_version.insert(CHAMP_FLAG_MEDIA, "video");
             doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
+            doc_version.insert(CHAMP_FLAG_VIDEO_TRAITE, false);
         } else if mimetype =="application/pdf" {
             doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
             doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);

@@ -11,7 +11,7 @@ use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
-use millegrilles_common_rust::mongodb::options::{FindOptions, Hint};
+use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio_stream::StreamExt;
@@ -21,6 +21,7 @@ use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::mapper_fichier_db;
 
+const EVENEMENT_IMAGE_DISPONIBLE: &str = "jobImageDisponible";
 const ACTION_GENERER_POSTER_IMAGE: &str = "genererPosterImage";
 const ACTION_GENERER_POSTER_PDF: &str = "genererPosterPdf";
 const ACTION_GENERER_POSTER_VIDEO: &str = "genererPosterVideo";
