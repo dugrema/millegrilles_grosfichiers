@@ -45,6 +45,45 @@ impl JobHandler for ImageJobHandler {
 
     fn get_action_evenement(&self) -> &str { EVENEMENT_IMAGE_DISPONIBLE }
 
+    async fn sauvegarder_job<M, S, U>(
+        &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,
+        mut champs_cles: Option<HashMap<String, String>>,
+        parametres: Option<HashMap<String, Bson>>,
+        emettre_trigger: bool,
+    )
+        -> Result<(), Box<dyn Error>>
+        where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send
+    {
+        // Tester le mimetype pour savoir si la job s'applique
+        let mimetype = match champs_cles.as_ref() {
+            Some(inner) => {
+                match inner.get("mimetype") {
+                    Some(inner) => inner,
+                    None => {
+                        debug!("sauvegarder_job Mimetype absent, skip sauvegarder job image");
+                        return Ok(())
+                    }
+                }
+            },
+            None => {
+                debug!("sauvegarder_job Mimetype absent, skip sauvegarder job image");
+                return Ok(())
+            }
+        };
+
+        if job_image_supportee(mimetype) {
+            debug!("sauvegarder_job image type {}", mimetype);
+            sauvegarder_job(middleware, self, fuuid, user_id, instance.clone(), champs_cles, parametres).await?;
+
+            if let Some(inner) = instance {
+                if emettre_trigger {
+                    self.emettre_trigger(middleware, inner).await;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -536,4 +575,28 @@ pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAct
     middleware.emettre_evenement(routage, &evenement).await?;
 
     Ok(middleware.reponse_ok()?)
+}
+
+fn job_image_supportee<S>(mimetype: S) -> bool
+    where S: AsRef<str>
+{
+    let mimetype = mimetype.as_ref();
+
+    match mimetype {
+        "application/pdf" => true,
+        _ => {
+            let subtype = match mimetype.split("/").next() {
+                Some(t) => t,
+                None => {
+                    error!("traitement_media.job_image_supportee Mimetype {}, subtype non identifiable", mimetype);
+                    return false
+                }
+            };
+            match subtype {
+                "video" => true,
+                "image" => true,
+                _ => false
+            }
+        }
+    }
 }

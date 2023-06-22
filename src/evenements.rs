@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use log::{debug, error, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
@@ -15,16 +15,17 @@ use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hi
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio_stream::StreamExt;
-use crate::grosfichiers::emettre_evenement_maj_fichier;
+use crate::grosfichiers::{emettre_evenement_maj_fichier, GestionnaireGrosFichiers};
 
 use crate::grosfichiers_constantes::*;
+use crate::traitement_jobs::JobHandler;
 use crate::traitement_media::emettre_commande_media;
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
 
-pub async fn consommer_evenement<M>(middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-where
-    M: ValidateurX509 + GenerateurMessages + MongoDao,
+pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValideAction)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
     debug!("consommer_evenement Consommer evenement : {:?}", &m.message);
 
@@ -42,7 +43,7 @@ where
         EVENEMENT_TRANSCODAGE_PROGRES => evenement_transcodage_progres(middleware, m).await,
         EVENEMENT_FICHIERS_SYNCPRET => evenement_fichiers_syncpret(middleware, m).await,
         EVENEMENT_FICHIERS_VISITER_FUUIDS => evenement_visiter_fuuids(middleware, m).await,
-        EVENEMENT_FICHIERS_CONSIGNE => evenement_fichier_consigne(middleware, m).await,
+        EVENEMENT_FICHIERS_CONSIGNE => evenement_fichier_consigne(middleware, gestionnaire, m).await,
         _ => Err(format!("grosfichiers.consommer_evenement: Mauvais type d'action pour un evenement : {}", m.action))?,
     }
 }
@@ -280,9 +281,17 @@ async fn evenement_visiter_fuuids<M>(middleware: &M, m: MessageValideAction)
 struct EvenementFichierConsigne { hachage_bytes: String }
 
 #[derive(Clone, Deserialize)]
-struct DocumentFichierDetailIds { fuuid: String, tuuid: String, flag_media: Option<String>, flag_media_traite: Option<bool>, mimetype: Option<String> }
+struct DocumentFichierDetailIds {
+    fuuid: String,
+    tuuid: String,
+    user_id: String,
+    flag_media: Option<String>,
+    flag_media_traite: Option<bool>,
+    mimetype: Option<String>,
+    visites: Option<HashMap<String, u32>>,
+}
 
-async fn evenement_fichier_consigne<M>(middleware: &M, m: MessageValideAction)
+async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValideAction)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao
 {
@@ -311,32 +320,81 @@ async fn evenement_fichier_consigne<M>(middleware: &M, m: MessageValideAction)
     };
 
     let filtre = doc! { "fuuids": &evenement.hachage_bytes };
-    let projection = doc! {"tuuid": 1, "fuuid": 1, "flag_media": 1, "flag_media_traite": 1, "mimetype": 1};
-    let options = FindOneOptions::builder().projection(projection).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    let doc_fuuid: DocumentFichierDetailIds = match collection.find_one(filtre, Some(options)).await? {
-        Some(inner) => convertir_bson_deserializable(inner)?,
-        None => {
-            warn!("evenements.evenement_visiter_fuuids Le document fuuid {} n'existe pas, abort evenement", evenement.hachage_bytes);
-            return Ok(None)
-        }
+    let projection = doc! {
+        "user_id": 1, "tuuid": 1, "fuuid": 1, "flag_media": 1, "flag_media_traite": 1, "mimetype": 1,
+        "visites": 1,
     };
+    let options = FindOptions::builder().projection(projection).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
 
-    let fuuids = vec![evenement.hachage_bytes];
+    let mut curseur = collection.find(filtre, Some(options)).await?;
+    while let Some(r) = curseur.next().await {
+        let doc_fuuid: DocumentFichierDetailIds = convertir_bson_deserializable(r?)?;
 
-    marquer_visites_fuuids(middleware, &fuuids, date_visite, instance_id).await?;
+        let fuuids = vec![doc_fuuid.fuuid.clone()];
+        let instances: Vec<String> = match doc_fuuid.visites {
+            Some(inner) => inner.into_keys().collect(),
+            None => {
+                debug!("Aucunes visites sur {}, skip", doc_fuuid.fuuid);
+                continue;
+            }
+        };
+
+        for instance in &instances {
+            marquer_visites_fuuids(middleware, &fuuids, date_visite, instance.clone()).await?;
+        }
+
+        emettre_evenement_maj_fichier(middleware, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
+
+        if let Some(mimetype) = doc_fuuid.mimetype {
+            let mut champs_cles = HashMap::new();
+            champs_cles.insert("tuuid".to_string(), doc_fuuid.tuuid);
+            champs_cles.insert("mimetype".to_string(), mimetype);
+
+            gestionnaire.indexation_job_handler.sauvegarder_job(
+                middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), None,
+                Some(champs_cles.clone()), None, true
+            ).await?;
+
+            gestionnaire.image_job_handler.sauvegarder_job(
+                middleware, doc_fuuid.fuuid, doc_fuuid.user_id, None,
+                Some(champs_cles), None, true
+            ).await?;
+        }
+
+        // if let Some(mimetype) = doc_fuuid.mimetype.as_ref() {
+        //     debug!("Consignation sur fichier media non traite, emettre evenement pour tuuid {}", doc_fuuid.tuuid);
+        //     if let Err(e) = emettre_commande_media(middleware, &doc_fuuid.tuuid, &doc_fuuid.fuuid, mimetype, false).await {
+        //         error!("evenements.evenement_fichier_consigne Erreur emission commande generer image {} : {:?}", doc_fuuid.fuuid, e);
+        //     }
+        // }
+    }
+
+    // let doc_fuuid: DocumentFichierDetailIds = match collection.find_one(filtre, Some(options)).await? {
+    //     Some(inner) => convertir_bson_deserializable(inner)?,
+    //     None => {
+    //         warn!("evenements.evenement_visiter_fuuids Le document fuuid {} n'existe pas, abort evenement", evenement.hachage_bytes);
+    //         return Ok(None)
+    //     }
+    // };
+    //
+    // let fuuids = vec![evenement.hachage_bytes];
+    //
+    // marquer_visites_fuuids(middleware, &fuuids, date_visite, instance_id).await?;
 
     // Emettre un evenement sur le fichier (tuuid)
-    emettre_evenement_maj_fichier(middleware, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
+    // emettre_evenement_maj_fichier(middleware, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
 
-    if let Some(false) = doc_fuuid.flag_media_traite {
-        if let Some(mimetype) = doc_fuuid.mimetype.as_ref() {
-            debug!("Consignation sur fichier media non traite, emettre evenement pour tuuid {}", doc_fuuid.tuuid);
-            if let Err(e) = emettre_commande_media(middleware, &doc_fuuid.tuuid, &doc_fuuid.fuuid, mimetype, false).await {
-                error!("evenements.evenement_fichier_consigne Erreur emission commande generer image {} : {:?}", doc_fuuid.fuuid, e);
-            }
-        }
-    }
+    // Verifier
+
+    // if let Some(false) = doc_fuuid.flag_media_traite {
+    //     if let Some(mimetype) = doc_fuuid.mimetype.as_ref() {
+    //         debug!("Consignation sur fichier media non traite, emettre evenement pour tuuid {}", doc_fuuid.tuuid);
+    //         if let Err(e) = emettre_commande_media(middleware, &doc_fuuid.tuuid, &doc_fuuid.fuuid, mimetype, false).await {
+    //             error!("evenements.evenement_fichier_consigne Erreur emission commande generer image {} : {:?}", doc_fuuid.fuuid, e);
+    //         }
+    //     }
+    // }
 
     Ok(None)
 }

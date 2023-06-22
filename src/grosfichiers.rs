@@ -100,7 +100,7 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
     }
 
     async fn consommer_evenement<M>(self: &'static Self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
-        consommer_evenement(middleware, message).await
+        consommer_evenement(middleware, self, message).await
     }
 
     async fn entretien<M>(self: &'static Self, middleware: Arc<M>) where M: Middleware + 'static {
