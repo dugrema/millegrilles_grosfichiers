@@ -85,20 +85,23 @@ pub trait JobHandler: Clone + Sized + Sync {
         }
     }
 
-    async fn sauvegarder_job<M,S,U,V>(
-        &self, middleware: &M, fuuid: S, user_id: U, instance: V,
-        champs_cles: HashMap<String, String>,
+    async fn sauvegarder_job<M,S,U>(
+        &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,
+        champs_cles: Option<HashMap<String, String>>,
         parametres: Option<HashMap<String, Bson>>,
         emettre_trigger: bool
     )
         -> Result<(), Box<dyn Error>>
         where M: GenerateurMessages + MongoDao,
-              S: AsRef<str> + Send, U: AsRef<str> + Send, V: AsRef<str> + Send
+              S: AsRef<str> + Send, U: AsRef<str> + Send
     {
-        let instance = instance.as_ref();
-        sauvegarder_job(middleware, self, fuuid, user_id, instance, champs_cles, parametres).await?;
-        if emettre_trigger {
-            self.emettre_trigger(middleware, instance).await;
+        let instances = sauvegarder_job(middleware, self, fuuid, user_id, instance.clone(), champs_cles, parametres).await?;
+        if let Some(inner) = instances {
+            if emettre_trigger {
+                for instance in inner.into_iter() {
+                    self.emettre_trigger(middleware, instance).await;
+                }
+            }
         }
         Ok(())
     }
@@ -323,7 +326,10 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
                 let mut champs_cles = HashMap::new();
                 champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
                 champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
-                job_handler.sauvegarder_job(middleware, fuuid_ref, user_id, instance, champs_cles, None, false).await?;
+                job_handler.sauvegarder_job(
+                    middleware, fuuid_ref, user_id,
+                    Some(instance), Some(champs_cles), None,
+                    false).await?;
             }
         }
     }
@@ -331,26 +337,29 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
     Ok(())
 }
 
-pub async fn sauvegarder_job<M,J,S,U,V>(
+pub async fn sauvegarder_job<M,J,S,U>(
     middleware: &M, job_handler: &J,
-    fuuid: S, user_id: U, instance: V,
-    champs_cles: HashMap<String, String>,
+    fuuid: S, user_id: U, instance: Option<String>,
+    champs_cles: Option<HashMap<String, String>>,
     parametres: Option<HashMap<String, Bson>>
 )
-    -> Result<(), Box<dyn Error>>
+    -> Result<Option<Vec<String>>, Box<dyn Error>>
     where M: MongoDao, J: JobHandler,
-          S: AsRef<str> + Send, U: AsRef<str> + Send, V: AsRef<str> + Send
+          S: AsRef<str> + Send, U: AsRef<str> + Send
 {
     // Creer ou mettre a jour la job
     let now = Utc::now();
 
     let fuuid = fuuid.as_ref();
     let user_id = user_id.as_ref();
-    let instance = instance.as_ref();
+    // let instance = instance.as_ref();
 
     let mut filtre = doc!{ CHAMP_USER_ID: user_id, CHAMP_FUUID: fuuid };
-    for (k, v) in champs_cles.iter() {
-        filtre.insert(k.to_owned(), v.to_owned());
+
+    if let Some(inner) = champs_cles.as_ref() {
+        for (k, v) in inner.iter() {
+            filtre.insert(k.to_owned(), v.to_owned());
+        }
     }
 
     let mut set_on_insert = doc!{
@@ -361,8 +370,10 @@ pub async fn sauvegarder_job<M,J,S,U,V>(
         CHAMP_CREATION: &now,
     };
 
-    for (k, v) in champs_cles.into_iter() {
-        set_on_insert.insert(k, v);
+    if let Some(inner) = champs_cles {
+        for (k, v) in inner.iter() {
+            set_on_insert.insert(k, v);
+        }
     }
 
     // Ajouter parametres optionnels (e.g. codecVideo, preset, etc.)
@@ -372,13 +383,43 @@ pub async fn sauvegarder_job<M,J,S,U,V>(
         }
     }
 
-    let ops_job = doc! {
+
+    let instances = match instance {
+        Some(inner) => vec![inner],
+        None => {
+            // Tenter de charger les visites pour le fichier
+            let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+            let filtre = doc! { CHAMP_USER_ID: user_id, CHAMP_FUUID: fuuid };
+            match collection.find_one(filtre, None).await? {
+                Some(inner) => {
+                    let fichier_mappe: FichierDetail = convertir_bson_deserializable(inner)?;
+                    match fichier_mappe.visites {
+                        Some(inner) => {
+                            let liste_visites: Vec<String> = inner.into_keys().collect();
+                            liste_visites
+                        },
+                        None => {
+                            debug!("sauvegarder_job Le fichier {} n'est pas encore disponible (1 - aucunes instance avec visite) - SKIP", fuuid);
+                            return Ok(None)
+                        }
+                    }
+                },
+                None => {
+                    debug!("sauvegarder_job Le fichier {} n'est pas encore disponible (2 - aucunes instance avec visite) - SKIP", fuuid);
+                    return Ok(None)
+                }
+            }
+        }
+    };
+
+    let mut ops_job = doc! {
         "$setOnInsert": set_on_insert,
-        "$addToSet": { CHAMP_INSTANCES: instance },
+        "$addToSet": {CHAMP_INSTANCES: {"$each": &instances}},
         "$currentDate": {
             CHAMP_MODIFICATION: true,
         }
     };
+
     let options = UpdateOptions::builder()
         .upsert(true)
         .build();
@@ -386,7 +427,7 @@ pub async fn sauvegarder_job<M,J,S,U,V>(
     let collection_jobs = middleware.get_collection(job_handler.get_nom_collection())?;
     collection_jobs.update_one(filtre, ops_job, options).await?;
 
-    Ok(())
+    Ok(Some(instances))
 }
 
 pub struct CommandeGetJob {}

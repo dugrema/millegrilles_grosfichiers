@@ -36,7 +36,7 @@ use crate::commandes::consommer_commande;
 use crate::evenements::consommer_evenement;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{consommer_requete, mapper_fichier_db};
-use crate::traitement_index::{IndexationJobHandler, InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche, traiter_indexation_batch};
+use crate::traitement_index::{IndexationJobHandler, InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche};
 use crate::traitement_jobs::JobHandler;
 use crate::traitement_media::{entretien_video_jobs, ImageJobHandler, traiter_media_batch, VideoJobHandler};
 use crate::transactions::*;

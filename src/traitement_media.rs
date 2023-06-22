@@ -59,19 +59,23 @@ impl JobHandler for VideoJobHandler {
 
     fn get_action_evenement(&self) -> &str { EVENEMENT_VIDEO_DISPONIBLE }
 
-    async fn sauvegarder_job<M, S, U, V>(
-        &self, middleware: &M, fuuid: S, user_id: U, instance: V,
-        mut champs_cles: HashMap<String, String>,
+    async fn sauvegarder_job<M, S, U>(
+        &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,
+        mut champs_cles: Option<HashMap<String, String>>,
         parametres: Option<HashMap<String, Bson>>,
         emettre_trigger: bool,
     )
         -> Result<(), Box<dyn Error>>
-        where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send, V: AsRef<str> + Send
+        where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send
     {
+        let mut champs_cles = match champs_cles {
+            Some(inner) => inner,
+            None => HashMap::new()
+        };
         // Ajouter cle de conversion
         champs_cles.insert("cle_conversion".to_string(), "video/mp4;h264;270p;28".to_string());
 
-        let instance = instance.as_ref();
+        // let instance = instance.as_ref();
 
         // S'assurer d'avoir des parametres - ajouter au besoin. Ne fait pas d'override de job existante.
         let parametres = match parametres {
@@ -92,10 +96,12 @@ impl JobHandler for VideoJobHandler {
             }
         };
 
-        sauvegarder_job(middleware, self, fuuid, user_id, instance, champs_cles, Some(parametres)).await?;
+        sauvegarder_job(middleware, self, fuuid, user_id, instance.clone(), Some(champs_cles), Some(parametres)).await?;
 
-        if emettre_trigger {
-            self.emettre_trigger(middleware, instance).await;
+        if let Some(inner) = instance {
+            if emettre_trigger {
+                self.emettre_trigger(middleware, inner).await;
+            }
         }
 
         Ok(())

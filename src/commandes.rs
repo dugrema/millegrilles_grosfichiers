@@ -27,7 +27,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{mapper_fichier_db, verifier_acces_usager};
-use crate::traitement_index::{commande_indexation_get_job, reset_flag_indexe, set_flag_indexe};
+use crate::traitement_index::{commande_indexation_get_job, reset_flag_indexe};
 use crate::traitement_jobs::{JobHandler, ParametresConfirmerJob};
 use crate::traitement_media::{commande_supprimer_job_video, emettre_commande_media, traiter_media_batch};
 use crate::transactions::*;
@@ -776,7 +776,7 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionna
         false => Err(format!("commandes.commande_reindexer: Commande autorisation invalide pour message {:?}", m.correlation_id)),
     }?;
 
-    reset_flag_indexe(middleware).await?;
+    reset_flag_indexe(middleware, &gestionnaire.indexation_job_handler).await?;
 
     let reponse = ReponseCommandeReindexer {ok: true, tuuids: None};
     Ok(Some(middleware.formatter_reponse(reponse, None)?))

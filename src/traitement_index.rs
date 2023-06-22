@@ -46,36 +46,36 @@ impl JobHandler for IndexationJobHandler {
 
 }
 
-// Set le flag indexe a true pour le fuuid (version)
-pub async fn set_flag_indexe<M,S,T>(middleware: &M, fuuid: S, user_id: T) -> Result<(), Box<dyn Error>>
-    where
-        M: MongoDao,
-        S: AsRef<str>,
-        T: AsRef<str>
-{
-    let fuuid = fuuid.as_ref();
-    let user_id = user_id.as_ref();
+// /// Set le flag indexe a true pour le fuuid (version)
+// pub async fn set_flag_indexe<M,S,T>(middleware: &M, fuuid: S, user_id: T) -> Result<(), Box<dyn Error>>
+//     where
+//         M: MongoDao,
+//         S: AsRef<str>,
+//         T: AsRef<str>
+// {
+//     let fuuid = fuuid.as_ref();
+//     let user_id = user_id.as_ref();
+//
+//     let filtre = doc! { CHAMP_FUUID: fuuid, CHAMP_USER_ID: user_id };
+//     let ops = doc! {
+//         "$set": { CHAMP_FLAG_INDEX: true },
+//         "$currentDate": { CHAMP_MODIFICATION: true },
+//     };
+//
+//     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+//     match collection.update_one(filtre.clone(), ops, None).await {
+//         Ok(_) => (),
+//         Err(e) => Err(format!("traitement_index.set_flag_indexe Erreur {:?}", e))?
+//     }
+//
+//     // Supprimer job indexation
+//     let collection_jobs = middleware.get_collection(NOM_COLLECTION_INDEXATION_JOBS)?;
+//     collection_jobs.delete_one(filtre, None).await?;
+//
+//     Ok(())
+// }
 
-    let filtre = doc! { CHAMP_FUUID: fuuid, CHAMP_USER_ID: user_id };
-    let ops = doc! {
-        "$set": { CHAMP_FLAG_INDEX: true },
-        "$currentDate": { CHAMP_MODIFICATION: true },
-    };
-
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    match collection.update_one(filtre.clone(), ops, None).await {
-        Ok(_) => (),
-        Err(e) => Err(format!("traitement_index.set_flag_indexe Erreur {:?}", e))?
-    }
-
-    // Supprimer job indexation
-    let collection_jobs = middleware.get_collection(NOM_COLLECTION_INDEXATION_JOBS)?;
-    collection_jobs.delete_one(filtre, None).await?;
-
-    Ok(())
-}
-
-pub async fn reset_flag_indexe<M>(middleware: &M) -> Result<(), Box<dyn Error>>
+pub async fn reset_flag_indexe<M>(middleware: &M, job_handler: &IndexationJobHandler) -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + MongoDao
 {
     debug!("reset_flag_indexe Reset flags pour tous les fichiers");
@@ -94,7 +94,8 @@ pub async fn reset_flag_indexe<M>(middleware: &M) -> Result<(), Box<dyn Error>>
     }
 
     // Commencer a creer les jobs d'indexation
-    traiter_indexation_batch(middleware, LIMITE_INDEXATION_BATCH).await?;
+    // traiter_indexation_batch(middleware, LIMITE_INDEXATION_BATCH).await?;
+    job_handler.entretien(middleware, Some(LIMITE_INDEXATION_BATCH)).await;
 
     // Emettre un evenement pour indiquer que de nouvelles jobs sont disponibles
     let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_REINDEXER_CONSIGNATION)
@@ -105,58 +106,58 @@ pub async fn reset_flag_indexe<M>(middleware: &M) -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
-// Set le flag indexe a true pour le fuuid (version)
-pub async fn ajout_job_indexation<M,S,T,U,V>(middleware: &M, tuuid: T, fuuid: S, user_id: U, mimetype: V) -> Result<(), Box<dyn Error>>
-    where
-        M: MongoDao,
-        S: AsRef<str>,
-        T: AsRef<str>,
-        U: AsRef<str>,
-        V: AsRef<str>
-{
-    let tuuid = tuuid.as_ref();
-    let fuuid = fuuid.as_ref();
-    let user_id = user_id.as_ref();
-    let mimetype = mimetype.as_ref();
-
-    let filtre = doc! { CHAMP_FUUID: fuuid, CHAMP_USER_ID: user_id };
-    let ops = doc! {
-        "$set": { CHAMP_FLAG_INDEX: true },
-        "$currentDate": { CHAMP_MODIFICATION: true },
-    };
-
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    match collection.update_one(filtre.clone(), ops, None).await {
-        Ok(_) => (),
-        Err(e) => Err(format!("traitement_index.set_flag_indexe Erreur {:?}", e))?
-    }
-
-    // Supprimer job indexation
-    let collection_jobs = middleware.get_collection(NOM_COLLECTION_INDEXATION_JOBS)?;
-    let now = Utc::now();
-    let ops_job = doc! {
-        "$setOnInsert": {
-            CHAMP_FUUID: fuuid,
-            CHAMP_USER_ID: user_id,
-            CHAMP_CREATION: &now,
-        },
-        "$set": {
-            CHAMP_TUUID: tuuid,
-            CHAMP_MIMETYPE: mimetype,
-            CHAMP_FLAG_INDEX_ETAT: VIDEO_CONVERSION_ETAT_PENDING,
-            CHAMP_FLAG_INDEX_RETRY: 0,
-        },
-        "$currentDate": {
-            CHAMP_MODIFICATION: true,
-        }
-    };
-    let options = UpdateOptions::builder()
-        .upsert(true)
-        .build();
-    collection_jobs.update_one(filtre.clone(), ops_job, options).await?;
-
-    Ok(())
-}
+// // Set le flag indexe a true pour le fuuid (version)
+// pub async fn ajout_job_indexation<M,S,T,U,V>(middleware: &M, tuuid: T, fuuid: S, user_id: U, mimetype: V) -> Result<(), Box<dyn Error>>
+//     where
+//         M: MongoDao,
+//         S: AsRef<str>,
+//         T: AsRef<str>,
+//         U: AsRef<str>,
+//         V: AsRef<str>
+// {
+//     let tuuid = tuuid.as_ref();
+//     let fuuid = fuuid.as_ref();
+//     let user_id = user_id.as_ref();
+//     let mimetype = mimetype.as_ref();
+//
+//     let filtre = doc! { CHAMP_FUUID: fuuid, CHAMP_USER_ID: user_id };
+//     let ops = doc! {
+//         "$set": { CHAMP_FLAG_INDEX: true },
+//         "$currentDate": { CHAMP_MODIFICATION: true },
+//     };
+//
+//     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+//     match collection.update_one(filtre.clone(), ops, None).await {
+//         Ok(_) => (),
+//         Err(e) => Err(format!("traitement_index.set_flag_indexe Erreur {:?}", e))?
+//     }
+//
+//     // Supprimer job indexation
+//     let collection_jobs = middleware.get_collection(NOM_COLLECTION_INDEXATION_JOBS)?;
+//     let now = Utc::now();
+//     let ops_job = doc! {
+//         "$setOnInsert": {
+//             CHAMP_FUUID: fuuid,
+//             CHAMP_USER_ID: user_id,
+//             CHAMP_CREATION: &now,
+//         },
+//         "$set": {
+//             CHAMP_TUUID: tuuid,
+//             CHAMP_MIMETYPE: mimetype,
+//             CHAMP_FLAG_INDEX_ETAT: VIDEO_CONVERSION_ETAT_PENDING,
+//             CHAMP_FLAG_INDEX_RETRY: 0,
+//         },
+//         "$currentDate": {
+//             CHAMP_MODIFICATION: true,
+//         }
+//     };
+//     let options = UpdateOptions::builder()
+//         .upsert(true)
+//         .build();
+//     collection_jobs.update_one(filtre.clone(), ops_job, options).await?;
+//
+//     Ok(())
+// }
 
 /// Format de document pret a etre indexe
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -250,150 +251,150 @@ impl TryFrom<DBFichierVersionDetail> for DocumentIndexation {
 //
 // }
 
-pub async fn traiter_indexation_batch<M>(middleware: &M, limite: i64)
-    -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao
-{
-    debug!("traiter_indexation_batch limite {}", limite);
-
-    // let mut tuuids = Vec::new();
-    // let mut fuuids_media = Vec::new();
-    // let mut fuuids_retry_expire = Vec::new();
-
-    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    let collection_indexation = middleware.get_collection(NOM_COLLECTION_INDEXATION_JOBS)?;
-
-    // if reset == true {
-    //     // Reset les flags de traitement media de tous les fichiers
-    //     let ops = doc!{
-    //         "$set": { CHAMP_FLAG_INDEX: false },
-    //         "$unset": { CHAMP_FLAG_MEDIA_ERREUR: true },
-    //         "$currentDate": { CHAMP_MODIFICATION: true },
-    //     };
-    //     collection_versions.update_many(doc!{}, ops, None).await?;
-    // }
-
-    // Reset jobs indexation avec start_date expire
-    {
-        let filtre_start_expire = doc! {
-            CHAMP_FLAG_INDEX_ETAT: VIDEO_CONVERSION_ETAT_RUNNING,
-            CHAMP_INDEX_START: { "$lte": Utc::now() - Duration::seconds(300) },
-        };
-        let ops_expire = doc! {
-            "$set": { CHAMP_FLAG_INDEX_ETAT: VIDEO_CONVERSION_ETAT_PENDING },
-            "$unset": { CHAMP_INDEX_START: true },
-            "$currentDate": { CHAMP_MODIFICATION: true },
-        };
-        collection_indexation.update_many(filtre_start_expire, ops_expire, None).await?;
-    }
-
-    let mut curseur = {
-        let opts = FindOptions::builder()
-            // .hint(Hint::Name(String::from("flag_media_traite")))
-            .sort(doc! {CHAMP_FLAG_INDEX: 1, CHAMP_CREATION: 1})
-            .limit(limite)
-            .build();
-        let filtre = doc! { CHAMP_FLAG_INDEX: false };
-        debug!("traiter_indexation_batch filtre {:?}", filtre);
-        collection_versions.find(filtre, Some(opts)).await?
-    };
-    while let Some(d) = curseur.next().await {
-        let doc_version = d?;
-        let version_mappe: DBFichierVersionDetail = convertir_bson_deserializable(doc_version)?;
-
-        if version_mappe.tuuid.is_some() && version_mappe.fuuid.is_some() && version_mappe.user_id.is_some() {
-            let tuuid_ref = version_mappe.tuuid.as_ref().expect("tuuid_ref");
-            let fuuid_ref = version_mappe.fuuid.as_ref().expect("fuuid_ref");
-            let user_id = version_mappe.user_id.as_ref().expect("user_id");
-            let mimetype_ref = version_mappe.mimetype.as_str();
-
-            let filtre = doc!{CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref};
-
-            let job_existante: Option<JobIndexation> = match collection_indexation.find_one(filtre.clone(), None).await? {
-                Some(inner) => Some(convertir_bson_deserializable(inner)?),
-                None => None
-            };
-
-            if let Some(job) = job_existante {
-                if job.index_retry > MEDIA_RETRY_LIMIT {
-                    warn!("traiter_indexation_batch Expirer indexation sur document user_id {} tuuid {} : {} retries",
-                        user_id, tuuid_ref, job.index_retry);
-                    let ops = doc!{
-                        "$set": {
-                            CHAMP_FLAG_INDEX: true,
-                            CHAMP_FLAG_INDEX_ERREUR: ERREUR_MEDIA_TOOMANYRETRIES,
-                        }
-                    };
-                    collection_versions.update_one(filtre.clone(), ops, None).await?;
-                    collection_indexation.delete_one(filtre.clone(), None).await?;
-                    continue;
-                }
-            }
-
-            // Creer ou mettre a jour la job
-            let now = Utc::now();
-            let ops_job = doc! {
-                "$setOnInsert": {
-                    CHAMP_TUUID: tuuid_ref,
-                    CHAMP_FUUID: fuuid_ref,
-                    CHAMP_USER_ID: user_id,
-                    CHAMP_MIMETYPE: mimetype_ref,
-                    CHAMP_FLAG_INDEX_ETAT: VIDEO_CONVERSION_ETAT_PENDING,
-                    CHAMP_FLAG_INDEX_RETRY: 0,
-                    CHAMP_CREATION: &now,
-                    CHAMP_MODIFICATION: now,
-                }
-            };
-            let options = UpdateOptions::builder()
-                .upsert(true)
-                .build();
-            collection_indexation.update_one(filtre.clone(), ops_job, options).await?;
-        } else {
-            // Skip, mauvais fichier
-            warn!("traiter_indexation_batch Fichier sans tuuid, fuuid ou user_id - SKIP");
-        }
-    }
-
-    // if fuuids_retry_expire.len() > 0 {
-    //     // Desactiver apres trop d'echecs de retry
-    //     let filtre_retry = doc!{CHAMP_FUUID: {"$in": fuuids_retry_expire}};
-    //     let ops = doc!{
-    //         "$set": {
-    //             CHAMP_FLAG_INDEX: true,
-    //             CHAMP_FLAG_INDEX_ERREUR: ERREUR_MEDIA_TOOMANYRETRIES,
-    //         },
-    //         "$currentDate": {CHAMP_MODIFICATION: true},
-    //     };
-    //     collection_versions.update_many(filtre_retry, ops, None).await?;
-    //
-    //     // Maj le retry count
-    //     if fuuids_media.len() > 0 {
-    //         let filtre_retry = doc!{CHAMP_FUUID: {"$in": fuuids_media}};
-    //         let ops = doc!{
-    //             "$inc": {
-    //                 CHAMP_FLAG_MEDIA_RETRY: 1,
-    //             },
-    //             "$currentDate": {CHAMP_MODIFICATION: true},
-    //         };
-    //         collection_versions.update_many(filtre_retry, ops, None).await?;
-    //     }
-    // } else
-    // if reset == true {
-    //     // Reset les flags de traitement media
-    //     let filtre_retry = doc!{CHAMP_FUUID: {"$in": &fuuids_media}};
-    //     let ops = doc!{
-    //         "$set": {
-    //             CHAMP_FLAG_MEDIA_TRAITE: false,
-    //             CHAMP_FLAG_MEDIA_RETRY: 0,
-    //         },
-    //         "$unset": {CHAMP_FLAG_MEDIA_ERREUR: true},
-    //         "$currentDate": {CHAMP_MODIFICATION: true},
-    //     };
-    //     collection_versions.update_many(filtre_retry, ops, None).await?;
-    // }
-
-    Ok(())
-}
+// pub async fn traiter_indexation_batch<M>(middleware: &M, limite: i64)
+//     -> Result<(), Box<dyn Error>>
+//     where M: GenerateurMessages + MongoDao
+// {
+//     debug!("traiter_indexation_batch limite {}", limite);
+//
+//     // let mut tuuids = Vec::new();
+//     // let mut fuuids_media = Vec::new();
+//     // let mut fuuids_retry_expire = Vec::new();
+//
+//     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+//     let collection_indexation = middleware.get_collection(NOM_COLLECTION_INDEXATION_JOBS)?;
+//
+//     // if reset == true {
+//     //     // Reset les flags de traitement media de tous les fichiers
+//     //     let ops = doc!{
+//     //         "$set": { CHAMP_FLAG_INDEX: false },
+//     //         "$unset": { CHAMP_FLAG_MEDIA_ERREUR: true },
+//     //         "$currentDate": { CHAMP_MODIFICATION: true },
+//     //     };
+//     //     collection_versions.update_many(doc!{}, ops, None).await?;
+//     // }
+//
+//     // Reset jobs indexation avec start_date expire
+//     {
+//         let filtre_start_expire = doc! {
+//             CHAMP_FLAG_INDEX_ETAT: VIDEO_CONVERSION_ETAT_RUNNING,
+//             CHAMP_INDEX_START: { "$lte": Utc::now() - Duration::seconds(300) },
+//         };
+//         let ops_expire = doc! {
+//             "$set": { CHAMP_FLAG_INDEX_ETAT: VIDEO_CONVERSION_ETAT_PENDING },
+//             "$unset": { CHAMP_INDEX_START: true },
+//             "$currentDate": { CHAMP_MODIFICATION: true },
+//         };
+//         collection_indexation.update_many(filtre_start_expire, ops_expire, None).await?;
+//     }
+//
+//     let mut curseur = {
+//         let opts = FindOptions::builder()
+//             // .hint(Hint::Name(String::from("flag_media_traite")))
+//             .sort(doc! {CHAMP_FLAG_INDEX: 1, CHAMP_CREATION: 1})
+//             .limit(limite)
+//             .build();
+//         let filtre = doc! { CHAMP_FLAG_INDEX: false };
+//         debug!("traiter_indexation_batch filtre {:?}", filtre);
+//         collection_versions.find(filtre, Some(opts)).await?
+//     };
+//     while let Some(d) = curseur.next().await {
+//         let doc_version = d?;
+//         let version_mappe: DBFichierVersionDetail = convertir_bson_deserializable(doc_version)?;
+//
+//         if version_mappe.tuuid.is_some() && version_mappe.fuuid.is_some() && version_mappe.user_id.is_some() {
+//             let tuuid_ref = version_mappe.tuuid.as_ref().expect("tuuid_ref");
+//             let fuuid_ref = version_mappe.fuuid.as_ref().expect("fuuid_ref");
+//             let user_id = version_mappe.user_id.as_ref().expect("user_id");
+//             let mimetype_ref = version_mappe.mimetype.as_str();
+//
+//             let filtre = doc!{CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref};
+//
+//             let job_existante: Option<JobIndexation> = match collection_indexation.find_one(filtre.clone(), None).await? {
+//                 Some(inner) => Some(convertir_bson_deserializable(inner)?),
+//                 None => None
+//             };
+//
+//             if let Some(job) = job_existante {
+//                 if job.index_retry > MEDIA_RETRY_LIMIT {
+//                     warn!("traiter_indexation_batch Expirer indexation sur document user_id {} tuuid {} : {} retries",
+//                         user_id, tuuid_ref, job.index_retry);
+//                     let ops = doc!{
+//                         "$set": {
+//                             CHAMP_FLAG_INDEX: true,
+//                             CHAMP_FLAG_INDEX_ERREUR: ERREUR_MEDIA_TOOMANYRETRIES,
+//                         }
+//                     };
+//                     collection_versions.update_one(filtre.clone(), ops, None).await?;
+//                     collection_indexation.delete_one(filtre.clone(), None).await?;
+//                     continue;
+//                 }
+//             }
+//
+//             // Creer ou mettre a jour la job
+//             let now = Utc::now();
+//             let ops_job = doc! {
+//                 "$setOnInsert": {
+//                     CHAMP_TUUID: tuuid_ref,
+//                     CHAMP_FUUID: fuuid_ref,
+//                     CHAMP_USER_ID: user_id,
+//                     CHAMP_MIMETYPE: mimetype_ref,
+//                     CHAMP_FLAG_INDEX_ETAT: VIDEO_CONVERSION_ETAT_PENDING,
+//                     CHAMP_FLAG_INDEX_RETRY: 0,
+//                     CHAMP_CREATION: &now,
+//                     CHAMP_MODIFICATION: now,
+//                 }
+//             };
+//             let options = UpdateOptions::builder()
+//                 .upsert(true)
+//                 .build();
+//             collection_indexation.update_one(filtre.clone(), ops_job, options).await?;
+//         } else {
+//             // Skip, mauvais fichier
+//             warn!("traiter_indexation_batch Fichier sans tuuid, fuuid ou user_id - SKIP");
+//         }
+//     }
+//
+//     // if fuuids_retry_expire.len() > 0 {
+//     //     // Desactiver apres trop d'echecs de retry
+//     //     let filtre_retry = doc!{CHAMP_FUUID: {"$in": fuuids_retry_expire}};
+//     //     let ops = doc!{
+//     //         "$set": {
+//     //             CHAMP_FLAG_INDEX: true,
+//     //             CHAMP_FLAG_INDEX_ERREUR: ERREUR_MEDIA_TOOMANYRETRIES,
+//     //         },
+//     //         "$currentDate": {CHAMP_MODIFICATION: true},
+//     //     };
+//     //     collection_versions.update_many(filtre_retry, ops, None).await?;
+//     //
+//     //     // Maj le retry count
+//     //     if fuuids_media.len() > 0 {
+//     //         let filtre_retry = doc!{CHAMP_FUUID: {"$in": fuuids_media}};
+//     //         let ops = doc!{
+//     //             "$inc": {
+//     //                 CHAMP_FLAG_MEDIA_RETRY: 1,
+//     //             },
+//     //             "$currentDate": {CHAMP_MODIFICATION: true},
+//     //         };
+//     //         collection_versions.update_many(filtre_retry, ops, None).await?;
+//     //     }
+//     // } else
+//     // if reset == true {
+//     //     // Reset les flags de traitement media
+//     //     let filtre_retry = doc!{CHAMP_FUUID: {"$in": &fuuids_media}};
+//     //     let ops = doc!{
+//     //         "$set": {
+//     //             CHAMP_FLAG_MEDIA_TRAITE: false,
+//     //             CHAMP_FLAG_MEDIA_RETRY: 0,
+//     //         },
+//     //         "$unset": {CHAMP_FLAG_MEDIA_ERREUR: true},
+//     //         "$currentDate": {CHAMP_MODIFICATION: true},
+//     //     };
+//     //     collection_versions.update_many(filtre_retry, ops, None).await?;
+//     // }
+//
+//     Ok(())
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ParametresIndex {

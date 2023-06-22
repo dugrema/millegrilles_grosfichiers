@@ -25,7 +25,7 @@ use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenemen
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::verifier_acces_usager;
-use crate::traitement_index::ajout_job_indexation;
+use crate::traitement_jobs::JobHandler;
 use crate::traitement_media::emettre_commande_media;
 // use crate::traitement_index::emettre_commande_indexation;
 
@@ -94,7 +94,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_CHANGER_FAVORIS => transaction_changer_favoris(middleware, transaction).await,
         TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, transaction).await,
         TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, transaction).await,
-        TRANSACTION_DECRIRE_FICHIER => transaction_decire_fichier(middleware, transaction).await,
+        TRANSACTION_DECRIRE_FICHIER => transaction_decire_fichier(middleware, gestionnaire, transaction).await,
         TRANSACTION_DECRIRE_COLLECTION => transaction_decire_collection(middleware, transaction).await,
         TRANSACTION_COPIER_FICHIER_TIERS => transaction_copier_fichier_tiers(gestionnaire, middleware, transaction).await,
         TRANSACTION_FAVORIS_CREERPATH => transaction_favoris_creerpath(middleware, transaction).await,
@@ -417,9 +417,16 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         // }
 
         // Conserver information pour indexer le fichier
-        if let Err(e) = ajout_job_indexation(middleware, &tuuid, &fuuid, &user_id, &mimetype).await {
+        let mut parametres = HashMap::new();
+        parametres.insert("mimetype".to_string(), Bson::String(mimetype.clone()));
+        if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
+            middleware, &fuuid, &user_id, None,
+            None, Some(parametres), false).await {
             error!("transaction_nouvelle_version Erreur ajout_job_indexation : {:?}", e);
         }
+        // if let Err(e) = ajout_job_indexation(middleware, &tuuid, &fuuid, &user_id, &mimetype).await {
+        //     error!("transaction_nouvelle_version Erreur ajout_job_indexation : {:?}", e);
+        // }
 
         // Emettre fichier pour que tous les clients recoivent la mise a jour
         emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
@@ -1293,7 +1300,7 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
     middleware.reponse_ok()
 }
 
-async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+async fn transaction_decire_fichier<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
         M: GenerateurMessages + MongoDao,
         T: Transaction
@@ -1380,9 +1387,17 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, transaction: T) -> Res
                     if let Some(user_id) = inner.user_id {
                         if let Some(fuuid) = inner.fuuid_v_courante {
                             if let Some(mimetype) = inner.mimetype {
-                                if let Err(e) = ajout_job_indexation(middleware, tuuid, fuuid, user_id, mimetype).await {
+                                let mut champs_cles = HashMap::new();
+                                champs_cles.insert("tuuid".to_string(), tuuid.to_string());
+                                champs_cles.insert("mimetype".to_string(), mimetype.to_string());
+                                if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
+                                    middleware, fuuid, user_id, None,
+                                    Some(champs_cles), None, false).await {
                                     error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
                                 }
+                                // if let Err(e) = ajout_job_indexation(middleware, tuuid, fuuid, user_id, mimetype).await {
+                                //     error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
+                                // }
                             }
                         }
                     }
