@@ -28,6 +28,7 @@ use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenemen
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{mapper_fichier_db, verifier_acces_usager};
 use crate::traitement_index::{commande_indexation_get_job, reset_flag_indexe, set_flag_indexe};
+use crate::traitement_jobs::{JobHandler, ParametresConfirmerJob};
 use crate::traitement_media::{commande_supprimer_job_video, emettre_commande_media, traiter_media_batch};
 use crate::transactions::*;
 
@@ -891,7 +892,7 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAc
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_confirmer_fichier_indexe Consommer commande : {:?}", & m.message);
-    let commande: CommandeConfirmerFichierIndexe = m.message.get_msg().map_contenu()?;
+    let commande: ParametresConfirmerJob = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_confirmer_fichier_indexe parsed : {:?}", commande);
 
     // Autorisation : doit etre un message provenant d'un composant protege
@@ -900,17 +901,21 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAc
         false => Err(format!("commandes.commande_completer_previews: Commande autorisation invalide pour message {:?}", m.correlation_id)),
     }?;
 
-    set_flag_indexe(middleware, &commande.fuuid, &commande.user_id).await?;
-
     // Traiter la commande
+    if let Err(e) = gestionnaire.indexation_job_handler.set_flag(
+        middleware, commande.fuuid, commande.user_id, None, true).await {
+        error!("commande_confirmer_fichier_indexe Erreur traitement flag : {:?}", e);
+    }
+    // set_flag_indexe(middleware, &commande.fuuid, &commande.user_id).await?;
+
     Ok(None)
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct CommandeConfirmerFichierIndexe {
-    fuuid: String,
-    user_id: String,
-}
+// #[derive(Clone, Debug, Deserialize)]
+// struct CommandeConfirmerFichierIndexe {
+//     fuuid: String,
+//     user_id: String,
+// }
 
 /// Commande qui indique la creation _en cours_ d'un nouveau fichier. Permet de creer un
 /// placeholder a l'ecran en attendant le traitement du fichier.

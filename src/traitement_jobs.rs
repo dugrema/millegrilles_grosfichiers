@@ -4,22 +4,26 @@ use std::time::Duration as std_Duration;
 use log::{debug, error, warn};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{Bson, DateTime, doc};
-use millegrilles_common_rust::chiffrage_cle::InformationCle;
+use millegrilles_common_rust::certificats::EnveloppeCertificat;
+use millegrilles_common_rust::chiffrage_cle::{InformationCle, ReponseDechiffrageCles};
 use millegrilles_common_rust::chrono::{Duration, Utc};
-use millegrilles_common_rust::common_messages::DataChiffre;
+use millegrilles_common_rust::common_messages::RequeteDechiffrage;
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
-use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, ReturnDocument, UpdateOptions};
+use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::serde_json::{json, Value};
 use millegrilles_common_rust::tokio::time::sleep;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::grosfichiers_constantes::*;
+use crate::transactions::DataChiffre;
 
-const CONST_MAX_RETRY: i64 = 5;
+const CONST_MAX_RETRY: i32 = 3;
 const CONST_LIMITE_BATCH: i64 = 1_000;
 const CONST_EXPIRATION_SECS: i64 = 300;
 const CONST_INTERVALLE_ENTRETIEN: u64 = 60;
@@ -100,9 +104,13 @@ pub trait JobHandler: Clone + Sized + Sync {
     }
 
     /// Set le flag de traitement complete
-    async fn set_flag<M,S,U>(&self, middleware: &M, fuuid: S, user_id: U, valeur: bool) -> Result<(), Box<dyn Error>>
+    async fn set_flag<M,S,U>(
+        &self, middleware: &M, fuuid: S, user_id: U,
+        cles_supplementaires: Option<HashMap<String, String>>,
+        valeur: bool
+    ) -> Result<(), Box<dyn Error>>
     where M: MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send {
-        set_flag(middleware, self, fuuid, user_id, valeur).await
+        set_flag(middleware, self, fuuid, user_id, cles_supplementaires, valeur).await
     }
 
     /// Doit etre invoque regulierement pour generer nouvelles jobs, expirer vieilles, etc.
@@ -123,6 +131,13 @@ pub trait JobHandler: Clone + Sized + Sync {
 
         /// Emettre des triggers au besoin.
         self.emettre_evenements_job(middleware).await;
+    }
+
+    async fn get_prochaine_job<M>(&self, middleware: &M, certificat: &EnveloppeCertificat, commande: CommandeGetJob)
+        -> Result<ReponseJob, Box<dyn Error>>
+        where M: GenerateurMessages + MongoDao
+    {
+        get_prochaine_job(middleware, self.get_nom_collection(), certificat, commande).await
     }
 }
 
@@ -159,16 +174,26 @@ pub async fn trouver_jobs_instances<J,M>(middleware: &M, job_handler: &J)
     }
 }
 
-async fn set_flag<M,J,S,U>(middleware: &M, job_handler: &J, fuuid: S, user_id: U, valeur: bool) -> Result<(), Box<dyn Error>>
+async fn set_flag<M,J,S,U>(
+    middleware: &M, job_handler: &J, fuuid: S, user_id: U,
+    cles_supplementaires: Option<HashMap<String, String>>,
+    valeur: bool
+) -> Result<(), Box<dyn Error>>
     where M: MongoDao, J: JobHandler, S: AsRef<str> + Send, U: AsRef<str> + Send
 {
     let fuuid = fuuid.as_ref();
     let user_id = user_id.as_ref();
 
-    let filtre = doc!{
+    let mut filtre = doc!{
         CHAMP_USER_ID: user_id,
         CHAMP_FUUID: fuuid,
     };
+
+    if let Some(inner) = cles_supplementaires {
+        for (k, v) in inner.into_iter() {
+            filtre.insert(k, v);
+        }
+    }
 
     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
 
@@ -227,6 +252,7 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
         let filtre_start_expire = doc! {
             CHAMP_ETAT: VIDEO_CONVERSION_ETAT_RUNNING,
             CONST_CHAMP_DATE_MAJ: { "$lte": Utc::now() - Duration::seconds(CONST_EXPIRATION_SECS) },
+            // CONST_CHAMP_RETRY: { "$lt": CONST_MAX_RETRY },
         };
         let ops_expire = doc! {
             "$set": { CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING },
@@ -276,7 +302,7 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
         };
 
         if let Some(job) = job_existante {
-            if job.retry > MEDIA_RETRY_LIMIT {
+            if job.retry > CONST_MAX_RETRY {
                 warn!("traiter_indexation_batch Expirer indexation sur document user_id {} tuuid {} : {} retries",
                     user_id, tuuid_ref, job.retry);
                 let ops = doc!{
@@ -351,7 +377,6 @@ pub async fn sauvegarder_job<M,J,S,U,V>(
         "$addToSet": { CHAMP_INSTANCES: instance },
         "$currentDate": {
             CHAMP_MODIFICATION: true,
-            CONST_CHAMP_DATE_MAJ: true,
         }
     };
     let options = UpdateOptions::builder()
@@ -364,6 +389,8 @@ pub async fn sauvegarder_job<M,J,S,U,V>(
     Ok(())
 }
 
+pub struct CommandeGetJob {}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct BackgroundJob {
     pub tuuid: String,
@@ -374,15 +401,273 @@ pub struct BackgroundJob {
     pub date_modification: Value,
     pub date_maj: Option<DateTime>,
     pub retry: i32,
+    #[serde(flatten)]
+    pub champs_optionnels: HashMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReponseJob {
     pub ok: bool,
-    pub tuuid: String,
+    pub err: Option<String>,
+    pub tuuid: Option<String>,
+    pub fuuid: Option<String>,
+    pub user_id: Option<String>,
+    pub mimetype: Option<String>,
+    pub metadata: Option<DataChiffre>,
+    pub cle: Option<InformationCle>,
+
+    // Champs video
+    pub cle_conversion: Option<String>,
+    #[serde(rename="codecVideo")]
+    pub codec_video: Option<String>,
+    #[serde(rename="codecAudio")]
+    pub codec_audio: Option<String>,
+    #[serde(rename="resolutionVideo")]
+    pub resolution_video: Option<u32>,
+    #[serde(rename="qualityVideo")]
+    pub quality_video: Option<i32>,
+    #[serde(rename="bitrateVideo")]
+    pub bitrate_video: Option<u32>,
+    #[serde(rename="bitrateAudio")]
+    pub bitrate_audio: Option<u32>,
+    pub preset: Option<String>,
+}
+
+impl From<&str> for ReponseJob {
+    fn from(value: &str) -> Self {
+        Self {
+            ok: false,
+            err: Some(value.to_string()),
+            tuuid: None,
+            fuuid: None,
+            user_id: None,
+            mimetype: None,
+            metadata: None,
+            cle: None,
+            cle_conversion: None,
+            codec_video: None,
+            codec_audio: None,
+            resolution_video: None,
+            quality_video: None,
+            bitrate_video: None,
+            bitrate_audio: None,
+            preset: None,
+        }
+    }
+}
+
+impl From<BackgroundJob> for ReponseJob {
+    fn from(value: BackgroundJob) -> Self {
+
+        // String params
+        let mimetype = match value.champs_optionnels.get("mimetype") {
+            Some(inner) => Some(inner.to_string()),
+            None => None
+        };
+        let cle_conversion = match value.champs_optionnels.get("cle_conversion") {
+            Some(inner) => Some(inner.to_string()),
+            None => None
+        };
+        let codec_video = match value.champs_optionnels.get("codec_video") {
+            Some(inner) => Some(inner.to_string()),
+            None => None
+        };
+        let codec_audio = match value.champs_optionnels.get("codec_audio") {
+            Some(inner) => Some(inner.to_string()),
+            None => None
+        };
+        let preset = match value.champs_optionnels.get("preset") {
+            Some(inner) => Some(inner.to_string()),
+            None => None
+        };
+
+        // u32 params
+        let resolution_video = match value.champs_optionnels.get("resolution_video") {
+            Some(inner) => match inner.as_i64() {
+                Some(inner) => Some(inner as u32),
+                None => None
+            },
+            None => None
+        };
+        let quality_video = match value.champs_optionnels.get("quality_video") {
+            Some(inner) => match inner.as_i64() {
+                Some(inner) => Some(inner as i32),
+                None => None
+            },
+            None => None
+        };
+        let bitrate_video = match value.champs_optionnels.get("bitrate_video") {
+            Some(inner) => match inner.as_i64() {
+                Some(inner) => Some(inner as u32),
+                None => None
+            },
+            None => None
+        };
+        let bitrate_audio = match value.champs_optionnels.get("bitrate_audio") {
+            Some(inner) => match inner.as_i64() {
+                Some(inner) => Some(inner as u32),
+                None => None
+            },
+            None => None
+        };
+
+        Self {
+            ok: true,
+            err: None,
+            tuuid: Some(value.tuuid),
+            fuuid: Some(value.fuuid),
+            user_id: Some(value.user_id),
+            mimetype,
+            metadata: None,
+            cle: None,
+            cle_conversion,
+            codec_video,
+            codec_audio,
+            resolution_video,
+            quality_video,
+            bitrate_video,
+            bitrate_audio,
+            preset,
+        }
+    }
+}
+
+pub async fn get_prochaine_job<M,S>(middleware: &M, nom_collection: S, certificat: &EnveloppeCertificat, commande: CommandeGetJob)
+    -> Result<ReponseJob, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send
+{
+    let nom_collection = nom_collection.as_ref();
+    debug!("commande_get_job Get pour {}", nom_collection);
+    let prochaine_job = trouver_prochaine_job_indexation(middleware, nom_collection).await?;
+
+    debug!("commande_get_job Prochaine job : {:?}", prochaine_job);
+
+    match prochaine_job {
+        Some(job) => {
+            // Recuperer les metadonnees
+            let fichier_detail: FichierDetail = {
+                let mut filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: &job.tuuid };
+                debug!("commande_get_job Chargement job pour fichier {:?}", filtre);
+                let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+                if let Some(inner) = collection.find_one(filtre, None).await? {
+                    convertir_bson_deserializable(inner)?
+                } else {
+                    Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document inexistant user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+                }
+            };
+
+            let metadata = match fichier_detail.metadata {
+                Some(inner) => inner,
+                None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans metadata (1) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+            };
+            // let metadata = match fichier_detail.version_courante {
+            //     Some(inner) => match inner.metadata {
+            //         Some(inner) => inner,
+            //         None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans metadata (1) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+            //     },
+            //     None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans version_courante (2) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+            // };
+
+            let mimetype = match fichier_detail.mimetype.as_ref() {
+                Some(inner) => inner.as_str(),
+                None => "application/octet-stream"
+            };
+
+            // Recuperer la cle de dechiffrage du fichier
+            let cle = get_cle_job_indexation(
+                middleware, job.fuuid.as_str(), certificat).await?;
+
+            let mut reponse_job = ReponseJob::from(job);
+            reponse_job.metadata = Some(metadata);
+            reponse_job.mimetype = Some(mimetype.to_string());
+            reponse_job.cle = Some(cle);
+            debug!("Reponse job : {:?}", reponse_job);
+
+            Ok(reponse_job)
+        },
+        None => Ok(ReponseJob::from("Aucun fichier a indexer"))
+    }
+}
+
+pub async fn trouver_prochaine_job_indexation<M,S>(middleware: &M, nom_collection: S)
+    -> Result<Option<BackgroundJob>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send
+{
+    let collection = middleware.get_collection(nom_collection.as_ref())?;
+
+    let job: Option<BackgroundJob> = {
+        // Tenter de trouver la prochaine job disponible
+        let filtre = doc! {CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING};
+        //let hint = Some(Hint::Name("etat_jobs".into()));
+        let options = FindOneAndUpdateOptions::builder()
+            //.hint(hint)
+            .return_document(ReturnDocument::Before)
+            .build();
+        let ops = doc! {
+            "$set": {CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING},
+            "$inc": {CONST_CHAMP_RETRY: 1},
+            "$currentDate": {CHAMP_MODIFICATION: true, CONST_CHAMP_DATE_MAJ: true}
+        };
+        match collection.find_one_and_update(filtre, ops, options).await? {
+            Some(d) => {
+                debug!("trouver_prochaine_job_indexation (1) Charger job : {:?}", d);
+                Some(convertir_bson_deserializable(d)?)
+            },
+            None => None
+        }
+    };
+
+    Ok(job)
+}
+
+pub async fn get_cle_job_indexation<M,S>(middleware: &M, fuuid: S, certificat: &EnveloppeCertificat)
+    -> Result<InformationCle, Box<dyn Error>>
+    where
+        M: GenerateurMessages + MongoDao,
+        S: AsRef<str>
+{
+    let fuuid = fuuid.as_ref();
+
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE)
+        .exchanges(vec![Securite::L4Secure])
+        .build();
+
+    // Utiliser certificat du message client (requete) pour demande de rechiffrage
+    let pem_rechiffrage: Vec<String> = {
+        let fp_certs = certificat.get_pem_vec();
+        fp_certs.into_iter().map(|cert| cert.pem).collect()
+    };
+
+    let permission = RequeteDechiffrage {
+        domaine: DOMAINE_NOM.to_string(),
+        liste_hachage_bytes: vec![fuuid.to_string()],
+        certificat_rechiffrage: Some(pem_rechiffrage),
+    };
+
+    debug!("get_cle_job_indexation Transmettre requete permission dechiffrage cle : {:?}", permission);
+    let cle = if let TypeMessage::Valide(reponse) = middleware.transmettre_requete(routage, &permission).await? {
+        let reponse: ReponseDechiffrageCles = reponse.message.parsed.map_contenu()?;
+        if reponse.acces.as_str() != "1.permis" {
+            Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : acces refuse ({}) a cle {}", reponse.acces, fuuid))?
+        }
+
+        match reponse.cles {
+            Some(mut inner) => match inner.remove(fuuid) {
+                Some(inner) => inner,
+                None => Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : cle non recue pour {}", fuuid))?
+            },
+            None => Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : cles vides pour {}", fuuid))?
+        }
+    } else {
+        Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : mauvais type message recu"))?
+    };
+
+    Ok(cle)
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ParametresConfirmerJob {
     pub fuuid: String,
     pub user_id: String,
-    pub mimetype: String,
-    pub metadata: DataChiffre,
-    pub cle: InformationCle,
+    pub cle_conversion: Option<String>,
 }

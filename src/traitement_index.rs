@@ -27,7 +27,7 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
-use crate::traitement_jobs::JobHandler;
+use crate::traitement_jobs::{CommandeGetJob, get_prochaine_job, JobHandler};
 
 const EVENEMENT_INDEXATION_DISPONIBLE: &str = "jobIndexationDisponible";
 
@@ -537,56 +537,63 @@ pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValideActi
         None => Err(format!("commandes.commande_indexation_get_job Certificat absent du message"))?
     };
 
-    let prochaine_job = trouver_prochaine_job_indexation(middleware).await?;
+    let commande_get_job = CommandeGetJob {};
+    let reponse_prochaine_job = gestionnaire.indexation_job_handler.get_prochaine_job(
+        middleware, certificat.as_ref(), commande_get_job).await?;
 
-    debug!("commande_video_get_job Prochaine job : {:?}", prochaine_job);
+    debug!("commande_video_get_job Prochaine job : {:?}", reponse_prochaine_job);
+    Ok(Some(middleware.formatter_reponse(reponse_prochaine_job, None)?))
 
-    match prochaine_job {
-        Some(job) => {
-
-            // Recuperer les metadonnees
-            let fichier_detail: FichierDetail = {
-                let mut filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: &job.tuuid };
-                let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-                if let Some(inner) = collection.find_one(filtre, None).await? {
-                    convertir_bson_deserializable(inner)?
-                } else {
-                    Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document inexistant user_id:{} tuuid:{}", job.user_id, job.tuuid))?
-                }
-            };
-
-            let metadata = match fichier_detail.version_courante {
-                Some(inner) => match inner.metadata {
-                    Some(inner) => inner,
-                    None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans metadata (1) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
-                },
-                None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans metadata (2) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
-            };
-
-            let mimetype = match fichier_detail.mimetype.as_ref() {
-                Some(inner) => inner.as_str(),
-                None => "application/octet-stream"
-            };
-
-            // Recuperer la cle de dechiffrage du fichier
-            let cle = get_cle_job_indexation(
-                middleware, job.fuuid.as_str(), certificat.as_ref()).await?;
-
-            let reponse_job = ReponseJobIndexation {
-                ok: true,
-                tuuid: job.tuuid,
-                fuuid: job.fuuid,
-                user_id: job.user_id,
-                mimetype: mimetype.to_string(),
-                metadata,
-                cle,
-            };
-            debug!("Reponse job : {:?}", reponse_job);
-
-            Ok(Some(middleware.formatter_reponse(reponse_job, None)?))
-        },
-        None => Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Aucun fichier a indexer"}), None)?))
-    }
+    // let prochaine_job = trouver_prochaine_job_indexation(middleware).await?;
+    //
+    // debug!("commande_video_get_job Prochaine job : {:?}", prochaine_job);
+    //
+    // match prochaine_job {
+    //     Some(job) => {
+    //
+    //         // Recuperer les metadonnees
+    //         let fichier_detail: FichierDetail = {
+    //             let mut filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: &job.tuuid };
+    //             let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    //             if let Some(inner) = collection.find_one(filtre, None).await? {
+    //                 convertir_bson_deserializable(inner)?
+    //             } else {
+    //                 Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document inexistant user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+    //             }
+    //         };
+    //
+    //         let metadata = match fichier_detail.version_courante {
+    //             Some(inner) => match inner.metadata {
+    //                 Some(inner) => inner,
+    //                 None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans metadata (1) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+    //             },
+    //             None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans metadata (2) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+    //         };
+    //
+    //         let mimetype = match fichier_detail.mimetype.as_ref() {
+    //             Some(inner) => inner.as_str(),
+    //             None => "application/octet-stream"
+    //         };
+    //
+    //         // Recuperer la cle de dechiffrage du fichier
+    //         let cle = get_cle_job_indexation(
+    //             middleware, job.fuuid.as_str(), certificat.as_ref()).await?;
+    //
+    //         let reponse_job = ReponseJobIndexation {
+    //             ok: true,
+    //             tuuid: job.tuuid,
+    //             fuuid: job.fuuid,
+    //             user_id: job.user_id,
+    //             mimetype: mimetype.to_string(),
+    //             metadata,
+    //             cle,
+    //         };
+    //         debug!("Reponse job : {:?}", reponse_job);
+    //
+    //         Ok(Some(middleware.formatter_reponse(reponse_job, None)?))
+    //     },
+    //     None => Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Aucun fichier a indexer"}), None)?))
+    // }
 }
 
 pub async fn trouver_prochaine_job_indexation<M>(middleware: &M)

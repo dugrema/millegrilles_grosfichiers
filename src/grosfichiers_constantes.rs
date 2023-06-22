@@ -366,3 +366,4 @@ pub struct ReponseJobIndexation {
     pub metadata: DataChiffre,
     pub cle: InformationCle,
 }
+
