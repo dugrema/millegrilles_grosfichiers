@@ -23,6 +23,8 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
+use crate::traitement_index::IndexationJobHandler;
+use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
 // use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl};
 
 const DUREE_ATTENTE: u64 = 20000;
@@ -32,7 +34,6 @@ const DUREE_ATTENTE: u64 = 20000;
 static mut GESTIONNAIRE: TypeGestionnaire = TypeGestionnaire::None;
 
 /// Enum pour distinger les types de gestionnaires.
-#[derive(Clone, Debug)]
 enum TypeGestionnaire {
     PartitionConsignation(Arc<GestionnaireGrosFichiers>),
     None
@@ -63,10 +64,16 @@ fn charger_gestionnaire() -> &'static TypeGestionnaire {
 
     // Index dao
     // let index_dao = Arc::new(ElasticSearchDaoImpl::new(elastic_search_url.as_str()).expect("index"));
+    let image_job_handler = ImageJobHandler {};
+    let video_job_handler = VideoJobHandler {};
+    let indexation_job_handler = IndexationJobHandler {};
+
+    let gestionnaire = Arc::new(GestionnaireGrosFichiers {
+        image_job_handler, video_job_handler, indexation_job_handler });
 
     // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
     unsafe {
-        GESTIONNAIRE = TypeGestionnaire::PartitionConsignation(Arc::new(GestionnaireGrosFichiers {}));
+        GESTIONNAIRE = TypeGestionnaire::PartitionConsignation(gestionnaire);
 
         // let mut vec_gestionnaires = Vec::new();
         // vec_gestionnaires.extend(&GESTIONNAIRES);

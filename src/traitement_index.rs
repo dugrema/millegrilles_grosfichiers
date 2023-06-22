@@ -27,6 +27,22 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
+use crate::traitement_jobs::JobHandler;
+
+#[derive(Clone, Debug)]
+pub struct IndexationJobHandler {}
+
+#[async_trait]
+impl JobHandler for IndexationJobHandler {
+
+    fn get_nom_collection(&self) -> &str { NOM_COLLECTION_INDEXATION_JOBS }
+
+    fn get_nom_flag(&self) -> &str { CHAMP_FLAG_INDEX }
+
+    async fn emettre_trigger<I>(&self, instance: I) -> Result<(), Box<dyn Error>> where I: AsRef<str> + Send {
+        todo!()
+    }
+}
 
 // Set le flag indexe a true pour le fuuid (version)
 pub async fn set_flag_indexe<M,S,T>(middleware: &M, fuuid: S, user_id: T) -> Result<(), Box<dyn Error>>

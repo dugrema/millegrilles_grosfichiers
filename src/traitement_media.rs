@@ -1,15 +1,18 @@
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::error::Error;
+use std::sync::Arc;
 
 use log::{debug, error, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
+use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{Bson, doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
@@ -20,12 +23,77 @@ use crate::grosfichiers::GestionnaireGrosFichiers;
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::mapper_fichier_db;
+use crate::traitement_jobs::{JobHandler, sauvegarder_job};
 
 const EVENEMENT_IMAGE_DISPONIBLE: &str = "jobImageDisponible";
 const ACTION_GENERER_POSTER_IMAGE: &str = "genererPosterImage";
 const ACTION_GENERER_POSTER_PDF: &str = "genererPosterPdf";
 const ACTION_GENERER_POSTER_VIDEO: &str = "genererPosterVideo";
 const ACTION_TRANSCODER_VIDEO: &str = "transcoderVideo";
+
+#[derive(Clone, Debug)]
+pub struct ImageJobHandler {}
+
+#[async_trait]
+impl JobHandler for ImageJobHandler {
+
+    fn get_nom_collection(&self) -> &str { NOM_COLLECTION_IMAGES_JOBS }
+
+    fn get_nom_flag(&self) -> &str { CHAMP_FLAG_MEDIA_TRAITE }
+
+    async fn emettre_trigger<I>(&self, instance: I) -> Result<(), Box<dyn Error>> where I: AsRef<str> + Send {
+        todo!()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct VideoJobHandler {}
+
+#[async_trait]
+impl JobHandler for VideoJobHandler {
+
+    fn get_nom_collection(&self) -> &str { NOM_COLLECTION_VIDEO_JOBS }
+
+    fn get_nom_flag(&self) -> &str { CHAMP_FLAG_VIDEO_TRAITE }
+
+    async fn emettre_trigger<I>(&self, instance: I) -> Result<(), Box<dyn Error>> where I: AsRef<str> + Send {
+        todo!()
+    }
+
+    async fn sauvegarder_job<M, S, U, V>(
+        &self, middleware: &M, fuuid: S, user_id: U, instance: V,
+        mut champs_cles: HashMap<String, String>,
+        parametres: Option<HashMap<String, Bson>>
+    )
+        -> Result<(), Box<dyn Error>>
+        where M: MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send, V: AsRef<str> + Send
+    {
+        // Ajouter cle de conversion
+        champs_cles.insert("cle_conversion".to_string(), "video/mp4;h264;270p;28".to_string());
+
+        // S'assurer d'avoir des parametres - ajouter au besoin. Ne fait pas d'override de job existante.
+        let parametres = match parametres {
+            Some(parametres) => parametres,
+            None => {
+                // Ajouter params de la job 270p
+                let mut parametres = HashMap::new();
+
+                parametres.insert("bitrateAudio".to_string(), Bson::Int64(64000));
+                parametres.insert("bitrateVideo".to_string(), Bson::Int64(250000));
+                parametres.insert("qualityVideo".to_string(), Bson::Int64(28));
+                parametres.insert("resolutionVideo".to_string(), Bson::Int64(270));
+                parametres.insert("codecAudio".to_string(), Bson::String("aac".to_string()));
+                parametres.insert("codecVideo".to_string(), Bson::String("h264".to_string()));
+                parametres.insert("preset".to_string(), Bson::String("medium".to_string()));
+
+                parametres
+            }
+        };
+
+
+        sauvegarder_job(middleware, self, fuuid, user_id, instance, champs_cles, Some(parametres)).await
+    }
+}
 
 pub async fn emettre_commande_media<M, S, T, U>(middleware: &M, tuuid: U, fuuid: S, mimetype: T, skip_video: bool)
     -> Result<(), String>

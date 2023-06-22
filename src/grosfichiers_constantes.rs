@@ -13,9 +13,9 @@ pub const NOM_COLLECTION_TRANSACTIONS: &str = "GrosFichiers";
 pub const NOM_COLLECTION_FICHIERS_REP: &str = "GrosFichiers/fichiersRep";
 pub const NOM_COLLECTION_VERSIONS: &str = "GrosFichiers/versionsFichiers";
 pub const NOM_COLLECTION_DOCUMENTS: &str = "GrosFichiers/documents";
-pub const NOM_COLLECTION_IMAGES_JOBS: &str = "GrosFichiers/imagesJobs";
-pub const NOM_COLLECTION_VIDEO_JOBS: &str = "GrosFichiers/videoJobs";
-pub const NOM_COLLECTION_INDEXATION_JOBS: &str = "GrosFichiers/indexationJobs";
+pub const NOM_COLLECTION_IMAGES_JOBS: &str = "GrosFichiers/jobs/images";
+pub const NOM_COLLECTION_VIDEO_JOBS: &str = "GrosFichiers/jobs/video";
+pub const NOM_COLLECTION_INDEXATION_JOBS: &str = "GrosFichiers/jobs/indexation";
 
 pub const DOMAINE_FICHIERS_NOM: &str = "fichiers";
 pub const DOMAINE_MEDIA_NOM: &str = "media";

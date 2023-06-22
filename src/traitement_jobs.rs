@@ -3,12 +3,13 @@ use std::error::Error;
 use std::time::Duration as std_Duration;
 use log::{debug, error, warn};
 use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{DateTime, doc};
+use millegrilles_common_rust::bson::{Bson, DateTime, doc};
 use millegrilles_common_rust::chiffrage_cle::InformationCle;
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::common_messages::DataChiffre;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, UpdateOptions};
 use millegrilles_common_rust::serde_json::Value;
@@ -29,7 +30,7 @@ const CHAMP_ETAT: &str = "etat";
 const CHAMP_INSTANCES: &str = "instances";
 
 #[async_trait]
-pub trait JobHandler: MongoDao + GenerateurMessages + Sized {
+pub trait JobHandler: Clone + Sized + Sync {
     /// Nom de la collection ou se trouvent les jobs
     fn get_nom_collection(&self) -> &str;
 
@@ -38,8 +39,10 @@ pub trait JobHandler: MongoDao + GenerateurMessages + Sized {
 
     /// Emettre un evenement de job disponible.
     /// 1 evenement emis pour chaque instance avec au moins 1 job de disponible.
-    async fn emettre_evenements_job(&self) -> Result<(), Box<dyn Error>> {
-        let visites = trouver_jobs_instances(self).await?;
+    async fn emettre_evenements_job<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
+        where M: MongoDao
+    {
+        let visites = trouver_jobs_instances(middleware, self).await?;
         if let Some(visites) = visites {
             for instance in visites {
                 self.emettre_trigger(instance).await?;
@@ -52,41 +55,37 @@ pub trait JobHandler: MongoDao + GenerateurMessages + Sized {
     async fn emettre_trigger<I>(&self, instance: I) -> Result<(), Box<dyn Error>>
     where I: AsRef<str> + Send;
 
-    async fn sauvegarder_job<Q,S,T,U,V>(&self, tuuid: Q, fuuid: S, user_id: U, mimetype: T,  instance: V)
+    async fn sauvegarder_job<M,S,U,V>(
+        &self, middleware: &M, fuuid: S, user_id: U, instance: V,
+        champs_cles: HashMap<String, String>,
+        parametres: Option<HashMap<String, Bson>>
+    )
         -> Result<(), Box<dyn Error>>
-        where Q: AsRef<str> + Send, S: AsRef<str> + Send, T: AsRef<str> + Send, U: AsRef<str> + Send, V: AsRef<str> + Send
+        where M: MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send, V: AsRef<str> + Send
     {
-        sauvegarder_job(self, tuuid, fuuid, user_id, mimetype, instance).await
+        sauvegarder_job(middleware, self, fuuid, user_id, instance, champs_cles, parametres).await
     }
 
     /// Set le flag de traitement complete
-    async fn set_flag<S,U>(&self, fuuid: S, user_id: U, valeur: bool) -> Result<(), Box<dyn Error>>
-    where S: AsRef<str> + Send, U: AsRef<str> + Send {
-        set_flag(self, fuuid, user_id, valeur).await
+    async fn set_flag<M,S,U>(&self, middleware: &M, fuuid: S, user_id: U, valeur: bool) -> Result<(), Box<dyn Error>>
+    where M: MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send {
+        set_flag(middleware, self, fuuid, user_id, valeur).await
     }
 
-    async fn entretien_loop(&self, limite_batch: Option<i64>, delai_entretien: Option<u64>) {
+    /// Doit etre invoque regulierement pour generer nouvelles jobs, expirer vieilles, etc.
+    async fn entretien<M>(&self, middleware: &M, limite_batch: Option<i64>)
+        where M: MongoDao
+    {
+        debug!("entretien Cycle entretien JobHandler {}", self.get_nom_flag());
 
         let limite_batch = match limite_batch {
             Some(inner) => inner,
             None => CONST_LIMITE_BATCH
         };
 
-        let delai_entretien = match delai_entretien {
-            Some(inner) => inner,
-            None => CONST_INTERVALLE_ENTRETIEN
-        };
-
-        loop {
-
-            // Note : retirer jobs avec trop de retires fait au travers de ajouts_jobs_manquantes
-            if let Err(e) = entretien_jobs(self, limite_batch).await {
-                error!("traitement_jobs.JobHandler.entretien {} Erreur sur ajouter_jobs_manquantes : {:?}", self.get_nom_flag(), e);
-            }
-
-            sleep(std_Duration::new(delai_entretien, 0)).await;
-            debug!("entretien Cycle entretien JobHandler {}", self.get_nom_flag());
-
+        // Note : retirer jobs avec trop de retires fait au travers de ajouts_jobs_manquantes
+        if let Err(e) = entretien_jobs(middleware, self, limite_batch).await {
+            error!("traitement_jobs.JobHandler.entretien {} Erreur sur ajouter_jobs_manquantes : {:?}", self.get_nom_flag(), e);
         }
     }
 }
@@ -97,15 +96,16 @@ struct DocJob {
 }
 
 /// Emet un trigger media image si au moins une job media est due.
-pub async fn trouver_jobs_instances<M>(job_handler: &M) -> Result<Option<Vec<String>>, Box<dyn Error>>
-    where M: JobHandler
+pub async fn trouver_jobs_instances<J,M>(middleware: &M, job_handler: &J)
+    -> Result<Option<Vec<String>>, Box<dyn Error>>
+    where M: MongoDao, J: JobHandler
 {
     let doc_job: Option<DocJob> = {
         let mut filtre = doc! {
             CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING
         };
         let options = FindOneOptions::builder().projection(doc! {"instances": true}).build();
-        let collection = job_handler.get_collection(job_handler.get_nom_collection())?;
+        let collection = middleware.get_collection(job_handler.get_nom_collection())?;
         match collection.find_one(filtre, options).await? {
             Some(inner) => Some(convertir_bson_deserializable(inner)?),
             None => None
@@ -115,9 +115,7 @@ pub async fn trouver_jobs_instances<M>(job_handler: &M) -> Result<Option<Vec<Str
     match doc_job {
         Some(inner) => {
             match inner.visites {
-                Some(visites) => {
-                    Ok(Some(visites.into_keys().collect()))
-                },
+                Some(visites) => Ok(Some(visites.into_keys().collect())),
                 None => Ok(None)
             }
         },
@@ -125,10 +123,9 @@ pub async fn trouver_jobs_instances<M>(job_handler: &M) -> Result<Option<Vec<Str
     }
 }
 
-async fn set_flag<M,S,U>(job_handler: &M, fuuid: S, user_id: U, valeur: bool) -> Result<(), Box<dyn Error>>
-    where M: JobHandler, S: AsRef<str> + Send, U: AsRef<str> + Send
+async fn set_flag<M,J,S,U>(middleware: &M, job_handler: &J, fuuid: S, user_id: U, valeur: bool) -> Result<(), Box<dyn Error>>
+    where M: MongoDao, J: JobHandler, S: AsRef<str> + Send, U: AsRef<str> + Send
 {
-
     let fuuid = fuuid.as_ref();
     let user_id = user_id.as_ref();
 
@@ -137,7 +134,7 @@ async fn set_flag<M,S,U>(job_handler: &M, fuuid: S, user_id: U, valeur: bool) ->
         CHAMP_FUUID: fuuid,
     };
 
-    let collection_versions = job_handler.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
 
     // Set flag
     let ops = doc! {
@@ -159,7 +156,7 @@ async fn set_flag<M,S,U>(job_handler: &M, fuuid: S, user_id: U, valeur: bool) ->
             collection_versions.update_one(filtre.clone(), ops, None).await?;
 
             // Retirer job
-            let collection_jobs = job_handler.get_collection(job_handler.get_nom_collection())?;
+            let collection_jobs = middleware.get_collection(job_handler.get_nom_collection())?;
             collection_jobs.delete_one(filtre, None).await?;
         },
         false => {
@@ -195,7 +192,7 @@ struct RowJobExpiree {
 //     Ok(())
 // }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct RowVersionsIds {
     tuuid: String,
     fuuid: String,
@@ -204,13 +201,13 @@ struct RowVersionsIds {
     visites: Option<HashMap<String, i64>>,
 }
 
-async fn entretien_jobs<M>(job_handler: &M, limite_batch: i64) -> Result<(), Box<dyn Error>>
-    where M: JobHandler
+async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64) -> Result<(), Box<dyn Error>>
+    where M: MongoDao, J: JobHandler
 {
     debug!("ajouter_jobs_manquantes Debut");
 
-    let collection_versions = job_handler.get_collection(NOM_COLLECTION_VERSIONS)?;
-    let collection_jobs = job_handler.get_collection(job_handler.get_nom_collection())?;
+    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let collection_jobs = middleware.get_collection(job_handler.get_nom_collection())?;
     let champ_flag_index = job_handler.get_nom_flag();
 
     // Reset jobs indexation avec start_date expire pour les reprendre immediatement
@@ -231,7 +228,10 @@ async fn entretien_jobs<M>(job_handler: &M, limite_batch: i64) -> Result<(), Box
         let opts = FindOptions::builder()
             // .hint(Hint::Name(String::from("flag_media_traite")))
             .sort(doc! {champ_flag_index: 1, CHAMP_CREATION: 1})
-            .projection(doc!{CHAMP_TUUID: true, CHAMP_FUUID: true, CHAMP_MIMETYPE: true, CHAMP_USER_ID: true})
+            .projection(doc!{
+                CHAMP_TUUID: true, CHAMP_FUUID: true, CHAMP_MIMETYPE: true, CHAMP_USER_ID: true,
+                "visites": true,
+            })
             .limit(limite_batch)
             .build();
         let filtre = doc! { champ_flag_index: false };
@@ -241,7 +241,7 @@ async fn entretien_jobs<M>(job_handler: &M, limite_batch: i64) -> Result<(), Box
 
     while let Some(d) = curseur.next().await {
         let doc_version = d?;
-        let version_mappe: RowVersionsIds = match convertir_bson_deserializable(doc_version) {
+        let version_mappee: RowVersionsIds = match convertir_bson_deserializable(doc_version) {
             Ok(inner) => inner,
             Err(e) => {
                 warn!("traiter_indexation_batch Erreur mapping document : {:?} - SKIP", e);
@@ -249,10 +249,12 @@ async fn entretien_jobs<M>(job_handler: &M, limite_batch: i64) -> Result<(), Box
             }
         };
 
-        let tuuid_ref = version_mappe.tuuid.as_str();
-        let fuuid_ref = version_mappe.fuuid.as_str();
-        let user_id = version_mappe.user_id.as_str();
-        let mimetype_ref = version_mappe.mimetype.as_str();
+        debug!("traiter_indexation_batch Ajouter job (si applicable) pour {:?}", version_mappee);
+
+        let tuuid_ref = version_mappee.tuuid.as_str();
+        let fuuid_ref = version_mappee.fuuid.as_str();
+        let user_id = version_mappee.user_id.as_str();
+        let mimetype_ref = version_mappee.mimetype.as_str();
 
         let filtre = doc!{CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref};
 
@@ -278,9 +280,12 @@ async fn entretien_jobs<M>(job_handler: &M, limite_batch: i64) -> Result<(), Box
         }
 
         // Creer ou mettre a jour la job
-        if let Some(visites) = version_mappe.visites {
+        if let Some(visites) = version_mappee.visites {
             for instance in visites.into_keys() {
-                job_handler.sauvegarder_job(tuuid_ref, fuuid_ref, user_id, mimetype_ref, instance).await?;
+                let mut champs_cles = HashMap::new();
+                champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
+                champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
+                job_handler.sauvegarder_job(middleware, fuuid_ref, user_id, instance, champs_cles, None).await?;
             }
         }
     }
@@ -288,36 +293,54 @@ async fn entretien_jobs<M>(job_handler: &M, limite_batch: i64) -> Result<(), Box
     Ok(())
 }
 
-async fn sauvegarder_job<M,Q,S,T,U,V>(job_handler: &M, tuuid: Q, fuuid: S, user_id: U, mimetype: T, instance: V)
+pub async fn sauvegarder_job<M,J,S,U,V>(
+    middleware: &M, job_handler: &J,
+    fuuid: S, user_id: U, instance: V,
+    champs_cles: HashMap<String, String>,
+    parametres: Option<HashMap<String, Bson>>
+)
     -> Result<(), Box<dyn Error>>
-    where M: JobHandler,
-          Q: AsRef<str> + Send, S: AsRef<str> + Send, T: AsRef<str> + Send,
-          U: AsRef<str> + Send, V: AsRef<str> + Send
+    where M: MongoDao, J: JobHandler,
+          S: AsRef<str> + Send, U: AsRef<str> + Send, V: AsRef<str> + Send
 {
     // Creer ou mettre a jour la job
     let now = Utc::now();
 
-    let tuuid = tuuid.as_ref();
+    // let tuuid = tuuid.as_ref();
     let fuuid = fuuid.as_ref();
     let user_id = user_id.as_ref();
-    let mimetype = mimetype.as_ref();
+    // let mimetype = mimetype.as_ref();
     let instance = instance.as_ref();
 
-    let filtre = doc!{CHAMP_USER_ID: user_id, CHAMP_FUUID: fuuid};
+    let mut filtre = doc!{ CHAMP_USER_ID: user_id, CHAMP_FUUID: fuuid };
+    for (k, v) in champs_cles.iter() {
+        filtre.insert(k.to_owned(), v.to_owned());
+    }
+
+    let mut set_on_insert = doc!{
+        CHAMP_FUUID: fuuid,
+        CHAMP_USER_ID: user_id,
+        // CHAMP_TUUID: tuuid,
+        // CHAMP_MIMETYPE: mimetype,
+        CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING,
+        CONST_CHAMP_RETRY: 0,
+        CHAMP_CREATION: &now,
+    };
+
+    for (k, v) in champs_cles.into_iter() {
+        set_on_insert.insert(k, v);
+    }
+
+    // Ajouter parametres optionnels (e.g. codecVideo, preset, etc.)
+    if let Some(inner) = parametres {
+        for (k, v) in inner.into_iter() {
+            set_on_insert.insert(k, v);
+        }
+    }
 
     let ops_job = doc! {
-        "$setOnInsert": {
-            CHAMP_TUUID: tuuid,
-            CHAMP_FUUID: fuuid,
-            CHAMP_USER_ID: user_id,
-            CHAMP_MIMETYPE: mimetype,
-            CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING,
-            CONST_CHAMP_RETRY: 0,
-            CHAMP_CREATION: &now,
-        },
-        "$addToSet": {
-            CHAMP_INSTANCES: instance,
-        },
+        "$setOnInsert": set_on_insert,
+        "$addToSet": { CHAMP_INSTANCES: instance },
         "$currentDate": {
             CHAMP_MODIFICATION: true,
             CONST_CHAMP_DATE_MAJ: true,
@@ -327,7 +350,7 @@ async fn sauvegarder_job<M,Q,S,T,U,V>(job_handler: &M, tuuid: Q, fuuid: S, user_
         .upsert(true)
         .build();
 
-    let collection_jobs = job_handler.get_collection(job_handler.get_nom_collection())?;
+    let collection_jobs = middleware.get_collection(job_handler.get_nom_collection())?;
     collection_jobs.update_one(filtre, ops_job, options).await?;
 
     Ok(())

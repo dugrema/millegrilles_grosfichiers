@@ -36,14 +36,18 @@ use crate::commandes::consommer_commande;
 use crate::evenements::consommer_evenement;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{consommer_requete, mapper_fichier_db};
-use crate::traitement_index::{InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche, traiter_indexation_batch};
-use crate::traitement_media::{entretien_video_jobs, traiter_media_batch};
+use crate::traitement_index::{IndexationJobHandler, InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche, traiter_indexation_batch};
+use crate::traitement_jobs::JobHandler;
+use crate::traitement_media::{entretien_video_jobs, ImageJobHandler, traiter_media_batch, VideoJobHandler};
 use crate::transactions::*;
 
 #[derive(Clone, Debug)]
 pub struct GestionnaireGrosFichiers {
     // pub consignation: String,
     // pub index_dao: Arc<ElasticSearchDaoImpl>,
+    pub image_job_handler: ImageJobHandler,
+    pub video_job_handler: VideoJobHandler,
+    pub indexation_job_handler: IndexationJobHandler,
 }
 
 #[async_trait]
@@ -511,19 +515,22 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
     let date_epoch = trigger.get_date();
     let minutes = date_epoch.get_datetime().minute();
 
-    if let Err(e) = traiter_indexation_batch(middleware, LIMITE_INDEXATION_BATCH).await {
-        warn!("Erreur traitement indexation batch : {:?}", e);
-    }
+    // if let Err(e) = traiter_indexation_batch(middleware, LIMITE_INDEXATION_BATCH).await {
+    //     warn!("Erreur traitement indexation batch : {:?}", e);
+    // }
 
-    // Executer a toutes les 5 minutes
-    if minutes % 5 == 0 {
+    // Executer a toutes les 2 minutes
+    if minutes % 2 == 1 {
         debug!("Generer index et media manquants");
-        if let Err(e) = traiter_media_batch(middleware, MEDIA_IMAGE_BACTH_DEFAULT, false, None, None).await {
-            warn!("Erreur traitement media batch : {:?}", e);
-        }
-        if let Err(e) = entretien_video_jobs(middleware).await {
-            warn!("Erreur traitement media entretien_video_jobs : {:?}", e);
-        }
+        // if let Err(e) = traiter_media_batch(middleware, MEDIA_IMAGE_BACTH_DEFAULT, false, None, None).await {
+        //     warn!("Erreur traitement media batch : {:?}", e);
+        // }
+        // if let Err(e) = entretien_video_jobs(middleware).await {
+        //     warn!("Erreur traitement media entretien_video_jobs : {:?}", e);
+        // }
+        gestionnaire.image_job_handler.entretien(middleware, None).await;
+        gestionnaire.video_job_handler.entretien(middleware, None).await;
+        gestionnaire.indexation_job_handler.entretien(middleware, None).await;
     }
 
     Ok(())
