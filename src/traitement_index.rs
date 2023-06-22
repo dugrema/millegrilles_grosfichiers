@@ -29,6 +29,9 @@ use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
 use crate::traitement_jobs::JobHandler;
 
+const EVENEMENT_INDEXATION_DISPONIBLE: &str = "jobIndexationDisponible";
+
+
 #[derive(Clone, Debug)]
 pub struct IndexationJobHandler {}
 
@@ -39,9 +42,8 @@ impl JobHandler for IndexationJobHandler {
 
     fn get_nom_flag(&self) -> &str { CHAMP_FLAG_INDEX }
 
-    async fn emettre_trigger<I>(&self, instance: I) -> Result<(), Box<dyn Error>> where I: AsRef<str> + Send {
-        todo!()
-    }
+    fn get_action_evenement(&self) -> &str { EVENEMENT_INDEXATION_DISPONIBLE }
+
 }
 
 // Set le flag indexe a true pour le fuuid (version)

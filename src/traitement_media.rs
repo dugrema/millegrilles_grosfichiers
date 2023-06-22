@@ -26,6 +26,8 @@ use crate::requetes::mapper_fichier_db;
 use crate::traitement_jobs::{JobHandler, sauvegarder_job};
 
 const EVENEMENT_IMAGE_DISPONIBLE: &str = "jobImageDisponible";
+const EVENEMENT_VIDEO_DISPONIBLE: &str = "jobVideoDisponible";
+
 const ACTION_GENERER_POSTER_IMAGE: &str = "genererPosterImage";
 const ACTION_GENERER_POSTER_PDF: &str = "genererPosterPdf";
 const ACTION_GENERER_POSTER_VIDEO: &str = "genererPosterVideo";
@@ -41,9 +43,8 @@ impl JobHandler for ImageJobHandler {
 
     fn get_nom_flag(&self) -> &str { CHAMP_FLAG_MEDIA_TRAITE }
 
-    async fn emettre_trigger<I>(&self, instance: I) -> Result<(), Box<dyn Error>> where I: AsRef<str> + Send {
-        todo!()
-    }
+    fn get_action_evenement(&self) -> &str { EVENEMENT_IMAGE_DISPONIBLE }
+
 }
 
 #[derive(Clone, Debug)]
@@ -56,9 +57,7 @@ impl JobHandler for VideoJobHandler {
 
     fn get_nom_flag(&self) -> &str { CHAMP_FLAG_VIDEO_TRAITE }
 
-    async fn emettre_trigger<I>(&self, instance: I) -> Result<(), Box<dyn Error>> where I: AsRef<str> + Send {
-        todo!()
-    }
+    fn get_action_evenement(&self) -> &str { EVENEMENT_VIDEO_DISPONIBLE }
 
     async fn sauvegarder_job<M, S, U, V>(
         &self, middleware: &M, fuuid: S, user_id: U, instance: V,

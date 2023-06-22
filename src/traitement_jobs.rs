@@ -12,7 +12,7 @@ use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageM
 use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, UpdateOptions};
-use millegrilles_common_rust::serde_json::Value;
+use millegrilles_common_rust::serde_json::{json, Value};
 use millegrilles_common_rust::tokio::time::sleep;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -37,23 +37,49 @@ pub trait JobHandler: Clone + Sized + Sync {
     /// Retourne le nom du flag de la table GrosFichiers/versionFichiers pour ce type de job.
     fn get_nom_flag(&self) -> &str;
 
+    /// Retourne l'action a utiliser dans le routage de l'evenement trigger.
+    fn get_action_evenement(&self) -> &str;
+
     /// Emettre un evenement de job disponible.
     /// 1 evenement emis pour chaque instance avec au moins 1 job de disponible.
-    async fn emettre_evenements_job<M>(&self, middleware: &M) -> Result<(), Box<dyn Error>>
-        where M: MongoDao
+    async fn emettre_evenements_job<M>(&self, middleware: &M)
+        where M: GenerateurMessages + MongoDao
     {
-        let visites = trouver_jobs_instances(middleware, self).await?;
-        if let Some(visites) = visites {
-            for instance in visites {
-                self.emettre_trigger(instance).await?;
+        let visites = match trouver_jobs_instances(middleware, self).await {
+            Ok(visites) => match visites {
+                Some(inner) => inner,
+                None => {
+                    debug!("JobHandler.emettre_evenements_job Aucune job pour {}", self.get_action_evenement());
+                    return  // Rien a faire
+                }
+            },
+            Err(e) => {
+                error!("JobHandler.emettre_evenements_job Erreur emission trigger {} : {:?}", self.get_action_evenement(), e);
+                return
             }
+        };
+
+        for instance in visites {
+            self.emettre_trigger(middleware, instance).await;
         }
-        Ok(())
     }
 
     /// Emet un evenement pour declencher le traitement pour une instance
-    async fn emettre_trigger<I>(&self, instance: I) -> Result<(), Box<dyn Error>>
-    where I: AsRef<str> + Send;
+    async fn emettre_trigger<M,I>(&self, middleware: &M, instance: I)
+    where M: GenerateurMessages, I: AsRef<str> + Send {
+        let instance = instance.as_ref();
+
+        let routage = RoutageMessageAction::builder(DOMAINE_NOM, self.get_action_evenement())
+            .exchanges(vec![Securite::L2Prive])
+            .partition(instance)
+            .build();
+
+        let message = json!({ "instance": instance });
+
+        if let Err(e) = middleware.emettre_evenement(routage, &message).await {
+            error!("JobHandler.emettre_trigger Erreur emission trigger {} : {:?}", self.get_action_evenement(), e);
+        }
+    }
 
     async fn sauvegarder_job<M,S,U,V>(
         &self, middleware: &M, fuuid: S, user_id: U, instance: V,
@@ -61,9 +87,13 @@ pub trait JobHandler: Clone + Sized + Sync {
         parametres: Option<HashMap<String, Bson>>
     )
         -> Result<(), Box<dyn Error>>
-        where M: MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send, V: AsRef<str> + Send
+        where M: GenerateurMessages + MongoDao,
+              S: AsRef<str> + Send, U: AsRef<str> + Send, V: AsRef<str> + Send
     {
-        sauvegarder_job(middleware, self, fuuid, user_id, instance, champs_cles, parametres).await
+        let instance = instance.as_ref();
+        sauvegarder_job(middleware, self, fuuid, user_id, instance, champs_cles, parametres).await?;
+        self.emettre_trigger(middleware, instance).await;
+        Ok(())
     }
 
     /// Set le flag de traitement complete
@@ -74,7 +104,7 @@ pub trait JobHandler: Clone + Sized + Sync {
 
     /// Doit etre invoque regulierement pour generer nouvelles jobs, expirer vieilles, etc.
     async fn entretien<M>(&self, middleware: &M, limite_batch: Option<i64>)
-        where M: MongoDao
+        where M: GenerateurMessages + MongoDao
     {
         debug!("entretien Cycle entretien JobHandler {}", self.get_nom_flag());
 
@@ -87,12 +117,15 @@ pub trait JobHandler: Clone + Sized + Sync {
         if let Err(e) = entretien_jobs(middleware, self, limite_batch).await {
             error!("traitement_jobs.JobHandler.entretien {} Erreur sur ajouter_jobs_manquantes : {:?}", self.get_nom_flag(), e);
         }
+
+        /// Emettre des triggers au besoin.
+        self.emettre_evenements_job(middleware).await;
     }
 }
 
 #[derive(Deserialize)]
 struct DocJob {
-    visites: Option<HashMap<String, usize>>
+    instances: Option<Vec<String>>
 }
 
 /// Emet un trigger media image si au moins une job media est due.
@@ -114,8 +147,8 @@ pub async fn trouver_jobs_instances<J,M>(middleware: &M, job_handler: &J)
 
     match doc_job {
         Some(inner) => {
-            match inner.visites {
-                Some(visites) => Ok(Some(visites.into_keys().collect())),
+            match inner.instances {
+                Some(instances) => Ok(Some(instances)),
                 None => Ok(None)
             }
         },
@@ -168,30 +201,6 @@ async fn set_flag<M,J,S,U>(middleware: &M, job_handler: &J, fuuid: S, user_id: U
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct RowJobExpiree {
-    fuuid: String,
-    user_id: String,
-}
-
-// async fn retirer_jobs_expirees<M>(job_handler: &M) -> Result<(), Box<dyn Error>>
-//     where M: JobHandler
-// {
-//     let collection_indexation = job_handler.get_collection(job_handler.get_nom_collection())?;
-//
-//     let filtre = doc! {
-//         CONST_CHAMP_RETRY: {"$gte": CONST_MAX_RETRY}
-//     };
-//     let mut curseur = collection_indexation.find(filtre, None).await?;
-//     while let Some(r) = curseur.next().await {
-//         let row: RowJobExpiree = convertir_bson_deserializable(r?)?;
-//         debug!("retirer_jobs_expirees Desactiver job expiree pour {}/{}, trop de retries", row.user_id, row.fuuid);
-//         job_handler.set_flag(row.fuuid, row.user_id, true).await?;
-//     }
-//
-//     Ok(())
-// }
-
 #[derive(Debug, Deserialize)]
 struct RowVersionsIds {
     tuuid: String,
@@ -202,7 +211,7 @@ struct RowVersionsIds {
 }
 
 async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64) -> Result<(), Box<dyn Error>>
-    where M: MongoDao, J: JobHandler
+    where M: GenerateurMessages + MongoDao, J: JobHandler
 {
     debug!("ajouter_jobs_manquantes Debut");
 
@@ -306,10 +315,8 @@ pub async fn sauvegarder_job<M,J,S,U,V>(
     // Creer ou mettre a jour la job
     let now = Utc::now();
 
-    // let tuuid = tuuid.as_ref();
     let fuuid = fuuid.as_ref();
     let user_id = user_id.as_ref();
-    // let mimetype = mimetype.as_ref();
     let instance = instance.as_ref();
 
     let mut filtre = doc!{ CHAMP_USER_ID: user_id, CHAMP_FUUID: fuuid };
@@ -320,8 +327,6 @@ pub async fn sauvegarder_job<M,J,S,U,V>(
     let mut set_on_insert = doc!{
         CHAMP_FUUID: fuuid,
         CHAMP_USER_ID: user_id,
-        // CHAMP_TUUID: tuuid,
-        // CHAMP_MIMETYPE: mimetype,
         CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING,
         CONST_CHAMP_RETRY: 0,
         CHAMP_CREATION: &now,
