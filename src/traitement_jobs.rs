@@ -297,9 +297,9 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
         let user_id = version_mappee.user_id.as_str();
         let mimetype_ref = version_mappee.mimetype.as_str();
 
-        let filtre = doc!{CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref};
+        let filtre_job = doc!{CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref};
 
-        let job_existante: Option<BackgroundJob> = match collection_jobs.find_one(filtre.clone(), None).await? {
+        let job_existante: Option<BackgroundJob> = match collection_jobs.find_one(filtre_job.clone(), None).await? {
             Some(inner) => Some(convertir_bson_deserializable(inner)?),
             None => None
         };
@@ -314,8 +314,9 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
                         format!("{}_erreur", champ_flag_index): ERREUR_MEDIA_TOOMANYRETRIES,
                     }
                 };
-                collection_versions.update_one(filtre.clone(), ops, None).await?;
-                collection_jobs.delete_one(filtre.clone(), None).await?;
+                let filtre_version = doc!{CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref};
+                collection_versions.update_one(filtre_version, ops, None).await?;
+                collection_jobs.delete_one(filtre_job, None).await?;
                 continue;
             }
         }
