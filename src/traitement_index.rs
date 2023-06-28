@@ -542,7 +542,7 @@ pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValideActi
     let reponse_prochaine_job = gestionnaire.indexation_job_handler.get_prochaine_job(
         middleware, certificat.as_ref(), commande_get_job).await?;
 
-    debug!("commande_video_get_job Prochaine job : {:?}", reponse_prochaine_job);
+    debug!("commande_indexation_get_job Prochaine job : {:?}", reponse_prochaine_job);
     Ok(Some(middleware.formatter_reponse(reponse_prochaine_job, None)?))
 
     // let prochaine_job = trouver_prochaine_job_indexation(middleware).await?;

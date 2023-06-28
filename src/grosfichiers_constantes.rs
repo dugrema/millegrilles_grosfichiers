@@ -213,6 +213,7 @@ pub struct DBFichierVersionDetail {
 pub struct TransactionAssocierConversions {
     pub tuuid: String,
     pub fuuid: String,
+    pub user_id: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub mimetype: Option<String>,
@@ -225,17 +226,20 @@ pub struct TransactionAssocierConversions {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionAssocierVideo {
-    pub tuuid: Option<String>,
-    pub fuuid: Option<String>,
+    pub ok: bool,
+    pub tuuid: String,
+    pub fuuid: String,
+    pub user_id: String,
+    pub mimetype: String,
+    pub codec: String,
+    pub fuuid_video: String,
+
+    // Metadata video transcode
     pub width: Option<u32>,
     pub height: Option<u32>,
-    pub mimetype: String,
-    pub fuuid_video: String,
-    pub codec: String,
     pub bitrate: Option<u32>,
     pub quality: Option<i32>,
     pub taille_fichier: u64,
-    pub user_id: Option<String>,
 
     // Information dechiffrage - note : fuuid -> ref_hachage_bytes
     #[serde(skip_serializing_if="Option::is_none")]
@@ -247,11 +251,13 @@ pub struct TransactionAssocierVideo {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ImageConversion {
     pub hachage: String,
+
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub mimetype: Option<String>,
     pub taille: Option<u64>,
     pub resolution: Option<u32>,
+
     #[serde(skip_serializing_if="Option::is_none")]
     pub data_chiffre: Option<String>,
 
@@ -289,13 +295,15 @@ pub struct CommandeVideoArreterConversion {
     pub fuuid: String,
     #[serde(rename="cleConversion")]
     pub cle_conversion: String,
+    pub user_id: Option<String>,    // Utilise par systeme pour rapporter erreur fatale
+    pub code_erreur: Option<i64>,   // Si Some, toggle flag_video a true sur version fichier
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeVideoGetJob {
-    pub fuuid: Option<String>,
-    #[serde(rename="cleConversion")]
-    pub cle_conversion: Option<String>,
+    // pub fuuid: Option<String>,
+    // #[serde(rename="cleConversion")]
+    // pub cle_conversion: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -304,66 +312,80 @@ pub struct TransactionSupprimerVideo {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct JobVideo {
-    pub tuuid: String,
+pub struct CommandeImageArreterTraitement {
     pub fuuid: String,
-    pub cle_conversion: String,
-    pub user_id: Option<String>,
-    pub mimetype: String,
-    #[serde(rename="codecVideo")]
-    pub codec_video: String,
-    #[serde(rename="codecAudio")]
-    pub codec_audio: String,
-    #[serde(rename="resolutionVideo")]
-    pub resolution_video: u32,
-    #[serde(rename="qualityVideo")]
-    pub quality_video: Option<i32>,
-    #[serde(rename="bitrateVideo")]
-    pub bitrate_video: Option<u32>,
-    #[serde(rename="bitrateAudio")]
-    pub bitrate_audio: u32,
-    pub preset: Option<String>,
-    pub etat: i32,
-    #[serde(rename="_mg-derniere-modification", skip_serializing)]
-    pub date_modification: Value,
-    pub flag_media_retry: i32,
+    pub user_id: Option<String>,    // Utilise par systeme pour rapporter erreur fatale
+    pub code_erreur: Option<i64>,   // Si Some, toggle flag_video a true sur version fichier
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommandeImageGetJob {
+    // pub fuuid: Option<String>,
+    // #[serde(rename="cleConversion")]
+    // pub cle_conversion: Option<String>,
+}
+
+// #[derive(Clone, Debug, Serialize, Deserialize)]
+// pub struct JobVideo {
+//     pub tuuid: String,
+//     pub fuuid: String,
+//     pub cle_conversion: String,
+//     pub user_id: Option<String>,
+//     pub mimetype: String,
+//     #[serde(rename="codecVideo")]
+//     pub codec_video: String,
+//     #[serde(rename="codecAudio")]
+//     pub codec_audio: String,
+//     #[serde(rename="resolutionVideo")]
+//     pub resolution_video: u32,
+//     #[serde(rename="qualityVideo")]
+//     pub quality_video: Option<i32>,
+//     #[serde(rename="bitrateVideo")]
+//     pub bitrate_video: Option<u32>,
+//     #[serde(rename="bitrateAudio")]
+//     pub bitrate_audio: u32,
+//     pub preset: Option<String>,
+//     pub etat: i32,
+//     #[serde(rename="_mg-derniere-modification", skip_serializing)]
+//     pub date_modification: Value,
+//     pub flag_media_retry: i32,
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReponseCle {
     pub ok: Option<bool>
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct CommandeGetCleJobConversion {
-    pub fuuid: String,
-    pub nom_job: String,
-}
+// #[derive(Clone, Debug, Deserialize)]
+// pub struct CommandeGetCleJobConversion {
+//     pub fuuid: String,
+//     pub nom_job: String,
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeIndexationGetJob {
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct JobIndexation {
-    pub tuuid: String,
-    pub fuuid: String,
-    pub user_id: String,
-    pub etat: i32,
-    #[serde(rename="_mg-derniere-modification", skip_serializing)]
-    pub date_modification: Value,
-    pub index_start: Option<DateTime>,
-    pub index_retry: i32,
-}
+// #[derive(Clone, Debug, Serialize, Deserialize)]
+// pub struct JobIndexation {
+//     pub tuuid: String,
+//     pub fuuid: String,
+//     pub user_id: String,
+//     pub etat: i32,
+//     #[serde(rename="_mg-derniere-modification", skip_serializing)]
+//     pub date_modification: Value,
+//     pub index_start: Option<DateTime>,
+//     pub index_retry: i32,
+// }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReponseJobIndexation {
-    pub ok: bool,
-    pub tuuid: String,
-    pub fuuid: String,
-    pub user_id: String,
-    pub mimetype: String,
-    pub metadata: DataChiffre,
-    pub cle: InformationCle,
-}
+// #[derive(Clone, Debug, Serialize, Deserialize)]
+// pub struct ReponseJobIndexation {
+//     pub ok: bool,
+//     pub tuuid: String,
+//     pub fuuid: String,
+//     pub user_id: String,
+//     pub mimetype: String,
+//     pub metadata: DataChiffre,
+//     pub cle: InformationCle,
+// }
 

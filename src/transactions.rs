@@ -26,7 +26,7 @@ use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenemen
 use crate::grosfichiers_constantes::*;
 use crate::requetes::verifier_acces_usager;
 use crate::traitement_jobs::JobHandler;
-use crate::traitement_media::emettre_commande_media;
+// use crate::traitement_media::emettre_commande_media;
 // use crate::traitement_index::emettre_commande_indexation;
 
 pub async fn consommer_transaction<M>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -93,7 +93,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_ARCHIVER_DOCUMENTS => transaction_archiver_documents(middleware, transaction).await,
         TRANSACTION_CHANGER_FAVORIS => transaction_changer_favoris(middleware, transaction).await,
         TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, transaction).await,
-        TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, transaction).await,
+        TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, gestionnaire, transaction).await,
         TRANSACTION_DECRIRE_FICHIER => transaction_decire_fichier(middleware, gestionnaire, transaction).await,
         TRANSACTION_DECRIRE_COLLECTION => transaction_decire_collection(middleware, transaction).await,
         TRANSACTION_COPIER_FICHIER_TIERS => transaction_copier_fichier_tiers(gestionnaire, middleware, transaction).await,
@@ -1125,15 +1125,15 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
     middleware.reponse_ok()
 }
 
-async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
         M: GenerateurMessages + MongoDao,
         T: Transaction
 {
-    debug!("transaction_associer_conversions Consommer transaction : {:?}", &transaction);
+    debug!("transaction_associer_video Consommer transaction : {:?}", &transaction);
     let transaction_mappee: TransactionAssocierVideo = match transaction.clone().convertir::<TransactionAssocierVideo>() {
         Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_associer_video Erreur conversion transaction : {:?}", e))?
+        Err(e) => Err(format!("transactions.transaction_associer_video Erreur conversion transaction : {:?}", e))?
     };
 
     let tuuid = transaction_mappee.tuuid.clone();
@@ -1184,12 +1184,13 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
         let mut filtre = doc! {
             CHAMP_TUUID: &transaction_mappee.tuuid,
             CHAMP_FUUID_V_COURANTE: &transaction_mappee.fuuid,
+            CHAMP_USER_ID: &transaction_mappee.user_id,
         };
 
-        if let Some(user_id) = transaction_mappee.user_id.as_ref() {
-            // Utiliser un filtre pour un usager
-            filtre.insert(CHAMP_USER_ID, user_id.to_owned());
-        }
+        // if let Some(user_id) = transaction_mappee.user_id.as_ref() {
+        //     // Utiliser un filtre pour un usager
+        //     filtre.insert(CHAMP_USER_ID, user_id.to_owned());
+        // }
 
         // Verifier si le video existe deja - retirer le fuuid_video si c'est le cas
         let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
@@ -1198,7 +1199,7 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
                 Ok(d) => match d {
                     Some(d) => match convertir_bson_deserializable(d) {
                         Ok(d) => d,
-                        Err(e) => Err(format!("transaction_associer_video Erreur conversion bson fichier (video) : {:?}", e))?
+                        Err(e) => Err(format!("transactions.transaction_associer_video Erreur conversion bson fichier (video) : {:?}", e))?
                     },
                     None => None
                 },
@@ -1218,11 +1219,11 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
         if let Some(fuuid_video) = fuuid_video_existant.as_ref() {
             let ops = doc! {
                 "$pull": {"fuuids": &fuuid_video},
-                "$unset": {format!("version_courante.fuuidMimetypes.{}", fuuid_video): true},
+                // "$unset": {format!("version_courante.fuuidMimetypes.{}", fuuid_video): true},
             };
             match collection.update_many(filtre.clone(), ops, None).await {
-                Ok(inner) => debug!("transactions.transaction_associer_conversions Suppression video : {:?}", inner),
-                Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur suppression video existant : {:?}", e))?
+                Ok(inner) => debug!("transaction_associer_video Suppression video : {:?}", inner),
+                Err(e) => Err(format!("transactions.transaction_associer_video Erreur suppression video existant : {:?}", e))?
             }
         }
 
@@ -1243,8 +1244,8 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
         };
 
         match collection.update_many(filtre, ops, None).await {
-            Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
-            Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
+            Ok(inner) => debug!("transaction_associer_video Update versions : {:?}", inner),
+            Err(e) => Err(format!("transactions.transaction_associer_video Erreur maj versions : {:?}", e))?
         }
     }
 
@@ -1257,11 +1258,11 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
         if let Some(fuuid_video) = fuuid_video_existant.as_ref() {
             let ops = doc! {
                 "$pull": {"fuuids": &fuuid_video},
-                "$unset": {format!("fuuidMimetypes.{}", fuuid_video): true},
+                // "$unset": {format!("fuuidMimetypes.{}", fuuid_video): true},
             };
             match collection.update_many(filtre.clone(), ops, None).await {
-                Ok(inner) => debug!("transactions.transaction_associer_conversions Suppression video : {:?}", inner),
-                Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur suppression video existant : {:?}", e))?
+                Ok(inner) => debug!("transaction_associer_video Suppression video : {:?}", inner),
+                Err(e) => Err(format!("transactions.transaction_associer_video Erreur suppression video existant : {:?}", e))?
             }
         }
 
@@ -1278,24 +1279,32 @@ async fn transaction_associer_video<M, T>(middleware: &M, transaction: T) -> Res
             "$currentDate": { CHAMP_MODIFICATION: true }
         };
         match collection.update_one(filtre, ops, None).await {
-            Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
-            Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
+            Ok(inner) => debug!("transaction_associer_video Update versions : {:?}", inner),
+            Err(e) => Err(format!("transactions.transaction_associer_video Erreur maj versions : {:?}", e))?
         }
     }
 
     {   // Supprimer job dans table videos
-        let collection_video = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
-        let filtre = doc! {CHAMP_FUUID: &transaction_mappee.fuuid, CHAMP_CLE_CONVERSION: &cle_video};
-        if let Err(e) = collection_video.delete_one(filtre, None).await {
-            error!("transactions.transaction_associer_conversions Erreur suppression job video fuuid {:?} cle {} : {:?}",
-                &transaction_mappee.fuuid, &cle_video, e);
+        // Traiter la commande
+        let mut cles_supplementaires = HashMap::new();
+        cles_supplementaires.insert(CHAMP_CLE_CONVERSION.to_string(), cle_video.clone());
+        if let Err(e) = gestionnaire.video_job_handler.set_flag(
+            middleware, &transaction_mappee.fuuid, &transaction_mappee.user_id, Some(cles_supplementaires), true).await {
+            error!("transaction_associer_video Erreur traitement flag : {:?}", e);
         }
+
+        // let collection_video = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+        // let filtre = doc! {CHAMP_FUUID: &transaction_mappee.fuuid, CHAMP_CLE_CONVERSION: &cle_video};
+        // if let Err(e) = collection_video.delete_one(filtre, None).await {
+        //     error!("transactions.transaction_associer_conversions Erreur suppression job video fuuid {:?} cle {} : {:?}",
+        //         &transaction_mappee.fuuid, &cle_video, e);
+        // }
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    if let Some(t) = tuuid.as_ref() {
-        emettre_evenement_maj_fichier(middleware, t, EVENEMENT_FUUID_ASSOCIER_VIDEO).await?;
-    }
+    //if let Some(t) = tuuid.as_ref() {
+        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO).await?;
+    //}
 
     middleware.reponse_ok()
 }

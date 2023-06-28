@@ -19,7 +19,7 @@ use crate::grosfichiers::{emettre_evenement_maj_fichier, GestionnaireGrosFichier
 
 use crate::grosfichiers_constantes::*;
 use crate::traitement_jobs::JobHandler;
-use crate::traitement_media::emettre_commande_media;
+// use crate::traitement_media::emettre_commande_media;
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
 

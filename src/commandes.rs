@@ -28,8 +28,8 @@ use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenemen
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{mapper_fichier_db, verifier_acces_usager};
 use crate::traitement_index::{commande_indexation_get_job, reset_flag_indexe};
-use crate::traitement_jobs::{JobHandler, ParametresConfirmerJob};
-use crate::traitement_media::{commande_supprimer_job_video, emettre_commande_media, traiter_media_batch};
+use crate::traitement_jobs::{CommandeGetJob, JobHandler, ParametresConfirmerJob};
+use crate::traitement_media::{commande_supprimer_job_video, /*emettre_commande_media, traiter_media_batch*/};
 use crate::transactions::*;
 
 const REQUETE_MAITREDESCLES_VERIFIER_PREUVE: &str = "verifierPreuve";
@@ -79,7 +79,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
 
         COMMANDE_COMPLETER_PREVIEWS => commande_completer_previews(middleware, m, gestionnaire).await,
         COMMANDE_NOUVEAU_FICHIER => commande_nouveau_fichier(middleware, m, gestionnaire).await,
-        COMMANDE_GET_CLE_JOB_CONVERSION => commande_get_cle_job_conversion(middleware, m, gestionnaire).await,
+        // COMMANDE_GET_CLE_JOB_CONVERSION => commande_get_cle_job_conversion(middleware, m, gestionnaire).await,
 
         // Video
         COMMANDE_VIDEO_TRANSCODER => commande_video_convertir(middleware, m, gestionnaire).await,
@@ -802,71 +802,73 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, 
     let commande: CommandeCompleterPreviews = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_completer_previews parsed : {:?}", commande);
 
-    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
-    // Verifier si on a un certificat delegation globale ou prive
-    let user_id = m.get_user_id();
-    let autorisation_valide = match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        true => true,
-        false => {
-            let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
-            match user_id.as_ref() {
-                Some(u) => {
-                    if role_prive == true {
-                        match commande.fuuids.as_ref() {
-                            Some(f) => {
-                                // Verifier que l'usager a les droits d'acces a tous les tuuids
+    todo!("fix me");
 
-                                // Creer un set et retirer les tuuids trouves pour l'usager
-                                let mut set_fuuids: HashSet<&String> = HashSet::new();
-                                set_fuuids.extend(f.iter());
-
-                                // Parcourir les fichiers de l'usager, retirer tuuids trouves
-                                let filtre = doc! {CHAMP_USER_ID: u, CHAMP_FUUIDS: {"$in": f}};
-                                let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-                                let mut curseur = collection.find(filtre, None).await?;
-                                while let Some(d) = curseur.next().await {
-                                    let fichier: RowTuuid = convertir_bson_deserializable(d?)?;
-                                    // Retirer tous les fuuids (usager a acces)
-                                    if let Some(f) = fichier.fuuids {
-                                        for fuuid in f {
-                                            set_fuuids.remove(&fuuid);
-                                        }
-                                    }
-                                }
-
-                                // Verifier que tous les tuuids sont representes (set est vide)
-                                set_fuuids.is_empty()  // Retourne true si tous les tuuids ont ete trouves pour l'usager
-                            },
-                            None => false  // Un usager doit fournir une liste de tuuids
-                        }
-                    } else {
-                        false
-                    }
-                },
-                None => false
-            }
-        },
-    };
-
-    if ! autorisation_valide {
-        Err(format!("commandes.commande_completer_previews: Commande autorisation invalide pour message {:?}", m.correlation_id))?
-    }
-
-    let limite = match commande.limit {
-        Some(inner) => inner,
-        None => MEDIA_IMAGE_BACTH_DEFAULT,
-    };
-
-    let reset = match commande.reset {
-        Some(b) => b,
-        None => false
-    };
-
-    let tuuids = traiter_media_batch(middleware, limite, reset, commande.fuuids, user_id).await?;
-
-    // Reponse generer preview
-    let reponse = ReponseCommandeReindexer {ok: true, tuuids: Some(tuuids)};
-    Ok(Some(middleware.formatter_reponse(reponse, None)?))
+    // // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
+    // // Verifier si on a un certificat delegation globale ou prive
+    // let user_id = m.get_user_id();
+    // let autorisation_valide = match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    //     true => true,
+    //     false => {
+    //         let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    //         match user_id.as_ref() {
+    //             Some(u) => {
+    //                 if role_prive == true {
+    //                     match commande.fuuids.as_ref() {
+    //                         Some(f) => {
+    //                             // Verifier que l'usager a les droits d'acces a tous les tuuids
+    //
+    //                             // Creer un set et retirer les tuuids trouves pour l'usager
+    //                             let mut set_fuuids: HashSet<&String> = HashSet::new();
+    //                             set_fuuids.extend(f.iter());
+    //
+    //                             // Parcourir les fichiers de l'usager, retirer tuuids trouves
+    //                             let filtre = doc! {CHAMP_USER_ID: u, CHAMP_FUUIDS: {"$in": f}};
+    //                             let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    //                             let mut curseur = collection.find(filtre, None).await?;
+    //                             while let Some(d) = curseur.next().await {
+    //                                 let fichier: RowTuuid = convertir_bson_deserializable(d?)?;
+    //                                 // Retirer tous les fuuids (usager a acces)
+    //                                 if let Some(f) = fichier.fuuids {
+    //                                     for fuuid in f {
+    //                                         set_fuuids.remove(&fuuid);
+    //                                     }
+    //                                 }
+    //                             }
+    //
+    //                             // Verifier que tous les tuuids sont representes (set est vide)
+    //                             set_fuuids.is_empty()  // Retourne true si tous les tuuids ont ete trouves pour l'usager
+    //                         },
+    //                         None => false  // Un usager doit fournir une liste de tuuids
+    //                     }
+    //                 } else {
+    //                     false
+    //                 }
+    //             },
+    //             None => false
+    //         }
+    //     },
+    // };
+    //
+    // if ! autorisation_valide {
+    //     Err(format!("commandes.commande_completer_previews: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    // }
+    //
+    // let limite = match commande.limit {
+    //     Some(inner) => inner,
+    //     None => MEDIA_IMAGE_BACTH_DEFAULT,
+    // };
+    //
+    // let reset = match commande.reset {
+    //     Some(b) => b,
+    //     None => false
+    // };
+    //
+    // let tuuids = traiter_media_batch(middleware, limite, reset, commande.fuuids, user_id).await?;
+    //
+    // // Reponse generer preview
+    // let reponse = ReponseCommandeReindexer {ok: true, tuuids: Some(tuuids)};
+    // Ok(Some(middleware.formatter_reponse(reponse, None)?))
 }
 
 #[derive(Clone, Deserialize)]
@@ -1252,11 +1254,15 @@ async fn commande_video_get_job<M>(middleware: &M, m: MessageValideAction, gesti
 {
     debug!("commande_video_get_job Consommer commande : {:?}", & m.message);
     let commande: CommandeVideoGetJob = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_video_get_job parsed : {:?}", commande);
+
+    let certificat = match m.message.certificat.as_ref() {
+        Some(inner) => inner.as_ref(),
+        None => Err(format!("commandes.commande_video_get_job Certificat absent"))?
+    };
 
     // Verifier autorisation
-    if ! m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
-        info!("commande_video_get_job Exchange n'est pas de niveau 2,3,4");
+    if ! m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+        info!("commande_video_get_job Exchange n'est pas de niveau 3 ou 4");
         return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
     }
     if ! m.verifier_roles(vec![RolesCertificats::Media]) {
@@ -1264,97 +1270,104 @@ async fn commande_video_get_job<M>(middleware: &M, m: MessageValideAction, gesti
         return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre media)"}), None)?))
     }
 
-    let prochaine_job = match commande.fuuid {
-        Some(fuuid) => match commande.cle_conversion {
-            Some(cle) => trouver_prochaine_job(middleware, Some(fuuid), Some(cle)).await?,
-            None => trouver_prochaine_job(middleware, None::<&str>, None::<&str>).await?
-        },
-        None => trouver_prochaine_job(middleware, None::<&str>, None::<&str>).await?
-    };
+    let commande_get_job = CommandeGetJob {};
+    let reponse_prochaine_job = gestionnaire.video_job_handler.get_prochaine_job(
+        middleware, certificat, commande_get_job).await?;
 
-    debug!("commande_video_get_job Prochaine job : {:?}", prochaine_job);
+    debug!("commande_video_get_job Prochaine job : {:?}", reponse_prochaine_job);
+    Ok(Some(middleware.formatter_reponse(reponse_prochaine_job, None)?))
 
-    match prochaine_job {
-        Some(job) => {
-            let reponse_job = middleware.formatter_reponse(&job, None)?;
-            debug!("Reponse job : {:?}", reponse_job);
-            Ok(Some(reponse_job))
-        },
-        None => {
-            Ok(Some(middleware.formatter_reponse(&json!({"ok": true, "message": "Aucune job disponible"}), None)?))
-        }
-    }
+    // let prochaine_job = match commande.fuuid {
+    //     Some(fuuid) => match commande.cle_conversion {
+    //         Some(cle) => trouver_prochaine_job(middleware, Some(fuuid), Some(cle)).await?,
+    //         None => trouver_prochaine_job(middleware, None::<&str>, None::<&str>).await?
+    //     },
+    //     None => trouver_prochaine_job(middleware, None::<&str>, None::<&str>).await?
+    // };
+    //
+    // debug!("commande_video_get_job Prochaine job : {:?}", prochaine_job);
+    //
+    // match prochaine_job {
+    //     Some(job) => {
+    //         let reponse_job = middleware.formatter_reponse(&job, None)?;
+    //         debug!("Reponse job : {:?}", reponse_job);
+    //         Ok(Some(reponse_job))
+    //     },
+    //     None => {
+    //         Ok(Some(middleware.formatter_reponse(&json!({"ok": true, "message": "Aucune job disponible"}), None)?))
+    //     }
+    // }
 }
 
-async fn trouver_prochaine_job<M,S,T>(middleware: &M, fuuid: Option<S>, cle: Option<T>)
-    -> Result<Option<JobVideo>, Box<dyn Error>>
-    where
-        M: GenerateurMessages + MongoDao + ValidateurX509,
-        S: AsRef<str>,
-        T: AsRef<str>
-{
-    let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
-
-    // Verifier si la job qui correspond au parametres est diponible
-    let job: Option<JobVideo> = match fuuid {
-        Some(f) => match cle {
-            Some(c) => {
-                let fuuid_ = f.as_ref();
-                let cle_ = c.as_ref();
-                debug!("trouver_prochaine_job Utiliser fuuid: {}, cle: {}", fuuid_, cle_);
-                let filtre = doc!{CHAMP_FUUID: fuuid_, CHAMP_CLE_CONVERSION: cle_};
-                match collection.find_one(filtre, None).await? {
-                    Some(r) => {
-                        debug!("trouver_prochaine_job (1) Charger job : {:?}", r);
-                        let job: JobVideo = convertir_bson_deserializable(r)?;
-                        // Verifier si la job est disponible
-                        if job.etat == VIDEO_CONVERSION_ETAT_PENDING {
-                            Some(job)
-                        } else {
-                            debug!("Job demandee ({}, {}) n'est pas pending", fuuid_, cle_);
-                            None
-                        }
-                    },
-                    None => None
-                }
-            },
-            None => None
-        },
-        None => None
-    };
-
-    let job: Option<JobVideo> = match job {
-        Some(j) => Some(j),
-        None => {
-            // Tenter de trouver la prochaine job disponible
-            let filtre = doc! {"etat": VIDEO_CONVERSION_ETAT_PENDING};
-            let hint = Some(Hint::Name("etat_jobs".into()));
-            let options = FindOneOptions::builder().hint(hint).build();
-            match collection.find_one(filtre, options).await? {
-                Some(d) => {
-                    debug!("trouver_prochaine_job (2) Charger job : {:?}", d);
-                    Some(convertir_bson_deserializable(d)?)
-                },
-                None => None
-            }
-        }
-    };
-
-    match &job {
-        Some(j) => {
-            // Marquer la job comme running
-            let filtre = doc!{CHAMP_FUUID: &j.fuuid, CHAMP_CLE_CONVERSION: &j.cle_conversion};
-            let ops = doc! {
-                "$set": {"etat": VIDEO_CONVERSION_ETAT_RUNNING},
-                "$currentDate": {CHAMP_MODIFICATION: true}
-            };
-            collection.update_one(filtre, ops, None).await?;
-        },
-        None => ()
-    }
-
-    Ok(job)
-}
+// async fn trouver_prochaine_job<M,S,T>(middleware: &M, fuuid: Option<S>, cle: Option<T>)
+//     -> Result<Option<JobVideo>, Box<dyn Error>>
+//     where
+//         M: GenerateurMessages + MongoDao + ValidateurX509,
+//         S: AsRef<str>,
+//         T: AsRef<str>
+// {
+//     let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+//
+//     // Verifier si la job qui correspond au parametres est diponible
+//     let job: Option<JobVideo> = match fuuid {
+//         Some(f) => match cle {
+//             Some(c) => {
+//                 let fuuid_ = f.as_ref();
+//                 let cle_ = c.as_ref();
+//                 debug!("trouver_prochaine_job Utiliser fuuid: {}, cle: {}", fuuid_, cle_);
+//                 let filtre = doc!{CHAMP_FUUID: fuuid_, CHAMP_CLE_CONVERSION: cle_};
+//                 match collection.find_one(filtre, None).await? {
+//                     Some(r) => {
+//                         debug!("trouver_prochaine_job (1) Charger job : {:?}", r);
+//                         let job: JobVideo = convertir_bson_deserializable(r)?;
+//                         // Verifier si la job est disponible
+//                         if job.etat == VIDEO_CONVERSION_ETAT_PENDING {
+//                             Some(job)
+//                         } else {
+//                             debug!("Job demandee ({}, {}) n'est pas pending", fuuid_, cle_);
+//                             None
+//                         }
+//                     },
+//                     None => None
+//                 }
+//             },
+//             None => None
+//         },
+//         None => None
+//     };
+//
+//     let job: Option<JobVideo> = match job {
+//         Some(j) => Some(j),
+//         None => {
+//             // Tenter de trouver la prochaine job disponible
+//             let filtre = doc! {"etat": VIDEO_CONVERSION_ETAT_PENDING};
+//             let hint = Some(Hint::Name("etat_jobs".into()));
+//             let options = FindOneOptions::builder().hint(hint).build();
+//             match collection.find_one(filtre, options).await? {
+//                 Some(d) => {
+//                     debug!("trouver_prochaine_job (2) Charger job : {:?}", d);
+//                     Some(convertir_bson_deserializable(d)?)
+//                 },
+//                 None => None
+//             }
+//         }
+//     };
+//
+//     match &job {
+//         Some(j) => {
+//             // Marquer la job comme running
+//             let filtre = doc!{CHAMP_FUUID: &j.fuuid, CHAMP_CLE_CONVERSION: &j.cle_conversion};
+//             let ops = doc! {
+//                 "$set": {"etat": VIDEO_CONVERSION_ETAT_RUNNING},
+//                 "$currentDate": {CHAMP_MODIFICATION: true}
+//             };
+//             collection.update_one(filtre, ops, None).await?;
+//         },
+//         None => ()
+//     }
+//
+//     Ok(job)
+// }
 
 async fn commande_supprimer_video<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -1396,83 +1409,83 @@ async fn commande_supprimer_video<M>(middleware: &M, m: MessageValideAction, ges
     }
 }
 
-async fn commande_get_cle_job_conversion<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
-{
-    debug!("commande_get_cle_job_conversion Consommer commande : {:?}", & m.message);
-    let commande: CommandeGetCleJobConversion = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_get_cle_job_conversion parsed : {:?}", commande);
-
-    // Verifier autorisation
-    if ! m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
-        info!("commande_video_get_job Exchange n'est pas de niveau 3,4");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
-    }
-    if ! m.verifier_roles(vec![RolesCertificats::Media]) {
-        info!("commande_video_get_job Role n'est pas media");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre media)"}), None)?))
-    }
-
-    let expiration = Utc::now() - Duration::minutes(10);
-
-    // Faire une requete en tenter de reserver avec timestamp pour la job
-    // Si aucun resultat, la job existe deja et n'est pas expiree.
-    let filtre = doc!{
-        "fuuids": &commande.fuuid,
-        "$or": [
-            {format!("job.{}", commande.nom_job): {"$exists": false}},
-            {format!("job.{}", commande.nom_job): {"$lt": expiration}}
-        ]
-    };
-    let ops = doc! { "$set": {format!("job.{}", commande.nom_job): Utc::now()} };
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    let doc_resultat = collection.update_one(filtre, ops, None).await?;
-    let reponse = if doc_resultat.modified_count == 1 {
-        debug!("Document reserve, on demande la cle");
-        // Emettre requete de rechiffrage de cle, reponse acheminee directement au demandeur
-        let reply_to = match m.reply_q {
-            Some(r) => r,
-            None => Err(format!("commandes.commande_get_cle_job_conversion Pas de reply q pour message"))?
-        };
-        let correlation_id = match m.correlation_id {
-            Some(r) => r,
-            None => Err(format!("commandes.commande_get_cle_job_conversion Pas de correlation_id pour message"))?
-        };
-        let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE)
-            .exchanges(vec![Securite::L4Secure])
-            .reply_to(reply_to)
-            .correlation_id(correlation_id)
-            .blocking(false)
-            .build();
-
-        // Utiliser certificat du message client (requete) pour demande de rechiffrage
-        let pem_rechiffrage: Vec<String> = match &m.message.certificat {
-            Some(c) => {
-                let fp_certs = c.get_pem_vec();
-                fp_certs.into_iter().map(|cert| cert.pem).collect()
-            },
-            None => Err(format!("commandes.commande_get_cle_job_conversion PEM rechiffrage manquant"))?
-        };
-
-        // let permission = json!({
-        //     "liste_hachage_bytes": vec![commande.fuuid],
-        //     "certificat_rechiffrage": pem_rechiffrage,
-        // });
-
-        let permission = RequeteDechiffrage {
-            domaine: DOMAINE_NOM.to_string(),
-            liste_hachage_bytes: vec![commande.fuuid],
-            certificat_rechiffrage: Some(pem_rechiffrage),
-        };
-
-        debug!("Transmettre requete permission dechiffrage cle : {:?}", permission);
-        middleware.transmettre_requete(routage, &permission).await?;
-
-        None
-    } else {
-        Some(middleware.formatter_reponse(json!({"ok": false, "err": "Echec reservation job", "acces": "5.duplication"}), None)?)
-    };
-
-    Ok(reponse)
-}
+// async fn commande_get_cle_job_conversion<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+//     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+//     where M: GenerateurMessages + MongoDao + ValidateurX509,
+// {
+//     debug!("commande_get_cle_job_conversion Consommer commande : {:?}", & m.message);
+//     let commande: CommandeGetCleJobConversion = m.message.get_msg().map_contenu()?;
+//     debug!("Commande commande_get_cle_job_conversion parsed : {:?}", commande);
+//
+//     // Verifier autorisation
+//     if ! m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+//         info!("commande_video_get_job Exchange n'est pas de niveau 3,4");
+//         return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
+//     }
+//     if ! m.verifier_roles(vec![RolesCertificats::Media]) {
+//         info!("commande_video_get_job Role n'est pas media");
+//         return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre media)"}), None)?))
+//     }
+//
+//     let expiration = Utc::now() - Duration::minutes(10);
+//
+//     // Faire une requete en tenter de reserver avec timestamp pour la job
+//     // Si aucun resultat, la job existe deja et n'est pas expiree.
+//     let filtre = doc!{
+//         "fuuids": &commande.fuuid,
+//         "$or": [
+//             {format!("job.{}", commande.nom_job): {"$exists": false}},
+//             {format!("job.{}", commande.nom_job): {"$lt": expiration}}
+//         ]
+//     };
+//     let ops = doc! { "$set": {format!("job.{}", commande.nom_job): Utc::now()} };
+//     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+//     let doc_resultat = collection.update_one(filtre, ops, None).await?;
+//     let reponse = if doc_resultat.modified_count == 1 {
+//         debug!("Document reserve, on demande la cle");
+//         // Emettre requete de rechiffrage de cle, reponse acheminee directement au demandeur
+//         let reply_to = match m.reply_q {
+//             Some(r) => r,
+//             None => Err(format!("commandes.commande_get_cle_job_conversion Pas de reply q pour message"))?
+//         };
+//         let correlation_id = match m.correlation_id {
+//             Some(r) => r,
+//             None => Err(format!("commandes.commande_get_cle_job_conversion Pas de correlation_id pour message"))?
+//         };
+//         let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE)
+//             .exchanges(vec![Securite::L4Secure])
+//             .reply_to(reply_to)
+//             .correlation_id(correlation_id)
+//             .blocking(false)
+//             .build();
+//
+//         // Utiliser certificat du message client (requete) pour demande de rechiffrage
+//         let pem_rechiffrage: Vec<String> = match &m.message.certificat {
+//             Some(c) => {
+//                 let fp_certs = c.get_pem_vec();
+//                 fp_certs.into_iter().map(|cert| cert.pem).collect()
+//             },
+//             None => Err(format!("commandes.commande_get_cle_job_conversion PEM rechiffrage manquant"))?
+//         };
+//
+//         // let permission = json!({
+//         //     "liste_hachage_bytes": vec![commande.fuuid],
+//         //     "certificat_rechiffrage": pem_rechiffrage,
+//         // });
+//
+//         let permission = RequeteDechiffrage {
+//             domaine: DOMAINE_NOM.to_string(),
+//             liste_hachage_bytes: vec![commande.fuuid],
+//             certificat_rechiffrage: Some(pem_rechiffrage),
+//         };
+//
+//         debug!("Transmettre requete permission dechiffrage cle : {:?}", permission);
+//         middleware.transmettre_requete(routage, &permission).await?;
+//
+//         None
+//     } else {
+//         Some(middleware.formatter_reponse(json!({"ok": false, "err": "Echec reservation job", "acces": "5.duplication"}), None)?)
+//     };
+//
+//     Ok(reponse)
+// }
