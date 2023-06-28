@@ -551,10 +551,23 @@ pub async fn commande_supprimer_job_image<M>(middleware: &M, m: MessageValideAct
     }
     let user_id = &commande.user_id;
 
-    let filtre = doc! { "fuuid": fuuid, "user_id": user_id };
+    {
+        // Verifier si on a un flag de traitement video pending sur versions
+        let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        let filtre = doc!{ CHAMP_FUUID: fuuid, CHAMP_USER_ID: &user_id };
+        debug!("commande_supprimer_job_image Verifier si flag job image est actif pour {:?}", filtre);
+        match collection_versions.find_one(filtre, None).await? {
+            Some(inner) => {
+                let info_fichier: DBFichierVersionDetail = convertir_bson_deserializable(inner)?;
+                if let Some(false) = info_fichier.flag_media_traite {
+                    sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?;
+                }
+            },
+            None => warn!("Recu message annuler job image sans doc fichier version")
+        };
+    }
 
-    let collection = middleware.get_collection(NOM_COLLECTION_IMAGES_JOBS)?;
-    collection.delete_one(filtre, None).await?;
+    gestionnaire.image_job_handler.set_flag(middleware, fuuid, &user_id, None, true).await?;
 
     Ok(middleware.reponse_ok()?)
 }
