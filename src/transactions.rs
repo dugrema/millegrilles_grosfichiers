@@ -51,18 +51,14 @@ where
         TRANSACTION_DECRIRE_COLLECTION |
         TRANSACTION_COPIER_FICHIER_TIERS |
         TRANSACTION_FAVORIS_CREERPATH |
-        TRANSACTION_SUPPRIMER_VIDEO => {
-            match m.verifier_exchanges(vec![Securite::L4Secure]) {
-                true => Ok(()),
-                false => Err(format!("transactions.consommer_transaction: Trigger cedule autorisation invalide (pas 4.secure)"))
-            }?;
-        },
-        // 4.secure
+        TRANSACTION_SUPPRIMER_VIDEO |
         TRANSACTION_ASSOCIER_CONVERSIONS |
-        TRANSACTION_ASSOCIER_VIDEO => {
+        TRANSACTION_ASSOCIER_VIDEO |
+        TRANSACTION_IMAGE_SUPPRIMER_JOB |
+        TRANSACTION_VIDEO_SUPPRIMER_JOB => {
             match m.verifier_exchanges(vec![Securite::L4Secure]) {
                 true => Ok(()),
-                false => Err(format!("transactions.consommer_transaction: Trigger cedule autorisation invalide (pas 4.secure)")),
+                false => Err(format!("transactions.consommer_transaction: pas 4.secure"))
             }?;
         },
         _ => Err(format!("transactions.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
@@ -99,6 +95,8 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_COPIER_FICHIER_TIERS => transaction_copier_fichier_tiers(gestionnaire, middleware, transaction).await,
         TRANSACTION_FAVORIS_CREERPATH => transaction_favoris_creerpath(middleware, transaction).await,
         TRANSACTION_SUPPRIMER_VIDEO => transaction_supprimer_video(middleware, transaction).await,
+        TRANSACTION_IMAGE_SUPPRIMER_JOB => transaction_supprimer_job_image(middleware, gestionnaire, transaction).await,
+        TRANSACTION_VIDEO_SUPPRIMER_JOB => transaction_supprimer_job_video(middleware, gestionnaire, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), action)),
     }
 }
@@ -1977,6 +1975,61 @@ async fn transaction_supprimer_video<M, T>(middleware: &M, transaction: T) -> Re
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
     emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
+
+    // Retourner le tuuid comme reponse, aucune transaction necessaire
+    match middleware.reponse_ok() {
+        Ok(r) => Ok(r),
+        Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
+    }
+}
+
+
+async fn transaction_supprimer_job_image<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_supprimer_job_image Consommer transaction : {:?}", &transaction);
+    let transaction_collection: TransactionSupprimerJobImage = match transaction.clone().convertir() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_supprimer_job_image Erreur conversion transaction : {:?}", e))?
+    };
+
+    let fuuid = &transaction_collection.fuuid;
+    let user_id = &transaction_collection.user_id;
+
+    // Indiquer que la job a ete completee et ne doit pas etre redemarree.
+    if let Err(e) = gestionnaire.image_job_handler.set_flag(middleware, fuuid, user_id,None, true).await {
+        Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag image : {:?}", e))?
+    }
+
+    // Retourner le tuuid comme reponse, aucune transaction necessaire
+    match middleware.reponse_ok() {
+        Ok(r) => Ok(r),
+        Err(e) => Err(format!("transactions.transaction_supprimer_job_image Erreur formattage reponse"))
+    }
+}
+
+async fn transaction_supprimer_job_video<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_supprimer_job_image Consommer transaction : {:?}", &transaction);
+    let transaction_collection: TransactionSupprimerJobVideo = match transaction.clone().convertir() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_supprimer_job_image Erreur conversion transaction : {:?}", e))?
+    };
+
+    let fuuid = &transaction_collection.fuuid;
+    let user_id = &transaction_collection.user_id;
+    let mut cles_supplementaires = HashMap::new();
+    cles_supplementaires.insert("cle_conversion".to_string(), transaction_collection.cle_conversion.clone());
+
+    // Indiquer que la job a ete completee et ne doit pas etre redemarree.
+    if let Err(e) = gestionnaire.video_job_handler.set_flag(middleware, fuuid, user_id,Some(cles_supplementaires), true).await {
+        Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag video : {:?}", e))?
+    }
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
     match middleware.reponse_ok() {

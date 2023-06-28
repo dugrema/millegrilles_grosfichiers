@@ -12,6 +12,7 @@ use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint};
@@ -532,9 +533,37 @@ pub async fn requete_jobs_video<M>(middleware: &M, m: MessageValideAction, gesti
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+struct CommandeSupprimerJobImage {
+    user_id: String,
+    fuuid: String,
+}
+
+pub async fn commande_supprimer_job_image<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("commande_supprimer_job_video Consommer commande : {:?}", & m.message);
+    let commande: CommandeSupprimerJobImage = m.message.get_msg().map_contenu()?;
+
+    let fuuid = &commande.fuuid;
+    if ! m.verifier_roles(vec![RolesCertificats::Media]) && m.verifier_exchanges(vec![Securite::L4Secure]) {
+        Err(format!("traitement_media.commande_supprimer_job_video Certificat n'a pas le role prive ni delegation proprietaire"))?;
+    }
+    let user_id = &commande.user_id;
+
+    let filtre = doc! { "fuuid": fuuid, "user_id": user_id };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_IMAGES_JOBS)?;
+    collection.delete_one(filtre, None).await?;
+
+    Ok(middleware.reponse_ok()?)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct CommandeSupprimerJobVideo {
     fuuid: String,
     cle_conversion: String,
+    user_id: Option<String>,
 }
 
 pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -543,25 +572,50 @@ pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAct
 {
     debug!("commande_supprimer_job_video Consommer commande : {:?}", & m.message);
     let commande: CommandeSupprimerJobVideo = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_supprimer_job_video parsed : {:?}", commande);
 
     let fuuid = &commande.fuuid;
-    if ! m.verifier_roles(vec![RolesCertificats::ComptePrive]) && ! m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        Err(format!("traitement_media.commande_supprimer_job_video Certificat n'a pas le role prive ni delegation proprietaire"))?;
+    let user_id = if m.verifier_roles(vec![RolesCertificats::Media]) && m.verifier_exchanges(vec![Securite::L4Secure]) {
+        match commande.user_id.as_ref() {
+            Some(inner) => inner.to_owned(),
+            None => Err(format!("traitement_media.commande_supprimer_job_video User_id manquant de la commande"))?
+        }
+    } else if m.verifier_roles(vec![RolesCertificats::ComptePrive]) || m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        match m.get_user_id() {
+            Some(u) => u,
+            None => Err(format!("traitement_media.commande_supprimer_job_video User_id manquant du certificat"))?
+        }
+    } else {
+        Err(format!("traitement_media.commande_supprimer_job_video Echec verification securite, acces refuse"))?
+    };
+
+    {
+        // Verifier si on a un flag de traitement video pending sur versions
+        let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        let filtre = doc!{ CHAMP_FUUID: fuuid, CHAMP_USER_ID: &user_id };
+        debug!("commande_supprimer_job_video Verifier si flag job video est actif pour {:?}", filtre);
+        match collection_versions.find_one(filtre, None).await? {
+            Some(inner) => {
+                let info_fichier: DBFichierVersionDetail = convertir_bson_deserializable(inner)?;
+                if let Some(false) = info_fichier.flag_video_traite {
+                    sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?;
+                }
+            },
+            None => warn!("Recu message annuler job video sans doc fichier version")
+        };
     }
-    let user_id = match m.get_user_id() {
-        Some(u) => u,
-        None => Err(format!("traitement_media.commande_supprimer_job_video User_id manquant du certificat"))?
-    };
 
-    let filtre = doc! {
-        "fuuid": fuuid,
-        "cle_conversion": &commande.cle_conversion,
-        "user_id": &user_id,
-    };
+    let mut cles_supplementaires = HashMap::new();
+    cles_supplementaires.insert("cle_conversion".to_string(), commande.cle_conversion.clone());
+    gestionnaire.video_job_handler.set_flag(middleware, fuuid, &user_id, Some(cles_supplementaires), true).await?;
 
-    let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
-    collection.delete_one(filtre, None).await?;
+    // let filtre = doc! {
+    //     "fuuid": fuuid,
+    //     "cle_conversion": &commande.cle_conversion,
+    //     "user_id": &user_id,
+    // };
+    //
+    // let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+    // collection.delete_one(filtre, None).await?;
 
     // Emettre un evenement pour clients
     let evenement = json!({

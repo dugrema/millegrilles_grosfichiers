@@ -56,21 +56,22 @@ pub const TRANSACTION_DECRIRE_COLLECTION: &str = "decrireCollection";
 pub const TRANSACTION_COPIER_FICHIER_TIERS: &str = "copierFichierTiers";
 pub const TRANSACTION_FAVORIS_CREERPATH: &str = "favorisCreerPath";
 pub const TRANSACTION_SUPPRIMER_VIDEO: &str = "supprimerVideo";
+pub const TRANSACTION_IMAGE_SUPPRIMER_JOB: &str = "supprimerJobImage";
+pub const TRANSACTION_VIDEO_SUPPRIMER_JOB: &str = "supprimerJobVideo";
+pub const TRANSACTION_CONFIRMER_FICHIER_INDEXE: &str = "confirmerFichierIndexe";
 
 pub const COMMANDE_REINDEXER: &str = "reindexerConsignation";
 pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";
-pub const COMMANDE_CONFIRMER_FICHIER_INDEXE: &str = "confirmerFichierIndexe";
 pub const COMMANDE_NOUVEAU_FICHIER: &str = "commandeNouveauFichier";
 pub const COMMANDE_ACTIVITE_FUUIDS: &str = "confirmerActiviteFuuids";
+pub const COMMANDE_IMAGE_GET_JOB: &str = "getJobImage";
 pub const COMMANDE_VIDEO_TRANSCODER: &str = "transcoderVideo";
 pub const COMMANDE_VIDEO_ARRETER_CONVERSION: &str = "arreterVideo";
 pub const COMMANDE_VIDEO_DISPONIBLE: &str = "jobConversionVideoDisponible";
 pub const COMMANDE_VIDEO_GET_JOB: &str = "getJobVideo";
-pub const COMMANDE_VIDEO_SUPPRIMER_JOB: &str = "supprimerJobVideo";
 pub const COMMANDE_FUUIDS_DOMAINE_LISTE: &str = "fuuidsDomaineListe";
 pub const COMMANDE_GET_CLE_JOB_CONVERSION: &str = "getCleJobConversion";
 pub const COMMANDE_INDEXATION_GET_JOB: &str = "getJobIndexation";
-
 
 pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
 pub const EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION: &str = "fuuidAjouterFichierCollection";
@@ -207,6 +208,12 @@ pub struct DBFichierVersionDetail {
     pub flag_media_retry: Option<i32>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub metadata: Option<DataChiffre>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_media_traite: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_video_traite: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_index: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -226,7 +233,6 @@ pub struct TransactionAssocierConversions {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionAssocierVideo {
-    pub ok: bool,
     pub tuuid: String,
     pub fuuid: String,
     pub user_id: String,
@@ -309,6 +315,19 @@ pub struct CommandeVideoGetJob {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionSupprimerVideo {
     pub fuuid_video: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionSupprimerJobImage {
+    pub fuuid: String,
+    pub user_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionSupprimerJobVideo {
+    pub fuuid: String,
+    pub cle_conversion: String,
+    pub user_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -192,12 +192,6 @@ async fn set_flag<M,J,S,U>(
         CHAMP_FUUID: fuuid,
     };
 
-    if let Some(inner) = cles_supplementaires {
-        for (k, v) in inner.into_iter() {
-            filtre.insert(k, v);
-        }
-    }
-
     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
 
     // Set flag
@@ -205,27 +199,35 @@ async fn set_flag<M,J,S,U>(
         "$set": { job_handler.get_nom_flag(): valeur },
         "$currentDate": { CHAMP_MODIFICATION: true }
     };
-    debug!("set_flag {}={} : modifier table versions pour {}/{}", job_handler.get_nom_flag(), valeur, user_id, fuuid);
+    debug!("set_flag {}={} : modifier table versions pour {}/{} (filtre : {:?}", job_handler.get_nom_flag(), valeur, user_id, fuuid, filtre.clone());
     collection_versions.update_one(filtre.clone(), ops, None).await?;
+
+    // Completer flags pour job
+    if let Some(inner) = cles_supplementaires {
+        for (k, v) in inner.into_iter() {
+            filtre.insert(k, v);
+        }
+    }
 
     match valeur {
         true => {
-            debug!("set_flag supprimer job ({}) sur {}/{}", job_handler.get_nom_flag(), user_id, fuuid);
+            debug!("set_flag supprimer job ({}) sur {}/{} (filtre : {:?}", job_handler.get_nom_flag(), user_id, fuuid, filtre);
 
             // Set flag
-            let ops = doc! {
-                "$set": { job_handler.get_nom_flag(): true },
-                "$currentDate": { CHAMP_MODIFICATION: true }
-            };
-            collection_versions.update_one(filtre.clone(), ops, None).await?;
+            // let ops = doc! {
+            //     "$set": { job_handler.get_nom_flag(): true },
+            //     "$currentDate": { CHAMP_MODIFICATION: true }
+            // };
+            // collection_versions.update_one(filtre.clone(), ops, None).await?;
 
             // Retirer job
             let collection_jobs = middleware.get_collection(job_handler.get_nom_collection())?;
-            collection_jobs.delete_one(filtre, None).await?;
+            let result = collection_jobs.delete_one(filtre.clone(), None).await?;
+            debug!("set_flag Delete result sur table {}, filtre {:?} : {:?}", job_handler.get_nom_collection(), filtre, result);
         },
         false => {
             // Rien a faire
-            debug!("set_flag {} true : supprimer job sur {}/{} et modifier table versions", job_handler.get_nom_flag(), user_id, fuuid);
+            debug!("set_flag {} false : supprimer job sur {}/{} et modifier table versions", job_handler.get_nom_flag(), user_id, fuuid);
         }
     }
 
@@ -507,19 +509,19 @@ impl From<BackgroundJob> for ReponseJob {
             None => None
         };
         let cle_conversion = match value.champs_optionnels.get("cle_conversion") {
-            Some(inner) => Some(inner.to_string()),
+            Some(inner) => match inner.as_str() {Some(s)=>Some(s.to_owned()), None=>None},
             None => None
         };
         let codec_video = match value.champs_optionnels.get("codec_video") {
-            Some(inner) => Some(inner.to_string()),
+            Some(inner) => match inner.as_str() {Some(s)=>Some(s.to_owned()), None=>None},
             None => None
         };
         let codec_audio = match value.champs_optionnels.get("codec_audio") {
-            Some(inner) => Some(inner.to_string()),
+            Some(inner) => match inner.as_str() {Some(s)=>Some(s.to_owned()), None=>None},
             None => None
         };
         let preset = match value.champs_optionnels.get("preset") {
-            Some(inner) => Some(inner.to_string()),
+            Some(inner) => match inner.as_str() {Some(s)=>Some(s.to_owned()), None=>None},
             None => None
         };
 
@@ -646,7 +648,7 @@ pub async fn trouver_prochaine_job_indexation<M,S>(middleware: &M, nom_collectio
             .return_document(ReturnDocument::Before)
             .build();
         let ops = doc! {
-            "$set": {CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING},
+            "$set": {CHAMP_ETAT: VIDEO_CONVERSION_ETAT_RUNNING},
             "$inc": {CONST_CHAMP_RETRY: 1},
             "$currentDate": {CHAMP_MODIFICATION: true, CONST_CHAMP_DATE_MAJ: true}
         };

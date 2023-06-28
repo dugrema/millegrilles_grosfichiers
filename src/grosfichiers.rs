@@ -192,12 +192,13 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_ASSOCIER_CONVERSIONS,
         TRANSACTION_ASSOCIER_VIDEO,
         TRANSACTION_SUPPRIMER_VIDEO,
+        TRANSACTION_VIDEO_SUPPRIMER_JOB,
+
         COMMANDE_NOUVEAU_FICHIER,
         COMMANDE_VIDEO_TRANSCODER,
         // COMMANDE_VIDEO_ARRETER_CONVERSION,
         COMMANDE_VIDEO_GET_JOB,
         COMMANDE_COMPLETER_PREVIEWS,
-        COMMANDE_VIDEO_SUPPRIMER_JOB,
     ];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
@@ -212,8 +213,12 @@ pub fn preparer_queues() -> Vec<QueueType> {
     }
 
     let commandes_secures: Vec<&str> = vec![
-        COMMANDE_CONFIRMER_FICHIER_INDEXE,
+        TRANSACTION_IMAGE_SUPPRIMER_JOB,
+        TRANSACTION_VIDEO_SUPPRIMER_JOB,
+        TRANSACTION_CONFIRMER_FICHIER_INDEXE,
         COMMANDE_INDEXATION_GET_JOB,
+        COMMANDE_VIDEO_GET_JOB,
+        COMMANDE_IMAGE_GET_JOB,
     ];
     for cmd in commandes_secures {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L4Secure});
@@ -270,6 +275,9 @@ pub fn preparer_queues() -> Vec<QueueType> {
         // Transaction emise par media
         TRANSACTION_ASSOCIER_CONVERSIONS,
         TRANSACTION_ASSOCIER_VIDEO,
+        TRANSACTION_IMAGE_SUPPRIMER_JOB,
+        TRANSACTION_VIDEO_SUPPRIMER_JOB,
+        TRANSACTION_CONFIRMER_FICHIER_INDEXE,
     ];
     for ts in transactions_secures {
         rk_transactions.push(ConfigRoutingExchange {
