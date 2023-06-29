@@ -287,6 +287,7 @@ struct DocumentFichierDetailIds {
     user_id: String,
     flag_media: Option<String>,
     flag_media_traite: Option<bool>,
+    flag_index: Option<bool>,
     mimetype: Option<String>,
     visites: Option<HashMap<String, u32>>,
 }
@@ -321,7 +322,7 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
 
     let filtre = doc! { "fuuids": &evenement.hachage_bytes };
     let projection = doc! {
-        "user_id": 1, "tuuid": 1, "fuuid": 1, "flag_media": 1, "flag_media_traite": 1, "mimetype": 1,
+        "user_id": 1, "tuuid": 1, "fuuid": 1, "flag_media": 1, CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_FLAG_INDEX: 1, "mimetype": 1,
         "visites": 1,
     };
     let options = FindOptions::builder().projection(projection).build();
@@ -340,6 +341,16 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
             }
         };
 
+        let image_traitee = match doc_fuuid.flag_media_traite {
+            Some(inner) => inner,
+            None => false
+        };
+
+        let index_traite = match doc_fuuid.flag_index {
+            Some(inner) => inner,
+            None => false
+        };
+
         for instance in &instances {
             marquer_visites_fuuids(middleware, &fuuids, date_visite, instance.clone()).await?;
         }
@@ -351,15 +362,19 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
             champs_cles.insert("tuuid".to_string(), doc_fuuid.tuuid);
             champs_cles.insert("mimetype".to_string(), mimetype);
 
-            gestionnaire.indexation_job_handler.sauvegarder_job(
-                middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), None,
-                Some(champs_cles.clone()), None, true
-            ).await?;
+            if ! index_traite {
+                gestionnaire.indexation_job_handler.sauvegarder_job(
+                    middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), None,
+                    Some(champs_cles.clone()), None, true
+                ).await?;
+            }
 
-            gestionnaire.image_job_handler.sauvegarder_job(
-                middleware, doc_fuuid.fuuid, doc_fuuid.user_id, None,
-                Some(champs_cles), None, true
-            ).await?;
+            if ! image_traitee {
+                gestionnaire.image_job_handler.sauvegarder_job(
+                    middleware, doc_fuuid.fuuid, doc_fuuid.user_id, None,
+                    Some(champs_cles), None, true
+                ).await?;
+            }
         }
 
         // if let Some(mimetype) = doc_fuuid.mimetype.as_ref() {

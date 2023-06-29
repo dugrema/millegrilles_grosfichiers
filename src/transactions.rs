@@ -88,7 +88,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_RECUPERER_DOCUMENTS => transaction_recuperer_documents(middleware, transaction).await,
         TRANSACTION_ARCHIVER_DOCUMENTS => transaction_archiver_documents(middleware, transaction).await,
         TRANSACTION_CHANGER_FAVORIS => transaction_changer_favoris(middleware, transaction).await,
-        TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, transaction).await,
+        TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, gestionnaire, transaction).await,
         TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, gestionnaire, transaction).await,
         TRANSACTION_DECRIRE_FICHIER => transaction_decire_fichier(middleware, gestionnaire, transaction).await,
         TRANSACTION_DECRIRE_COLLECTION => transaction_decire_collection(middleware, transaction).await,
@@ -973,7 +973,7 @@ async fn transaction_changer_favoris<M, T>(middleware: &M, transaction: T) -> Re
     middleware.reponse_ok()
 }
 
-async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+async fn transaction_associer_conversions<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
         M: GenerateurMessages + MongoDao,
         T: Transaction
@@ -985,6 +985,8 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
     };
 
     let tuuid = transaction_mappee.tuuid.clone();
+    let user_id = transaction_mappee.user_id.as_str();
+    let fuuid = transaction_mappee.fuuid.as_str();
 
     let doc_images = match convertir_to_bson(transaction_mappee.images.clone()) {
         Ok(inner) => inner,
@@ -1011,14 +1013,12 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
 
     // MAJ de la version du fichier
     {
-        let filtre = doc! { CHAMP_FUUID: &transaction_mappee.fuuid };
+        let filtre = doc! { CHAMP_FUUID: &transaction_mappee.fuuid, CHAMP_USER_ID: user_id };
         let mut set_ops = doc! {};
 
         // Si on a le thumbnail, on va marquer media_traite
         debug!("Traiter images : {:?}", transaction_mappee.images);
-        //if transaction_mappee.images.contains_key("thumb") {
-            set_ops.insert("flag_media_traite", true);
-        //}
+        set_ops.insert(CHAMP_FLAG_MEDIA_TRAITE, true);
 
         // Inserer images par cle dans set_ops
         for (k, v) in &doc_images {
@@ -1061,6 +1061,10 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, transaction: T) 
         match collection.update_one(filtre, ops, None).await {
             Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
             Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
+        }
+
+        if let Err(e) = gestionnaire.image_job_handler.set_flag(middleware, fuuid, user_id, None, true).await {
+            error!("Erreur set flag true pour traitement job images {}/{} : {:?}", user_id, fuuid, e);
         }
     }
 
