@@ -307,19 +307,21 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
         };
 
         if let Some(job) = job_existante {
-            if job.retry > CONST_MAX_RETRY {
-                warn!("traiter_indexation_batch Expirer indexation sur document user_id {} tuuid {} : {} retries",
-                    user_id, tuuid_ref, job.retry);
-                let ops = doc!{
-                    "$set": {
-                        champ_flag_index: true,
-                        format!("{}_erreur", champ_flag_index): ERREUR_MEDIA_TOOMANYRETRIES,
-                    }
-                };
-                let filtre_version = doc!{CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref};
-                collection_versions.update_one(filtre_version, ops, None).await?;
-                collection_jobs.delete_one(filtre_job, None).await?;
-                continue;
+            if let Some(retry) = job.retry {
+                if retry > CONST_MAX_RETRY {
+                    warn!("traiter_indexation_batch Expirer indexation sur document user_id {} tuuid {} : {} retries",
+                        user_id, tuuid_ref, retry);
+                    let ops = doc! {
+                        "$set": {
+                            champ_flag_index: true,
+                            format!("{}_erreur", champ_flag_index): ERREUR_MEDIA_TOOMANYRETRIES,
+                        }
+                    };
+                    let filtre_version = doc! {CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref};
+                    collection_versions.update_one(filtre_version, ops, None).await?;
+                    collection_jobs.delete_one(filtre_job, None).await?;
+                    continue;
+                }
             }
         }
 
@@ -444,7 +446,7 @@ pub struct BackgroundJob {
     #[serde(rename="_mg-derniere-modification", skip_serializing)]
     pub date_modification: Value,
     pub date_maj: Option<DateTime>,
-    pub retry: i32,
+    pub retry: Option<i32>,
     #[serde(flatten)]
     pub champs_optionnels: HashMap<String, Value>,
 }
@@ -512,11 +514,11 @@ impl From<BackgroundJob> for ReponseJob {
             Some(inner) => match inner.as_str() {Some(s)=>Some(s.to_owned()), None=>None},
             None => None
         };
-        let codec_video = match value.champs_optionnels.get("codec_video") {
+        let codec_video = match value.champs_optionnels.get("codecVideo") {
             Some(inner) => match inner.as_str() {Some(s)=>Some(s.to_owned()), None=>None},
             None => None
         };
-        let codec_audio = match value.champs_optionnels.get("codec_audio") {
+        let codec_audio = match value.champs_optionnels.get("codecAudio") {
             Some(inner) => match inner.as_str() {Some(s)=>Some(s.to_owned()), None=>None},
             None => None
         };
@@ -526,28 +528,28 @@ impl From<BackgroundJob> for ReponseJob {
         };
 
         // u32 params
-        let resolution_video = match value.champs_optionnels.get("resolution_video") {
+        let resolution_video = match value.champs_optionnels.get("resolutionVideo") {
             Some(inner) => match inner.as_i64() {
                 Some(inner) => Some(inner as u32),
                 None => None
             },
             None => None
         };
-        let quality_video = match value.champs_optionnels.get("quality_video") {
+        let quality_video = match value.champs_optionnels.get("qualityVideo") {
             Some(inner) => match inner.as_i64() {
                 Some(inner) => Some(inner as i32),
                 None => None
             },
             None => None
         };
-        let bitrate_video = match value.champs_optionnels.get("bitrate_video") {
+        let bitrate_video = match value.champs_optionnels.get("bitrateVideo") {
             Some(inner) => match inner.as_i64() {
                 Some(inner) => Some(inner as u32),
                 None => None
             },
             None => None
         };
-        let bitrate_audio = match value.champs_optionnels.get("bitrate_audio") {
+        let bitrate_audio = match value.champs_optionnels.get("bitrateAudio") {
             Some(inner) => match inner.as_i64() {
                 Some(inner) => Some(inner as u32),
                 None => None
