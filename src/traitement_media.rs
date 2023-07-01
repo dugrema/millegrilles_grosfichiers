@@ -587,14 +587,6 @@ pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAct
     debug!("commande_supprimer_job_video Consommer commande : {:?}", & m.message);
     let commande: CommandeSupprimerJobVideo = m.message.get_msg().map_contenu()?;
 
-    {
-        // Emettre evenement annulerJobVideo pour media, collections
-        let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_ANNULER_JOB_VIDEO)
-            .exchanges(vec![Securite::L2Prive])
-            .build();
-        middleware.emettre_evenement(routage, &commande).await?;
-    }
-
     let fuuid = &commande.fuuid;
     let user_id = if m.verifier_roles(vec![RolesCertificats::Media]) && m.verifier_exchanges(vec![Securite::L4Secure]) {
         match commande.user_id.as_ref() {
@@ -609,6 +601,21 @@ pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAct
     } else {
         Err(format!("traitement_media.commande_supprimer_job_video Echec verification securite, acces refuse"))?
     };
+
+    {
+        // Emettre evenement annulerJobVideo pour media, collections
+        let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_ANNULER_JOB_VIDEO)
+            .exchanges(vec![Securite::L2Prive])
+            .build();
+
+        let evenement_arreter_job = CommandeSupprimerJobVideo {
+            fuuid: fuuid.to_owned(),
+            cle_conversion: commande.cle_conversion.to_owned(),
+            user_id: Some(user_id.clone()),
+        };
+
+        middleware.emettre_evenement(routage, &evenement_arreter_job).await?;
+    }
 
     {
         // Verifier si on a un flag de traitement video pending sur versions
