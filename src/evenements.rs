@@ -287,6 +287,7 @@ struct DocumentFichierDetailIds {
     user_id: String,
     flag_media: Option<String>,
     flag_media_traite: Option<bool>,
+    flag_video_traite: Option<bool>,
     flag_index: Option<bool>,
     mimetype: Option<String>,
     visites: Option<HashMap<String, u32>>,
@@ -320,10 +321,14 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
         None => Err(format!("evenements.evenement_visiter_fuuids Certificat sans commonName"))?
     };
 
+    // Marquer la visite courante
+    marquer_visites_fuuids(middleware, &vec![evenement.hachage_bytes.clone()], date_visite, instance_id.clone()).await?;
+
     let filtre = doc! { "fuuids": &evenement.hachage_bytes };
     let projection = doc! {
-        "user_id": 1, "tuuid": 1, "fuuid": 1, "flag_media": 1, CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_FLAG_INDEX: 1, "mimetype": 1,
-        "visites": 1,
+        "user_id": 1, "tuuid": 1, "fuuid": 1, "flag_media": 1, "mimetype": 1, "visites": 1,
+        CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_FLAG_INDEX: 1, CHAMP_FLAG_VIDEO_TRAITE: 1,
+
     };
     let options = FindOptions::builder().projection(projection).build();
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
@@ -341,12 +346,17 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
             }
         };
 
+        let index_traite = match doc_fuuid.flag_index {
+            Some(inner) => inner,
+            None => false
+        };
+
         let image_traitee = match doc_fuuid.flag_media_traite {
             Some(inner) => inner,
             None => false
         };
 
-        let index_traite = match doc_fuuid.flag_index {
+        let video_traite = match doc_fuuid.flag_video_traite {
             Some(inner) => inner,
             None => false
         };
@@ -364,17 +374,27 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
 
             if ! index_traite {
                 gestionnaire.indexation_job_handler.sauvegarder_job(
-                    middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), None,
+                    middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), Some(instance_id.clone()),
                     Some(champs_cles.clone()), None, true
                 ).await?;
             }
 
             if ! image_traitee {
+                // Note : La job est uniquement creee si le format est une image
                 gestionnaire.image_job_handler.sauvegarder_job(
-                    middleware, doc_fuuid.fuuid, doc_fuuid.user_id, None,
+                    middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), Some(instance_id.clone()),
+                    Some(champs_cles.clone()), None, true
+                ).await?;
+            }
+
+            if ! video_traite {
+                // Note : La job est uniquement creee si le format est une image
+                gestionnaire.video_job_handler.sauvegarder_job(
+                    middleware, doc_fuuid.fuuid, doc_fuuid.user_id, Some(instance_id.clone()),
                     Some(champs_cles), None, true
                 ).await?;
             }
+
         }
 
         // if let Some(mimetype) = doc_fuuid.mimetype.as_ref() {
