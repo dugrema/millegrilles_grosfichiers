@@ -131,6 +131,7 @@ impl JobHandler for VideoJobHandler {
                 parametres.insert("codecAudio".to_string(), Bson::String("aac".to_string()));
                 parametres.insert("codecVideo".to_string(), Bson::String("h264".to_string()));
                 parametres.insert("preset".to_string(), Bson::String("medium".to_string()));
+                parametres.insert("fallback".to_string(), Bson::Boolean(true));
 
                 parametres
             }
@@ -585,6 +586,14 @@ pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAct
 {
     debug!("commande_supprimer_job_video Consommer commande : {:?}", & m.message);
     let commande: CommandeSupprimerJobVideo = m.message.get_msg().map_contenu()?;
+
+    {
+        // Emettre evenement annulerJobVideo pour media, collections
+        let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_ANNULER_JOB_VIDEO)
+            .exchanges(vec![Securite::L2Prive])
+            .build();
+        middleware.emettre_evenement(routage, &commande).await?;
+    }
 
     let fuuid = &commande.fuuid;
     let user_id = if m.verifier_roles(vec![RolesCertificats::Media]) && m.verifier_exchanges(vec![Securite::L4Secure]) {

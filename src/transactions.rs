@@ -2019,7 +2019,7 @@ async fn transaction_supprimer_job_video<M, T>(middleware: &M, gestionnaire: &Ge
         M: GenerateurMessages + MongoDao,
         T: Transaction
 {
-    debug!("transaction_supprimer_job_image Consommer transaction : {:?}", &transaction);
+    debug!("transaction_supprimer_job_video Consommer transaction : {:?}", &transaction);
     let transaction_collection: TransactionSupprimerJobVideo = match transaction.clone().convertir() {
         Ok(t) => t,
         Err(e) => Err(format!("grosfichiers.transaction_supprimer_job_image Erreur conversion transaction : {:?}", e))?

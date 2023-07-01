@@ -93,6 +93,7 @@ pub const EVENEMENT_FICHIERS_SYNCPRET: &str = "syncPret";
 pub const EVENEMENT_FICHIERS_VISITER_FUUIDS: &str = "visiterFuuids";
 pub const EVENEMENT_FICHIERS_CONSIGNE: &str = "consigne";
 pub const EVENEMENT_REINDEXER_CONSIGNATION: &str = "reindexerConsignation";
+pub const EVENEMENT_ANNULER_JOB_VIDEO: &str = "annulerJobVideo";
 
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 pub const CHAMP_FUUIDS: &str = "fuuids";
@@ -294,16 +295,17 @@ pub struct CommandeVideoConvertir {
     pub preset: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub user_id: Option<String>,
+    pub fallback: Option<bool>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommandeVideoArreterConversion {
-    pub fuuid: String,
-    #[serde(rename="cleConversion")]
-    pub cle_conversion: String,
-    pub user_id: Option<String>,    // Utilise par systeme pour rapporter erreur fatale
-    pub code_erreur: Option<i64>,   // Si Some, toggle flag_video a true sur version fichier
-}
+// #[derive(Clone, Debug, Serialize, Deserialize)]
+// pub struct CommandeVideoArreterConversion {
+//     pub fuuid: String,
+//     #[serde(rename="cleConversion")]
+//     pub cle_conversion: String,
+//     pub user_id: Option<String>,    // Utilise par systeme pour rapporter erreur fatale
+//     pub code_erreur: Option<i64>,   // Si Some, toggle flag_video a true sur version fichier
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeVideoGetJob {
