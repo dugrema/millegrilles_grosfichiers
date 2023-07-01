@@ -805,11 +805,17 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, 
     let commande: CommandeCompleterPreviews = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_completer_previews parsed : {:?}", commande);
 
-    todo!("fix me");
+    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
+    // Verifier si on a un certificat delegation globale ou prive
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => {
+            warn!("commande_completer_previews User_id n'est pas fourni, commande refusee");
+            let reponse = middleware.formatter_reponse(json!({"ok": false, "err": "Acces refuse (user_id)"}), None)?;
+            return Ok(Some(reponse))
+        }
+    };
 
-    // // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
-    // // Verifier si on a un certificat delegation globale ou prive
-    // let user_id = m.get_user_id();
     // let autorisation_valide = match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
     //     true => true,
     //     false => {
@@ -852,32 +858,66 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, 
     //         }
     //     },
     // };
-    //
+
     // if ! autorisation_valide {
     //     Err(format!("commandes.commande_completer_previews: Commande autorisation invalide pour message {:?}", m.correlation_id))?
     // }
-    //
-    // let limite = match commande.limit {
-    //     Some(inner) => inner,
-    //     None => MEDIA_IMAGE_BACTH_DEFAULT,
-    // };
-    //
+
+    // Parcourir tous les fuuids demandes pour le user_id
+    let filtre = match commande.fuuids {
+        Some(fuuids) => {
+            doc! {CHAMP_USER_ID: &user_id, CHAMP_FUUID: {"$in": fuuids}}
+        },
+        None => {
+            warn!("commande_completer_previews Aucuns fuuids, pas d'effet.");
+            let reponse = middleware.formatter_reponse(json!({"ok": true, "message": "Aucun effet (pas de fuuids fournis)"}), None)?;
+            return Ok(Some(reponse))
+        }
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let mut curseur = collection.find(filtre, None).await?;
+    while let Some(d) = curseur.next().await {
+        let fichier: RowTuuid = convertir_bson_deserializable(d?)?;
+        if let Some(fuuid) = fichier.fuuid {
+            if let Some(mimetype) = fichier.mimetype {
+                let mut champs_cles = HashMap::new();
+                champs_cles.insert("tuuid".to_string(), fichier.tuuid);
+                champs_cles.insert("mimetype".to_string(), mimetype);
+
+                // Prendre une instance au hasard si present
+                let instance = match fichier.visites {
+                    Some(visites) => {
+                        visites.into_keys().next()
+                    },
+                    None => None
+                };
+
+                gestionnaire.image_job_handler.sauvegarder_job(
+                    middleware, fuuid, &user_id,
+                    instance, Some(champs_cles), None, true).await?;
+            }
+        }
+
+    }
+
     // let reset = match commande.reset {
     //     Some(b) => b,
     //     None => false
     // };
-    //
-    // let tuuids = traiter_media_batch(middleware, limite, reset, commande.fuuids, user_id).await?;
-    //
-    // // Reponse generer preview
-    // let reponse = ReponseCommandeReindexer {ok: true, tuuids: Some(tuuids)};
-    // Ok(Some(middleware.formatter_reponse(reponse, None)?))
+
+    // Reponse generer preview
+    let reponse = json!({ "ok": true });
+    Ok(Some(middleware.formatter_reponse(reponse, None)?))
 }
 
 #[derive(Clone, Deserialize)]
 struct RowTuuid {
     tuuid: String,
+    fuuid: Option<String>,
     fuuids: Option<Vec<String>>,
+    mimetype: Option<String>,
+    visites: Option<HashMap<String, i64>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
