@@ -19,7 +19,6 @@ use crate::grosfichiers::{emettre_evenement_maj_fichier, GestionnaireGrosFichier
 
 use crate::grosfichiers_constantes::*;
 use crate::traitement_jobs::JobHandler;
-// use crate::traitement_media::emettre_commande_media;
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
 
@@ -47,26 +46,6 @@ pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireG
         _ => Err(format!("grosfichiers.consommer_evenement: Mauvais type d'action pour un evenement : {}", m.action))?,
     }
 }
-
-// async fn evenement_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction)
-//     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-//     where M: GenerateurMessages + MongoDao,
-// {
-//     let uuid_transaction = m.correlation_id.clone();
-//
-//     if !m.verifier_exchanges(vec![L2Prive]) {
-//         error!("evenement_confirmer_etat_fuuids Acces refuse, certificat n'est pas d'un exchange L2 : {:?}", uuid_transaction);
-//         return Ok(None)
-//     }
-//
-//     debug!("evenement_confirmer_etat_fuuids Message : {:?}", & m.message);
-//     let evenement: EvenementConfirmerEtatFuuids = m.message.get_msg().map_contenu(None)?;
-//     debug!("evenement_confirmer_etat_fuuids parsed : {:?}", evenement);
-//
-//     repondre_fuuids(middleware, &evenement.fuuids).await?;
-//
-//     Ok(None)
-// }
 
 async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValideAction)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -397,39 +376,7 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
 
         }
 
-        // if let Some(mimetype) = doc_fuuid.mimetype.as_ref() {
-        //     debug!("Consignation sur fichier media non traite, emettre evenement pour tuuid {}", doc_fuuid.tuuid);
-        //     if let Err(e) = emettre_commande_media(middleware, &doc_fuuid.tuuid, &doc_fuuid.fuuid, mimetype, false).await {
-        //         error!("evenements.evenement_fichier_consigne Erreur emission commande generer image {} : {:?}", doc_fuuid.fuuid, e);
-        //     }
-        // }
     }
-
-    // let doc_fuuid: DocumentFichierDetailIds = match collection.find_one(filtre, Some(options)).await? {
-    //     Some(inner) => convertir_bson_deserializable(inner)?,
-    //     None => {
-    //         warn!("evenements.evenement_visiter_fuuids Le document fuuid {} n'existe pas, abort evenement", evenement.hachage_bytes);
-    //         return Ok(None)
-    //     }
-    // };
-    //
-    // let fuuids = vec![evenement.hachage_bytes];
-    //
-    // marquer_visites_fuuids(middleware, &fuuids, date_visite, instance_id).await?;
-
-    // Emettre un evenement sur le fichier (tuuid)
-    // emettre_evenement_maj_fichier(middleware, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
-
-    // Verifier
-
-    // if let Some(false) = doc_fuuid.flag_media_traite {
-    //     if let Some(mimetype) = doc_fuuid.mimetype.as_ref() {
-    //         debug!("Consignation sur fichier media non traite, emettre evenement pour tuuid {}", doc_fuuid.tuuid);
-    //         if let Err(e) = emettre_commande_media(middleware, &doc_fuuid.tuuid, &doc_fuuid.fuuid, mimetype, false).await {
-    //             error!("evenements.evenement_fichier_consigne Erreur emission commande generer image {} : {:?}", doc_fuuid.fuuid, e);
-    //         }
-    //     }
-    // }
 
     Ok(None)
 }
