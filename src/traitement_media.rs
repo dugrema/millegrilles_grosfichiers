@@ -108,6 +108,37 @@ impl JobHandler for VideoJobHandler {
         -> Result<(), Box<dyn Error>>
         where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send
     {
+
+        // Tester le mimetype pour savoir si la job s'applique
+        let mimetype = match champs_cles.as_ref() {
+            Some(inner) => {
+                match inner.get("mimetype") {
+                    Some(inner) => inner,
+                    None => {
+                        debug!("sauvegarder_job Mimetype absent, skip sauvegarder job video");
+                        return Ok(())
+                    }
+                }
+            },
+            None => {
+                debug!("sauvegarder_job Mimetype absent, skip sauvegarder job video");
+                return Ok(())
+            }
+        };
+
+        if ! job_video_supportee(mimetype) {
+            debug!("sauvegarder_job video, type {} non supporte", mimetype);
+            return Ok(())
+            // sauvegarder_job(middleware, self, fuuid, user_id, instance.clone(), champs_cles, parametres).await?;
+            //
+            // if let Some(inner) = instance {
+            //     if emettre_trigger {
+            //         self.emettre_trigger(middleware, inner).await;
+            //     }
+            // }
+        }
+
+
         let mut champs_cles = match champs_cles {
             Some(inner) => inner,
             None => HashMap::new()
@@ -454,5 +485,22 @@ fn job_image_supportee<S>(mimetype: S) -> bool
                 _ => false
             }
         }
+    }
+}
+
+fn job_video_supportee<S>(mimetype: S) -> bool
+    where S: AsRef<str>
+{
+    let mimetype = mimetype.as_ref();
+    let subtype = match mimetype.split("/").next() {
+        Some(t) => t,
+        None => {
+            error!("traitement_media.job_image_supportee Mimetype {}, subtype non identifiable", mimetype);
+            return false
+        }
+    };
+    match subtype {
+        "video" => true,
+        _ => false
     }
 }
