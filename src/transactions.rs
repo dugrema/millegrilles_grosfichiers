@@ -985,7 +985,10 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, gestionnaire: &G
     };
 
     let tuuid = transaction_mappee.tuuid.clone();
-    let user_id = transaction_mappee.user_id.as_str();
+    let user_id = match transaction_mappee.user_id.as_ref() {
+        Some(inner) => Some(inner.as_str()),
+        None => None
+    };
     let fuuid = transaction_mappee.fuuid.as_str();
 
     let doc_images = match convertir_to_bson(transaction_mappee.images.clone()) {
@@ -1013,7 +1016,11 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, gestionnaire: &G
 
     // MAJ de la version du fichier
     {
-        let filtre = doc! { CHAMP_FUUID: &transaction_mappee.fuuid, CHAMP_USER_ID: user_id };
+        let mut filtre = doc! { CHAMP_FUUID: &transaction_mappee.fuuid };
+        if let Some(inner) = user_id {
+            // Note : legacy, supporte ancienne transaction (pre 2023.6) qui n'avait pas le user_id
+            filtre.insert(CHAMP_USER_ID, inner);
+        }
         let mut set_ops = doc! {};
 
         // Si on a le thumbnail, on va marquer media_traite
@@ -1064,7 +1071,7 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, gestionnaire: &G
         }
 
         if let Err(e) = gestionnaire.image_job_handler.set_flag(middleware, fuuid, user_id, None, true).await {
-            error!("Erreur set flag true pour traitement job images {}/{} : {:?}", user_id, fuuid, e);
+            error!("Erreur set flag true pour traitement job images {:?}/{} : {:?}", user_id, fuuid, e);
         }
     }
 
@@ -1291,7 +1298,7 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
         let mut cles_supplementaires = HashMap::new();
         cles_supplementaires.insert(CHAMP_CLE_CONVERSION.to_string(), cle_video.clone());
         if let Err(e) = gestionnaire.video_job_handler.set_flag(
-            middleware, &transaction_mappee.fuuid, &transaction_mappee.user_id, Some(cles_supplementaires), true).await {
+            middleware, &transaction_mappee.fuuid, Some(&transaction_mappee.user_id), Some(cles_supplementaires), true).await {
             error!("transaction_associer_video Erreur traitement flag : {:?}", e);
         }
 
@@ -2003,7 +2010,7 @@ async fn transaction_supprimer_job_image<M, T>(middleware: &M, gestionnaire: &Ge
     let user_id = &transaction_collection.user_id;
 
     // Indiquer que la job a ete completee et ne doit pas etre redemarree.
-    if let Err(e) = gestionnaire.image_job_handler.set_flag(middleware, fuuid, user_id,None, true).await {
+    if let Err(e) = gestionnaire.image_job_handler.set_flag(middleware, fuuid, Some(user_id),None, true).await {
         Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag image : {:?}", e))?
     }
 
@@ -2031,7 +2038,7 @@ async fn transaction_supprimer_job_video<M, T>(middleware: &M, gestionnaire: &Ge
     cles_supplementaires.insert("cle_conversion".to_string(), transaction_collection.cle_conversion.clone());
 
     // Indiquer que la job a ete completee et ne doit pas etre redemarree.
-    if let Err(e) = gestionnaire.video_job_handler.set_flag(middleware, fuuid, user_id,Some(cles_supplementaires), true).await {
+    if let Err(e) = gestionnaire.video_job_handler.set_flag(middleware, fuuid, Some(user_id),Some(cles_supplementaires), true).await {
         Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag video : {:?}", e))?
     }
 

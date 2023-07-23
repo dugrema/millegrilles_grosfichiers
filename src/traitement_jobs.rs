@@ -108,7 +108,7 @@ pub trait JobHandler: Clone + Sized + Sync {
 
     /// Set le flag de traitement complete
     async fn set_flag<M,S,U>(
-        &self, middleware: &M, fuuid: S, user_id: U,
+        &self, middleware: &M, fuuid: S, user_id: Option<U>,
         cles_supplementaires: Option<HashMap<String, String>>,
         valeur: bool
     ) -> Result<(), Box<dyn Error>>
@@ -178,19 +178,25 @@ pub async fn trouver_jobs_instances<J,M>(middleware: &M, job_handler: &J)
 }
 
 async fn set_flag<M,J,S,U>(
-    middleware: &M, job_handler: &J, fuuid: S, user_id: U,
+    middleware: &M, job_handler: &J, fuuid: S, user_id: Option<U>,
     cles_supplementaires: Option<HashMap<String, String>>,
     valeur: bool
 ) -> Result<(), Box<dyn Error>>
     where M: MongoDao, J: JobHandler, S: AsRef<str> + Send, U: AsRef<str> + Send
 {
     let fuuid = fuuid.as_ref();
-    let user_id = user_id.as_ref();
+    let user_id = match user_id.as_ref() {
+        Some(inner) => Some(inner.as_ref()),
+        None => None
+    };
 
     let mut filtre = doc!{
-        CHAMP_USER_ID: user_id,
         CHAMP_FUUID: fuuid,
     };
+    if let Some(inner) = user_id {
+        // Lagacy - supporte vieilles transactions sans user_id
+        filtre.insert(CHAMP_USER_ID, inner);
+    }
 
     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
 
@@ -199,7 +205,7 @@ async fn set_flag<M,J,S,U>(
         "$set": { job_handler.get_nom_flag(): valeur },
         "$currentDate": { CHAMP_MODIFICATION: true }
     };
-    debug!("set_flag {}={} : modifier table versions pour {}/{} (filtre : {:?}", job_handler.get_nom_flag(), valeur, user_id, fuuid, filtre.clone());
+    debug!("set_flag {}={} : modifier table versions pour {:?}/{} (filtre : {:?}", job_handler.get_nom_flag(), valeur, user_id, fuuid, filtre.clone());
     collection_versions.update_one(filtre.clone(), ops, None).await?;
 
     // Completer flags pour job
@@ -211,7 +217,7 @@ async fn set_flag<M,J,S,U>(
 
     match valeur {
         true => {
-            debug!("set_flag supprimer job ({}) sur {}/{} (filtre : {:?}", job_handler.get_nom_flag(), user_id, fuuid, filtre);
+            debug!("set_flag supprimer job ({}) sur {:?}/{} (filtre : {:?}", job_handler.get_nom_flag(), user_id, fuuid, filtre);
 
             // Set flag
             // let ops = doc! {
@@ -227,7 +233,7 @@ async fn set_flag<M,J,S,U>(
         },
         false => {
             // Rien a faire
-            debug!("set_flag {} false : supprimer job sur {}/{} et modifier table versions", job_handler.get_nom_flag(), user_id, fuuid);
+            debug!("set_flag {} false : supprimer job sur {:?}/{} et modifier table versions", job_handler.get_nom_flag(), user_id, fuuid);
         }
     }
 

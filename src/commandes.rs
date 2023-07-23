@@ -257,6 +257,10 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValideAction
         Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas media) pour message {:?}", m.correlation_id))?
     }
 
+    if commande.user_id.is_none() {
+        Err(format!("grosfichiers.commande_associer_conversions: User_id obligatoire depuis version 2023.6 {:?}", m.correlation_id))?
+    }
+
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
@@ -948,7 +952,7 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAc
 
     // Traiter la commande
     if let Err(e) = gestionnaire.indexation_job_handler.set_flag(
-        middleware, commande.fuuid, commande.user_id, None, true).await {
+        middleware, commande.fuuid, Some(commande.user_id), None, true).await {
         error!("commande_confirmer_fichier_indexe Erreur traitement flag : {:?}", e);
     }
     // set_flag_indexe(middleware, &commande.fuuid, &commande.user_id).await?;

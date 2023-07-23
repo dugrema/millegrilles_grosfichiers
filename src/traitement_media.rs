@@ -381,7 +381,7 @@ pub async fn commande_supprimer_job_image<M>(middleware: &M, m: MessageValideAct
         };
     }
 
-    gestionnaire.image_job_handler.set_flag(middleware, fuuid, &user_id, None, true).await?;
+    gestionnaire.image_job_handler.set_flag(middleware, fuuid, Some(user_id), None, true).await?;
 
     Ok(middleware.reponse_ok()?)
 }
@@ -448,7 +448,7 @@ pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAct
 
     let mut cles_supplementaires = HashMap::new();
     cles_supplementaires.insert("cle_conversion".to_string(), commande.cle_conversion.clone());
-    gestionnaire.video_job_handler.set_flag(middleware, fuuid, &user_id, Some(cles_supplementaires), true).await?;
+    gestionnaire.video_job_handler.set_flag(middleware, fuuid, Some(&user_id), Some(cles_supplementaires), true).await?;
 
     // Emettre un evenement pour clients
     let evenement = json!({

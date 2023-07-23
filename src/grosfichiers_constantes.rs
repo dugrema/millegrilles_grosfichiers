@@ -221,7 +221,7 @@ pub struct DBFichierVersionDetail {
 pub struct TransactionAssocierConversions {
     pub tuuid: String,
     pub fuuid: String,
-    pub user_id: String,
+    pub user_id: Option<String>,  // Option = legacy, nouvelle version c'est obligatoire
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub mimetype: Option<String>,
