@@ -329,6 +329,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         doc_version.insert(CHAMP_TUUID, &tuuid);
         doc_version.insert(CHAMP_USER_ID, &user_id);
         doc_version.insert(CHAMP_FUUIDS, vec![&fuuid]);
+        doc_version.insert(CHAMP_FUUIDS_RECLAMES, vec![&fuuid]);
 
         // Information optionnelle pour accelerer indexation/traitement media
         if mimetype.starts_with("image") {
@@ -367,10 +368,13 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
     doc_bson_transaction.remove(CHAMP_FUUID);
 
     let filtre = doc! {CHAMP_TUUID: &tuuid};
-    let mut add_to_set = doc!{"fuuids": &fuuid};
+    let mut add_to_set = doc!{
+        CHAMP_FUUIDS: &fuuid,
+        CHAMP_FUUIDS_RECLAMES: &fuuid,
+    };
     // Ajouter collection au besoin
     if let Some(c) = cuuid.as_ref() {
-        add_to_set.insert("cuuids", c);
+        add_to_set.insert(CHAMP_CUUIDS, c);
     }
 
     let ops = doc! {
@@ -997,21 +1001,17 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, gestionnaire: &G
     };
 
     // Mapper tous les fuuids avec leur mimetype
-    let (fuuids, fuuid_mimetypes) = {
+    let (fuuids, fuuids_reclames) = {
         let mut fuuids = Vec::new();
-        let mut fuuid_mimetypes = HashMap::new();
+        let mut fuuids_reclames = Vec::new();
         fuuids.push(transaction_mappee.fuuid.clone());
-        if let Some(mimetype) = &transaction_mappee.mimetype {
-            fuuid_mimetypes.insert(transaction_mappee.fuuid.clone(), mimetype.clone());
-        }
         for (_, image) in transaction_mappee.images.iter() {
             fuuids.push(image.hachage.to_owned());
-            if let Some(mimetype) = &image.mimetype {
-                fuuid_mimetypes.insert(image.hachage.to_owned(), mimetype.clone());
+            if image.data_chiffre.is_none() {
+                fuuids_reclames.push(image.hachage.to_owned());
             }
         }
-
-        (fuuids, fuuid_mimetypes)
+        (fuuids, fuuids_reclames)
     };
 
     // MAJ de la version du fichier
@@ -1056,7 +1056,10 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, gestionnaire: &G
         //     set_ops.insert(format!("{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
         // }
 
-        let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
+        let add_to_set = doc! {
+            CHAMP_FUUIDS: {"$each": &fuuids},
+            CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids_reclames},
+        };
 
         let ops = doc! {
             "$set": set_ops,
@@ -1114,7 +1117,10 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, gestionnaire: &G
         // }
 
         // Combiner les fuuids hors de l'info de version
-        let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
+        let add_to_set = doc! {
+            CHAMP_FUUIDS: {"$each": &fuuids},
+            CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids_reclames},
+        };
 
         let ops = doc! {
             "$set": set_ops,
@@ -1244,7 +1250,10 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
         // }
 
         // Combiner les fuuids hors de l'info de version
-        let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
+        let add_to_set = doc! {
+            CHAMP_FUUIDS: {"$each": &fuuids},
+            CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids},
+        };
 
         let mut ops = doc! {
             "$set": set_ops,
@@ -1281,7 +1290,10 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
         // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
         //     set_ops.insert(format!("{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
         // }
-        let add_to_set = doc! {CHAMP_FUUIDS: {"$each": &fuuids}};
+        let add_to_set = doc! {
+            CHAMP_FUUIDS: {"$each": &fuuids},
+            CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids},
+        };
         let ops = doc! {
             "$set": set_ops,
             "$addToSet": add_to_set,
@@ -1613,6 +1625,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
 
     debug!("Fuuids fichier : {:?}", fuuids);
     doc_bson_transaction.insert(CHAMP_FUUIDS, &fuuids);
+    doc_bson_transaction.insert(CHAMP_FUUIDS_RECLAMES, &fuuids);
 
     // Retirer champ CUUID, pas utile dans l'information de version
     doc_bson_transaction.remove(CHAMP_CUUID);
@@ -1623,6 +1636,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         let mut doc_version = doc_bson_transaction.clone();
         doc_version.insert(CHAMP_TUUID, &tuuid);
         doc_version.insert(CHAMP_FUUIDS, &fuuids);
+        doc_version.insert(CHAMP_FUUIDS_RECLAMES, &fuuids);
 
         // Information optionnelle pour accelerer indexation/traitement media
         if mimetype.starts_with("image") {
@@ -1666,6 +1680,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     doc_bson_transaction.remove(CHAMP_FUUID);
     doc_bson_transaction.remove(CHAMP_METADATA);
     doc_bson_transaction.remove(CHAMP_FUUIDS);
+    doc_bson_transaction.remove(CHAMP_FUUIDS_RECLAMES);
     doc_bson_transaction.remove(CHAMP_USER_ID);
 
     let filtre = doc! {CHAMP_TUUID: &tuuid};

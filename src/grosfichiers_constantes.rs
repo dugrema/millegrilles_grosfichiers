@@ -98,6 +98,7 @@ pub const EVENEMENT_ANNULER_JOB_VIDEO: &str = "annulerJobVideo";
 
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 pub const CHAMP_FUUIDS: &str = "fuuids";
+pub const CHAMP_FUUIDS_RECLAMES: &str = "fuuids_reclames";
 pub const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale (fichier ou collection)
 pub const CHAMP_TUUIDS: &str = "tuuids";
 pub const CHAMP_CUUID: &str = "cuuid";  // UUID collection de tuuids

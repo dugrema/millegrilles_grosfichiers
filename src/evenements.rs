@@ -122,7 +122,7 @@ async fn transmettre_fuuids_fichiers<M>(middleware: &M, fuuids: &Vec<String>, ar
 
 #[derive(Clone, Debug, Deserialize)]
 struct RowFichiersSyncpret {
-    fuuids: Vec<String>,
+    fuuids_reclames: Vec<String>,
     archive: Option<bool>,
 }
 
@@ -153,17 +153,17 @@ pub async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValideActi
     let mut fichiers_actifs: Vec<String> = Vec::with_capacity(10000);
     let mut fichiers_archives: Vec<String> = Vec::with_capacity(10000);
 
-    let projection = doc!{ CHAMP_ARCHIVE: 1, CHAMP_FUUIDS: 1 };
+    let projection = doc!{ CHAMP_ARCHIVE: 1, CHAMP_FUUIDS_RECLAMES: 1 };
     let options = FindOptions::builder().projection(projection).build();
-    let filtre = doc! { CHAMP_SUPPRIME: false, CHAMP_FUUIDS: {"$exists": true} };
+    let filtre = doc! { CHAMP_SUPPRIME: false, CHAMP_FUUIDS_RECLAMES: {"$exists": true} };
     let mut curseur = collection.find(filtre, Some(options)).await?;
     while let Some(f) = curseur.next().await {
         let info_fichier: RowFichiersSyncpret = convertir_bson_deserializable(f?)?;
         let archive = match info_fichier.archive { Some(b) => b, None => false };
         if archive {
-            fichiers_archives.extend(info_fichier.fuuids.into_iter());
+            fichiers_archives.extend(info_fichier.fuuids_reclames.into_iter());
         } else {
-            fichiers_actifs.extend(info_fichier.fuuids.into_iter());
+            fichiers_actifs.extend(info_fichier.fuuids_reclames.into_iter());
         }
 
         if fichiers_actifs.len() >= LIMITE_FUUIDS_BATCH {
