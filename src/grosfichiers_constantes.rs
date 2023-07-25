@@ -72,6 +72,7 @@ pub const COMMANDE_VIDEO_GET_JOB: &str = "getJobVideo";
 pub const COMMANDE_FUUIDS_DOMAINE_LISTE: &str = "fuuidsDomaineListe";
 pub const COMMANDE_GET_CLE_JOB_CONVERSION: &str = "getCleJobConversion";
 pub const COMMANDE_INDEXATION_GET_JOB: &str = "getJobIndexation";
+pub const COMMANDE_RECLAMER_FUUIDS: &str = "reclamerFuuids";
 
 pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
 pub const EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION: &str = "fuuidAjouterFichierCollection";

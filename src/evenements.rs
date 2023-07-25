@@ -9,7 +9,7 @@ use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissi
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::L2Prive;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
-use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
@@ -104,13 +104,14 @@ async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValideAction
     Ok(None)
 }
 
-async fn transmettre_fuuids_fichiers<M>(middleware: &M, fuuids: &Vec<String>, archive: bool)
+async fn transmettre_fuuids_fichiers<M>(middleware: &M, fuuids: &Vec<String>, archive: bool, termine: bool)
     -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + MongoDao,
 {
     let confirmation = doc! {
         "fuuids": fuuids,
         "archive": archive,
+        "termine": termine,
     };
     let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, COMMANDE_ACTIVITE_FUUIDS)
         .exchanges(vec![L2Prive])
@@ -125,7 +126,7 @@ struct RowFichiersSyncpret {
     archive: Option<bool>,
 }
 
-async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValideAction)
+pub async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValideAction)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao
 {
@@ -136,6 +137,15 @@ async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValideAction)
     if !m.verifier_roles(vec![RolesCertificats::Fichiers]) {
         error!("evenement_transcodage_progres Acces refuse, certificat n'est pas de role fichiers");
         return Ok(None)
+    }
+
+    // Repondre immediatement pour declencher sync
+    {
+        let reponse = json!({ "ok": true });
+        let reponse = middleware.formatter_reponse(reponse, None)?;
+        let (reply_q, correlation_id) = m.get_reply_info()?;
+        let routage = RoutageMessageReponse::new(reply_q, correlation_id);
+        middleware.repondre(routage, reponse).await?;
     }
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
@@ -157,21 +167,24 @@ async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValideAction)
         }
 
         if fichiers_actifs.len() >= LIMITE_FUUIDS_BATCH {
-            transmettre_fuuids_fichiers(middleware, &fichiers_actifs, false).await?;
+            transmettre_fuuids_fichiers(middleware, &fichiers_actifs, false, false).await?;
             fichiers_actifs.clear();
         }
         if fichiers_archives.len() >= LIMITE_FUUIDS_BATCH {
-            transmettre_fuuids_fichiers(middleware, &fichiers_archives, true).await?;
+            transmettre_fuuids_fichiers(middleware, &fichiers_archives, true, false).await?;
             fichiers_archives.clear();
         }
     }
 
     if ! fichiers_actifs.is_empty() {
-        transmettre_fuuids_fichiers(middleware, &fichiers_actifs, false).await?;
+        transmettre_fuuids_fichiers(middleware, &fichiers_actifs, false, false).await?;
     }
     if ! fichiers_archives.is_empty() {
-        transmettre_fuuids_fichiers(middleware, &fichiers_archives, true).await?;
+        transmettre_fuuids_fichiers(middleware, &fichiers_archives, true, false).await?;
     }
+
+    // Transmettre message avec flag termine dans tous les cas
+    transmettre_fuuids_fichiers(middleware, &vec![], false, true).await?;
 
     Ok(None)
 }
