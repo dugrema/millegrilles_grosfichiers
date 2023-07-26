@@ -83,6 +83,10 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
         true
     }
 
+    fn reclame_fuuids(&self) -> bool {
+        true
+    }
+
     async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: MongoDao + ConfigMessages {
         preparer_index_mongodb_custom(middleware).await
     }
