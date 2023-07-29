@@ -311,6 +311,7 @@ pub struct CommandeVideoConvertir {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeVideoGetJob {
+    pub instance_id: Option<String>,
     // pub fuuid: Option<String>,
     // #[serde(rename="cleConversion")]
     // pub cle_conversion: Option<String>,
@@ -343,6 +344,7 @@ pub struct CommandeImageArreterTraitement {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeImageGetJob {
+    pub instance_id: Option<String>
     // pub fuuid: Option<String>,
     // #[serde(rename="cleConversion")]
     // pub cle_conversion: Option<String>,
@@ -387,6 +389,7 @@ pub struct ReponseCle {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeIndexationGetJob {
+    pub instance_id: Option<String>,
 }
 
 // #[derive(Clone, Debug, Serialize, Deserialize)]

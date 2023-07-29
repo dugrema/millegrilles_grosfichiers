@@ -441,7 +441,9 @@ pub async fn sauvegarder_job<M,J,S,U>(
     Ok(Some(instances))
 }
 
-pub struct CommandeGetJob {}
+pub struct CommandeGetJob {
+    pub instance_id: Option<String>,
+}
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct BackgroundJob {
@@ -590,7 +592,7 @@ pub async fn get_prochaine_job<M,S>(middleware: &M, nom_collection: S, certifica
 {
     let nom_collection = nom_collection.as_ref();
     debug!("commande_get_job Get pour {}", nom_collection);
-    let prochaine_job = trouver_prochaine_job_indexation(middleware, nom_collection).await?;
+    let prochaine_job = trouver_prochaine_job_indexation(middleware, nom_collection, &commande).await?;
 
     debug!("commande_get_job Prochaine job : {:?}", prochaine_job);
 
@@ -641,7 +643,7 @@ pub async fn get_prochaine_job<M,S>(middleware: &M, nom_collection: S, certifica
     }
 }
 
-pub async fn trouver_prochaine_job_indexation<M,S>(middleware: &M, nom_collection: S)
+pub async fn trouver_prochaine_job_indexation<M,S>(middleware: &M, nom_collection: S, commande: &CommandeGetJob)
     -> Result<Option<BackgroundJob>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send
 {
@@ -649,7 +651,10 @@ pub async fn trouver_prochaine_job_indexation<M,S>(middleware: &M, nom_collectio
 
     let job: Option<BackgroundJob> = {
         // Tenter de trouver la prochaine job disponible
-        let filtre = doc! {CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING};
+        let mut filtre = doc! {CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING};
+        if let Some(instance_id) = commande.instance_id.as_ref() {
+            filtre.insert("$or", vec![doc!{"instances": {"$exists": false}}, doc!{"instances": instance_id}]);
+        }
         //let hint = Some(Hint::Name("etat_jobs".into()));
         let options = FindOneAndUpdateOptions::builder()
             //.hint(hint)
