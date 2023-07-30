@@ -1239,7 +1239,7 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
         "etat": 1,  // Pending
     };
     let set_ops = doc! {
-        CHAMP_FLAG_MEDIA_RETRY: 0,  // Reset le retry count automatique
+        CHAMP_FLAG_DB_RETRY: 0,  // Reset le retry count automatique
     };
     let ops = doc! {
         "$set": set_ops,

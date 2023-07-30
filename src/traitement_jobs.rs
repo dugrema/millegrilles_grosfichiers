@@ -252,7 +252,7 @@ struct RowVersionsIds {
 async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64) -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + MongoDao, J: JobHandler
 {
-    debug!("ajouter_jobs_manquantes Debut");
+    debug!("entretien_jobs Debut");
 
     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     let collection_jobs = middleware.get_collection(job_handler.get_nom_collection())?;
@@ -342,6 +342,16 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
                     Some(instance), Some(champs_cles), None,
                     false).await?;
             }
+        }
+    }
+
+    // Cleanup des jobs avec retry excessifs. Ces jobs sont orphelines (e.g. la correspondante dans
+    // versions est deja traitee).
+    {
+        let filtre = doc! { CHAMP_FLAG_DB_RETRY: {"$gte": CONST_MAX_RETRY} };
+        let resultat = collection_jobs.delete_many(filtre, None).await?;
+        if resultat.deleted_count > 0 {
+            warn!("entretien_jobs Suppression de {} jobs avec retry >= {}", resultat.deleted_count, CONST_MAX_RETRY)
         }
     }
 
@@ -598,6 +608,12 @@ pub async fn get_prochaine_job<M,S>(middleware: &M, nom_collection: S, certifica
 
     match prochaine_job {
         Some(job) => {
+            if let Some(retry) = job.retry {
+                if retry >= MEDIA_RETRY_LIMIT {
+                    Err(format!("commande_get_job Job avec exces de retry, ok skip jusqu'a l'entretien"))?
+                }
+            }
+
             // Recuperer les metadonnees
             let fichier_detail: FichierDetail = {
                 let mut filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: &job.tuuid };
@@ -651,7 +667,10 @@ pub async fn trouver_prochaine_job_indexation<M,S>(middleware: &M, nom_collectio
 
     let job: Option<BackgroundJob> = {
         // Tenter de trouver la prochaine job disponible
-        let mut filtre = doc! {CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING};
+        let mut filtre = doc! {
+            CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING,
+            CHAMP_FLAG_DB_RETRY: {"$lt": MEDIA_RETRY_LIMIT}
+        };
         if let Some(instance_id) = commande.instance_id.as_ref() {
             filtre.insert("$or", vec![doc!{"instances": {"$exists": false}}, doc!{"instances": instance_id}]);
         }
@@ -662,7 +681,7 @@ pub async fn trouver_prochaine_job_indexation<M,S>(middleware: &M, nom_collectio
             .build();
         let ops = doc! {
             "$set": {CHAMP_ETAT: VIDEO_CONVERSION_ETAT_RUNNING},
-            "$inc": {CONST_CHAMP_RETRY: 1},
+            "$inc": {CHAMP_FLAG_DB_RETRY: 1},
             "$currentDate": {CHAMP_MODIFICATION: true, CONST_CHAMP_DATE_MAJ: true}
         };
         match collection.find_one_and_update(filtre, ops, options).await? {

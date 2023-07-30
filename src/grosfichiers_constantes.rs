@@ -123,6 +123,7 @@ pub const CHAMP_FLAG_MEDIA_TRAITE: &str = "flag_media_traite";
 pub const CHAMP_FLAG_VIDEO_TRAITE: &str = "flag_video_traite";
 pub const CHAMP_FLAG_MEDIA_RETRY: &str = "flag_media_retry";
 pub const CHAMP_FLAG_MEDIA_ERREUR: &str = "flag_media_erreur";
+pub const CHAMP_FLAG_DB_RETRY: &str = "retry";
 pub const CHAMP_USER_ID: &str = "user_id";
 pub const CHAMP_CLE_CONVERSION: &str = "cle_conversion";
 
