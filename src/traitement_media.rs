@@ -95,7 +95,7 @@ impl JobHandler for VideoJobHandler {
 
     fn get_nom_collection(&self) -> &str { NOM_COLLECTION_VIDEO_JOBS }
 
-    fn get_nom_flag(&self) -> &str { CHAMP_FLAG_DB_RETRY }
+    fn get_nom_flag(&self) -> &str { CHAMP_FLAG_VIDEO_TRAITE }
 
     fn get_action_evenement(&self) -> &str { EVENEMENT_VIDEO_DISPONIBLE }
 

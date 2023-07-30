@@ -1168,30 +1168,37 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
         (fuuids, fuuid_mimetypes)
     };
 
-    let resolution = match transaction_mappee.height {
-        Some(height) => match transaction_mappee.width {
-            Some(width) => {
-                // La resolution est le plus petit des deux nombres
-                if width < height {
-                    width
-                } else {
-                    height
-                }
-            },
-            None => height,
-        },
-        None => 0
-    };
-    let bitrate_quality = {
-        match &transaction_mappee.quality {
-            Some(q) => q.to_owned(),
-            None => match &transaction_mappee.bitrate {
-                Some(b) => b.to_owned() as i32,
+    let cle_video = match transaction_mappee.cle_conversion {
+        Some(inner) => inner,  // Nouveau avec 2023.7.4
+        None => {
+            // Note : avant 2023.7.4 (et media 2023.7.4), la cle_video n'etait pas fournie
+            //        cause un probleme avec les videos verticaux.
+            let resolution = match transaction_mappee.height {
+                Some(height) => match transaction_mappee.width {
+                    Some(width) => {
+                        // La resolution est le plus petit des deux nombres
+                        if width < height {
+                            width
+                        } else {
+                            height
+                        }
+                    },
+                    None => height,
+                },
                 None => 0
-            }
+            };
+            let bitrate_quality = {
+                match &transaction_mappee.quality {
+                    Some(q) => q.to_owned(),
+                    None => match &transaction_mappee.bitrate {
+                        Some(b) => b.to_owned() as i32,
+                        None => 0
+                    }
+                }
+            };
+            format!("{};{};{}p;{}", &transaction_mappee.mimetype, &transaction_mappee.codec, resolution, bitrate_quality)
         }
     };
-    let cle_video = format!("{};{};{}p;{}", &transaction_mappee.mimetype, &transaction_mappee.codec, resolution, bitrate_quality);
 
     // Appliquer le filtre sur la version courante (pour l'usager si applicable)
     let mut fuuid_video_existant = None;
@@ -1233,7 +1240,10 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
 
         if let Some(fuuid_video) = fuuid_video_existant.as_ref() {
             let ops = doc! {
-                "$pull": {"fuuids": &fuuid_video},
+                "$pull": {
+                    CHAMP_FUUIDS: &fuuid_video,
+                    CHAMP_FUUIDS_RECLAMES: &fuuid_video
+                },
                 // "$unset": {format!("version_courante.fuuidMimetypes.{}", fuuid_video): true},
             };
             match collection.update_many(filtre.clone(), ops, None).await {
@@ -1269,13 +1279,20 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
 
     // MAJ de la version du fichier
     {
-        let filtre = doc! { CHAMP_FUUID: &transaction_mappee.fuuid, CHAMP_TUUID: &transaction_mappee.tuuid };
+        let filtre = doc! {
+            CHAMP_FUUID: &transaction_mappee.fuuid,
+            CHAMP_TUUID: &transaction_mappee.tuuid,
+            CHAMP_USER_ID: &transaction_mappee.user_id,
+        };
 
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
 
         if let Some(fuuid_video) = fuuid_video_existant.as_ref() {
             let ops = doc! {
-                "$pull": {"fuuids": &fuuid_video},
+                "$pull": {
+                    CHAMP_FUUIDS: &fuuid_video,
+                    CHAMP_FUUIDS_RECLAMES: &fuuid_video,
+                },
                 // "$unset": {format!("fuuidMimetypes.{}", fuuid_video): true},
             };
             match collection.update_many(filtre.clone(), ops, None).await {

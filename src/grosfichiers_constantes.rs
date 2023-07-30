@@ -256,6 +256,9 @@ pub struct TransactionAssocierVideo {
     pub header: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub format: Option<String>,
+
+    /// Fix bug videas verticaux. Ajoute dans version 2023.7.4
+    pub cle_conversion: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
