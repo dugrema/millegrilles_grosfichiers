@@ -1302,6 +1302,7 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
         }
 
         let mut set_ops = doc! {
+            CHAMP_FLAG_VIDEO_TRAITE: true,
             format!("video.{}", &cle_video): &doc_video,
         };
         // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
@@ -1614,13 +1615,16 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     let mimetype = transaction_fichier.mimetype;
 
     let mut fuuids = HashSet::new();
+    let mut fuuids_reclames = HashSet::new();
     fuuids.insert(fuuid.as_str());
+    fuuids_reclames.insert(fuuid.as_str());
     let images_presentes = match &transaction_fichier.images {
         Some(images) => {
             let presentes = ! images.is_empty();
             for image in images.values() {
+                fuuids.insert(image.hachage.as_str());
                 if image.data_chiffre.is_none() {
-                    fuuids.insert(image.hachage.as_str());
+                    fuuids_reclames.insert(image.hachage.as_str());
                 }
             }
             presentes
@@ -1632,6 +1636,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
             let presents = ! videos.is_empty();
             for video in videos.values() {
                 fuuids.insert(video.fuuid_video.as_str());
+                fuuids_reclames.insert(video.fuuid_video.as_str());
             }
             presents
         },
@@ -1639,10 +1644,11 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     };
 
     let fuuids: Vec<&str> = fuuids.into_iter().collect();  // Convertir en vec
+    let fuuids_reclames: Vec<&str> = fuuids_reclames.into_iter().collect();  // Convertir en vec
 
     debug!("Fuuids fichier : {:?}", fuuids);
     doc_bson_transaction.insert(CHAMP_FUUIDS, &fuuids);
-    doc_bson_transaction.insert(CHAMP_FUUIDS_RECLAMES, &fuuids);
+    doc_bson_transaction.insert(CHAMP_FUUIDS_RECLAMES, &fuuids_reclames);
 
     // Retirer champ CUUID, pas utile dans l'information de version
     doc_bson_transaction.remove(CHAMP_CUUID);
@@ -1653,19 +1659,27 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         let mut doc_version = doc_bson_transaction.clone();
         doc_version.insert(CHAMP_TUUID, &tuuid);
         doc_version.insert(CHAMP_FUUIDS, &fuuids);
-        doc_version.insert(CHAMP_FUUIDS_RECLAMES, &fuuids);
+        doc_version.insert(CHAMP_FUUIDS_RECLAMES, &fuuids_reclames);
 
         // Information optionnelle pour accelerer indexation/traitement media
         if mimetype.starts_with("image") {
             doc_version.insert(CHAMP_FLAG_MEDIA, "image");
-            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
+
+            // Si au moins 1 image est presente dans l'entree, on ne fait pas de traitements supplementaires
+            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, images_presentes);
         } else if mimetype.starts_with("video") {
             doc_version.insert(CHAMP_FLAG_MEDIA, "video");
-            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
-            doc_version.insert(CHAMP_FLAG_VIDEO_TRAITE, false);
+
+            // Si au moins 1 image est presente dans l'entree, on ne fait pas de traitements supplementaires
+            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, images_presentes);
+
+            // Si au moins 1 video est present dans l'entree, on ne fait pas de traitements supplementaires
+            doc_version.insert(CHAMP_FLAG_VIDEO_TRAITE, videos_presents);
         } else if mimetype =="application/pdf" {
             doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
-            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
+
+            // Si au moins 1 image est presente dans l'entree, on ne fait pas de traitements supplementaires
+            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, images_presentes);
         }
         doc_version.insert(CHAMP_FLAG_INDEX, false);
 
@@ -1701,7 +1715,10 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     doc_bson_transaction.remove(CHAMP_USER_ID);
 
     let filtre = doc! {CHAMP_TUUID: &tuuid};
-    let mut add_to_set = doc!{"fuuids": {"$each": &fuuids}};
+    let mut add_to_set = doc!{
+        "fuuids": {"$each": &fuuids},
+        "fuuids_reclames": {"$each": &fuuids_reclames},
+    };
 
     // Ajouter collection
     add_to_set.insert("cuuids", cuuid);
@@ -1738,20 +1755,6 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         Err(e) => Err(format!("grosfichiers.transaction_cle Erreur update_one sur transcation : {:?}", e))?
     };
     debug!("nouveau fichier Resultat transaction update : {:?}", resultat);
-
-    // // if flag_media == true {
-    // //     debug!("Emettre une commande de conversion pour media {}", fuuid);
-    // //     match emettre_commande_media(middleware, &tuuid, &fuuid, &mimetype).await {
-    // //         Ok(()) => (),
-    // //         Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
-    // //     }
-    // // }
-    //
-    // debug!("Emettre une commande d'indexation pour {}", fuuid);
-    // match emettre_commande_indexation(gestionnaire, middleware, &tuuid, &fuuid).await {
-    //     Ok(()) => (),
-    //     Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
-    // }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
     emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_COPIER_FICHIER_TIERS).await?;

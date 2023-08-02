@@ -207,7 +207,7 @@ pub struct DBFichierVersionDetail {
     #[serde(skip_serializing_if="Option::is_none")]
     pub anime: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
-    pub video: Option<HashMap<String, TransactionAssocierVideo>>,
+    pub video: Option<HashMap<String, TransactionAssocierVideoVersionDetail>>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub flag_media_retry: Option<i32>,
     #[serde(skip_serializing_if="Option::is_none")]
@@ -240,6 +240,32 @@ pub struct TransactionAssocierVideo {
     pub tuuid: String,
     pub fuuid: String,
     pub user_id: String,
+    pub mimetype: String,
+    pub codec: String,
+    pub fuuid_video: String,
+
+    // Metadata video transcode
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub bitrate: Option<u32>,
+    pub quality: Option<i32>,
+    pub taille_fichier: u64,
+
+    // Information dechiffrage - note : fuuid -> ref_hachage_bytes
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub header: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub format: Option<String>,
+
+    /// Fix bug videas verticaux. Ajoute dans version 2023.7.4
+    pub cle_conversion: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionAssocierVideoVersionDetail {
+    pub tuuid: String,
+    pub fuuid: String,
+    pub user_id: Option<String>,
     pub mimetype: String,
     pub codec: String,
     pub fuuid_video: String,
