@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::iter::Map;
 
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
@@ -13,7 +14,7 @@ use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L4Secure};
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageSerialise};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, transmettre_cle_attachee};
-use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
+use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
 use millegrilles_common_rust::mongodb::Collection;
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
@@ -98,6 +99,10 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         COMMANDE_REINDEXER => commande_reindexer(middleware, m, gestionnaire).await,
         COMMANDE_INDEXATION_GET_JOB => commande_indexation_get_job(middleware, m, gestionnaire).await,
         TRANSACTION_CONFIRMER_FICHIER_INDEXE => commande_confirmer_fichier_indexe(middleware, m, gestionnaire).await,
+
+        // Partage de collections
+        TRANSACTION_AJOUTER_CONTACT_LOCAL => commande_ajouter_contact_local(middleware, m, gestionnaire).await,
+        TRANSACTION_SUPPRIMER_CONTACTS => commande_supprimer_contacts(middleware, m, gestionnaire).await,
 
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
@@ -1391,4 +1396,106 @@ async fn commande_supprimer_video<M>(middleware: &M, m: MessageValideAction, ges
     } else {
         Ok(middleware.reponse_ok()?)
     }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CommandeAjouterContactLocal {
+    nom_usager: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ReponseChargerUserIdParNomUsager {
+    usagers: Option<HashMap<String, Option<String>>>
+}
+
+async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("commande_ajouter_contact Consommer commande : {:?}", & m.message);
+    let commande: CommandeAjouterContactLocal = m.message.get_msg().map_contenu()?;
+
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => {
+            debug!("commande_ajouter_contact_local user_id absent, SKIP");;
+            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
+        }
+    };
+
+    // Identifier le user_id de l'usager a ajouter
+    let user_contact_id = {
+        let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCOMPTES, "getUserIdParNomUsager")
+            .exchanges(vec![Securite::L4Secure])
+            .build();
+        let requete = json!({ "noms_usagers": [commande.nom_usager] });
+        match middleware.transmettre_requete(routage, &requete).await {
+            Ok(inner) => match inner {
+                TypeMessage::Valide(r) => {
+                    let reponse_mappee: ReponseChargerUserIdParNomUsager = r.message.parsed.map_contenu()?;
+                    match reponse_mappee.usagers {
+                        Some(mut inner) => {
+                            match inner.remove(commande.nom_usager.as_str()) {
+                                Some(inner) => match inner {
+                                    Some(inner) => inner,
+                                    None => {
+                                        debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (usager inconnu - 1), SKIP");;
+                                        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                                    }
+                                },
+                                None => {
+                                    debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (usager inconnu - 2), SKIP");;
+                                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                                }
+                            }
+                        },
+                        None => {
+                            debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (reponse sans liste usagers), SKIP");;
+                            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                        }
+                    }
+                },
+                _ => {
+                    debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (mauvais type reponse), SKIP");;
+                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                }
+            },
+            Err(e) => {
+                debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact, SKIP : {:?}", e);;
+                return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+            }
+        }
+    };
+
+    if user_contact_id == user_id {
+        debug!("commande_ajouter_contact_local Usager (courant) tente de s'ajouter a ses propres contacts, SKIP");
+        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Usager courant ne peut etre ajoute au contacts"}), None)?))
+    }
+
+    // Convertir en transaction
+    let transaction = TransactionAjouterContactLocal { user_id, contact_user_id: user_contact_id };
+
+    // Traiter la transaction
+    Ok(sauvegarder_traiter_transaction_serializable(
+        middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_AJOUTER_CONTACT_LOCAL).await?)
+    // Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
+async fn commande_supprimer_contacts<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("commande_supprimer_contacts Consommer commande : {:?}", & m.message);
+    let commande: TransactionSupprimerContacts = m.message.get_msg().map_contenu()?;
+
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => {
+            debug!("commande_supprimer_contacts user_id absent, SKIP");
+            ;
+            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
+        }
+    };
+
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }

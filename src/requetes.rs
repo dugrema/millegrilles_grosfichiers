@@ -20,7 +20,7 @@ use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, filtrer_doc_id, MongoDao};
 use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::mongodb::options::{FindOptions, Hint, UpdateOptions};
-use millegrilles_common_rust::recepteur_messages::MessageValideAction;
+use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
@@ -72,6 +72,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_SYNC_RECENTS => requete_sync_plusrecent(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CORBEILLE => requete_sync_corbeille(middleware, message, gestionnaire).await,
             REQUETE_JOBS_VIDEO => requete_jobs_video(middleware, message, gestionnaire).await,
+            REQUETE_CHARGER_CONTACTS => requete_charger_contacts(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (1): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -119,6 +120,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_SYNC_RECENTS => requete_sync_plusrecent(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CORBEILLE => requete_sync_corbeille(middleware, message, gestionnaire).await,
             REQUETE_JOBS_VIDEO => requete_jobs_video(middleware, message, gestionnaire).await,
+            REQUETE_CHARGER_CONTACTS => requete_charger_contacts(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -1475,4 +1477,113 @@ async fn find_sync_cuuids<M>(middleware: &M, filtre: Document, opts: FindOptions
     }
 
     Ok(cuuids_confirmation)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteChargerContacts {}
+
+#[derive(Deserialize)]
+struct RowUserId { contact_id: String, user_id: String, contact_user_id: String }
+
+#[derive(Deserialize)]
+struct ReponseUsager {
+    #[serde(rename(deserialize = "userId"))]
+    user_id: String,
+    #[serde(rename(deserialize = "nomUsager"))]
+    nom_usager: String,
+}
+
+#[derive(Deserialize)]
+struct ReponseUsagers {
+    usagers: Vec<ReponseUsager>,
+}
+
+#[derive(Serialize)]
+struct ReponseContact {
+    #[serde(rename(deserialize = "contactId"))]
+    contact_id: String,
+    #[serde(rename(deserialize = "userId"))]
+    user_id: String,
+    #[serde(rename(deserialize = "nomUsager"))]
+    nom_usager: String,
+}
+
+#[derive(Serialize)]
+struct ReponseContacts {
+    contacts: Vec<ReponseContact>,
+}
+
+async fn requete_charger_contacts<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("requete_charger_contacts Consommer commande : {:?}", & m.message);
+
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => {
+            debug!("requete_charger_contacts user_id manquant du certificat");
+            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+        }
+    };
+
+    let commande: RequeteChargerContacts = m.message.get_msg().map_contenu()?;
+    let contacts = {
+        let mut user_ids = HashMap::new();
+        let filtre = doc! { CHAMP_USER_ID: &user_id };
+        let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_CONTACT)?;
+        let mut curseur = collection.find(filtre, None).await?;
+        while let Some(d) = curseur.next().await {
+            let row: RowUserId = convertir_bson_deserializable(d?)?;
+            user_ids.insert(row.contact_user_id.clone(), row);
+        }
+
+        // Faire une requete aupres de MaitreDesComptes pour mapper le user_id avec le nom_usager courant
+        let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCOMPTES, "getListeUsagers")
+            .exchanges(vec![Securite::L3Protege])
+            .build();
+        let vec_user_ids: Vec<&String> = user_ids.keys().map(|u|u).collect();
+        let requete = json!({"user_ids": vec_user_ids});
+        let reponse = match middleware.transmettre_requete(routage, &requete).await {
+            Ok(inner) => match inner {
+                TypeMessage::Valide(inner) => {
+                    let reponse: ReponseUsagers = inner.message.parsed.map_contenu()?;
+                    reponse
+                },
+                _ => {
+                    debug!("requete_charger_contacts Mauvais type de reponse");
+                    return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Erreur chargement liste usagers"}), None)?));
+                }
+            },
+            Err(e) => {
+                debug!("requete_charger_contacts user_id manquant du certificat : {:?}", e);
+                return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": e}), None)?));
+            }
+        };
+
+        // Mapper contact_id et nom_usager
+        let mut contacts = Vec::new();
+        for usager in reponse.usagers {
+            let contact_id = match user_ids.remove(usager.user_id.as_str()) {
+                Some(inner) => {
+                    inner.contact_id
+                },
+                None => {
+                    debug!("Mismatch user_id {}, SKIP", usager.user_id);
+                    continue;
+                }
+            };
+            let contact = ReponseContact {
+                contact_id,
+                user_id: usager.user_id,
+                nom_usager: usager.nom_usager,
+            };
+            contacts.push(contact);
+        }
+
+        contacts
+    };
+
+    let reponse = ReponseContacts { contacts };
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }

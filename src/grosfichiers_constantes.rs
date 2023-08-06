@@ -16,6 +16,7 @@ pub const NOM_COLLECTION_DOCUMENTS: &str = "GrosFichiers/documents";
 pub const NOM_COLLECTION_IMAGES_JOBS: &str = "GrosFichiers/jobs/images";
 pub const NOM_COLLECTION_VIDEO_JOBS: &str = "GrosFichiers/jobs/video";
 pub const NOM_COLLECTION_INDEXATION_JOBS: &str = "GrosFichiers/jobs/indexation";
+pub const NOM_COLLECTION_PARTAGE_CONTACT: &str = "GrosFichiers/partage/contacts";
 
 pub const DOMAINE_FICHIERS_NOM: &str = "fichiers";
 pub const DOMAINE_MEDIA_NOM: &str = "media";
@@ -39,6 +40,7 @@ pub const REQUETE_SYNC_RECENTS: &str = "syncRecents";
 pub const REQUETE_SYNC_CORBEILLE: &str = "syncCorbeille";
 pub const REQUETE_SYNC_CUUIDS: &str = "syncCuuids";
 pub const REQUETE_JOBS_VIDEO: &str = "requeteJobsVideo";
+pub const REQUETE_CHARGER_CONTACTS: &str = "chargerContacts";
 
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
@@ -59,6 +61,8 @@ pub const TRANSACTION_SUPPRIMER_VIDEO: &str = "supprimerVideo";
 pub const TRANSACTION_IMAGE_SUPPRIMER_JOB: &str = "supprimerJobImage";
 pub const TRANSACTION_VIDEO_SUPPRIMER_JOB: &str = "supprimerJobVideo";
 pub const TRANSACTION_CONFIRMER_FICHIER_INDEXE: &str = "confirmerFichierIndexe";
+pub const TRANSACTION_AJOUTER_CONTACT_LOCAL: &str = "ajouterContactLocal";
+pub const TRANSACTION_SUPPRIMER_CONTACTS: &str = "supprimerContacts";
 
 pub const COMMANDE_REINDEXER: &str = "reindexerConsignation";
 pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";
@@ -126,6 +130,7 @@ pub const CHAMP_FLAG_MEDIA_ERREUR: &str = "flag_media_erreur";
 pub const CHAMP_FLAG_DB_RETRY: &str = "retry";
 pub const CHAMP_USER_ID: &str = "user_id";
 pub const CHAMP_CLE_CONVERSION: &str = "cle_conversion";
+pub const CHAMP_ID_CONTACT: &str = "contact_id";
 
 pub const ERREUR_MEDIA_TOOMANYRETRIES: i32 = 1;
 

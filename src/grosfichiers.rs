@@ -69,6 +69,7 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
         String::from(NOM_COLLECTION_VERSIONS),
         String::from(NOM_COLLECTION_FICHIERS_REP),
         String::from(NOM_COLLECTION_DOCUMENTS),
+        String::from(NOM_COLLECTION_PARTAGE_CONTACT),
     ] }
 
     fn get_q_transactions(&self) -> Option<String> { Some(String::from(NOM_Q_TRANSACTIONS)) }
@@ -174,6 +175,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         REQUETE_SYNC_CORBEILLE,
         REQUETE_SYNC_CUUIDS,
         REQUETE_JOBS_VIDEO,
+        REQUETE_CHARGER_CONTACTS,
     ];
     for req in requetes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L2Prive});
@@ -197,6 +199,8 @@ pub fn preparer_queues() -> Vec<QueueType> {
         TRANSACTION_ASSOCIER_VIDEO,
         TRANSACTION_SUPPRIMER_VIDEO,
         TRANSACTION_VIDEO_SUPPRIMER_JOB,
+        TRANSACTION_AJOUTER_CONTACT_LOCAL,
+        TRANSACTION_SUPPRIMER_CONTACTS,
 
         COMMANDE_RECLAMER_FUUIDS,
 

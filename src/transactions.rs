@@ -97,6 +97,8 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_SUPPRIMER_VIDEO => transaction_supprimer_video(middleware, transaction).await,
         TRANSACTION_IMAGE_SUPPRIMER_JOB => transaction_supprimer_job_image(middleware, gestionnaire, transaction).await,
         TRANSACTION_VIDEO_SUPPRIMER_JOB => transaction_supprimer_job_video(middleware, gestionnaire, transaction).await,
+        TRANSACTION_AJOUTER_CONTACT_LOCAL => transaction_ajouter_contact_local(middleware, gestionnaire, transaction).await,
+        TRANSACTION_SUPPRIMER_CONTACTS => transaction_supprimer_contacts(middleware, gestionnaire, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), action)),
     }
 }
@@ -2081,5 +2083,92 @@ async fn transaction_supprimer_job_video<M, T>(middleware: &M, gestionnaire: &Ge
     match middleware.reponse_ok() {
         Ok(r) => Ok(r),
         Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionAjouterContactLocal {
+    /// Usager du carnet
+    pub user_id: String,
+    /// Contact local ajoute
+    pub contact_user_id: String,
+}
+
+async fn transaction_ajouter_contact_local<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_ajouter_contact_local Consommer transaction : {:?}", &transaction);
+    let uuid_transaction = transaction.get_uuid_transaction().to_owned();
+
+    let transaction_mappee: TransactionAjouterContactLocal = match transaction.convertir() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_ajouter_contact_local Erreur conversion transaction : {:?}", e))?
+    };
+
+    let filtre = doc! {
+        CHAMP_ID_CONTACT: uuid_transaction,
+        CHAMP_USER_ID: &transaction_mappee.user_id,
+        "contact_user_id": &transaction_mappee.contact_user_id,
+    };
+    let ops = doc! {
+        "$setOnInsert": {
+            CHAMP_USER_ID: transaction_mappee.user_id,
+            "contact_user_id": transaction_mappee.contact_user_id,
+            CHAMP_CREATION: Utc::now(),
+        },
+        "$currentDate": { CHAMP_MODIFICATION: true }
+    };
+    let options = UpdateOptions::builder().upsert(true).build();
+    let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_CONTACT)?;
+    if let Err(e) = collection.update_one(filtre, ops, options).await {
+        Err(format!("grosfichiers.transaction_ajouter_contact_local Erreur sauvegarde contact : {:?}", e))?
+    }
+
+    // Retourner le tuuid comme reponse, aucune transaction necessaire
+    match middleware.reponse_ok() {
+        Ok(r) => Ok(r),
+        Err(e) => Err(format!("grosfichiers.transaction_ajouter_contact_local Erreur formattage reponse"))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionSupprimerContacts {
+    pub contact_ids: Vec<String>,
+}
+
+async fn transaction_supprimer_contacts<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_supprimer_contacts Consommer transaction : {:?}", &transaction);
+    let user_id = match transaction.get_enveloppe_certificat() {
+        Some(inner) => match inner.get_user_id()? {
+            Some(inner) => inner.to_owned(),
+            None => Err(format!("grosfichiers.transaction_supprimer_contacts User_id manquant du certificat"))?
+        },
+        None => Err(format!("grosfichiers.transaction_supprimer_contacts Erreur enveloppe manquante"))?
+    };
+
+    let transaction_mappee: TransactionSupprimerContacts = match transaction.convertir() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_supprimer_contacts Erreur conversion transaction : {:?}", e))?
+    };
+
+    let filtre = doc! {
+        CHAMP_USER_ID: &user_id,
+        CHAMP_ID_CONTACT: {"$in": transaction_mappee.contact_ids},
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_CONTACT)?;
+    if let Err(e) = collection.delete_many(filtre, None).await {
+        Err(format!("grosfichiers.transaction_supprimer_contacts Erreur suppression contacts : {:?}", e))?
+    }
+
+    // Retourner le tuuid comme reponse, aucune transaction necessaire
+    match middleware.reponse_ok() {
+        Ok(r) => Ok(r),
+        Err(e) => Err(format!("grosfichiers.transaction_supprimer_contacts Erreur formattage reponse"))
     }
 }
