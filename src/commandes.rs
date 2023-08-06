@@ -103,6 +103,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         // Partage de collections
         TRANSACTION_AJOUTER_CONTACT_LOCAL => commande_ajouter_contact_local(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_CONTACTS => commande_supprimer_contacts(middleware, m, gestionnaire).await,
+        TRANSACTION_PARTAGER_COLLECTIONS => commande_partager_collections(middleware, m, gestionnaire).await,
 
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
@@ -1496,6 +1497,44 @@ async fn commande_supprimer_contacts<M>(middleware: &M, mut m: MessageValideActi
             return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
         }
     };
+
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
+async fn commande_partager_collections<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("commande_partager_collections Consommer commande : {:?}", & m.message);
+    let commande: TransactionPartagerCollections = m.message.get_msg().map_contenu()?;
+
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => {
+            debug!("commande_partager_collections user_id absent, SKIP");
+            ;
+            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
+        }
+    };
+
+    // Confirmer que l'usager controle tous les cuuids
+    let mut cuuids_manquants: HashSet<&String> = HashSet::from_iter(commande.cuuids.iter());
+    let filtre = doc! {
+        CHAMP_USER_ID: &user_id,
+        CHAMP_TUUID: {"$in": &commande.cuuids}
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let options = FindOptions::builder().projection(doc!{CHAMP_TUUID: 1}).build();
+    let mut curseur = collection.find(filtre, options).await?;
+    while let Some(r) = curseur.next().await {
+        let row: RowTuuid = convertir_bson_deserializable(r?)?;
+        cuuids_manquants.remove(&row.tuuid);
+    }
+
+    if cuuids_manquants.len() > 0 {
+        error!("commande_partager_collections Il y a au moins un cuuid non couvert pour l'usager, SKIP");
+        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Au moins un repertoire est invalide"}), None)?))
+    }
 
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }

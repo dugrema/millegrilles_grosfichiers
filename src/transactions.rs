@@ -99,6 +99,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_VIDEO_SUPPRIMER_JOB => transaction_supprimer_job_video(middleware, gestionnaire, transaction).await,
         TRANSACTION_AJOUTER_CONTACT_LOCAL => transaction_ajouter_contact_local(middleware, gestionnaire, transaction).await,
         TRANSACTION_SUPPRIMER_CONTACTS => transaction_supprimer_contacts(middleware, gestionnaire, transaction).await,
+        TRANSACTION_PARTAGER_COLLECTIONS => transaction_partager_collections(middleware, gestionnaire, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), action)),
     }
 }
@@ -2171,4 +2172,32 @@ async fn transaction_supprimer_contacts<M, T>(middleware: &M, gestionnaire: &Ges
         Ok(r) => Ok(r),
         Err(e) => Err(format!("grosfichiers.transaction_supprimer_contacts Erreur formattage reponse"))
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionPartagerCollections {
+    pub cuuids: Vec<String>,
+    pub contact_ids: Vec<String>,
+}
+
+async fn transaction_partager_collections<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_partager_collections Consommer transaction : {:?}", &transaction);
+    let user_id = match transaction.get_enveloppe_certificat() {
+        Some(inner) => match inner.get_user_id()? {
+            Some(inner) => inner.to_owned(),
+            None => Err(format!("grosfichiers.transaction_partager_collections User_id manquant du certificat"))?
+        },
+        None => Err(format!("grosfichiers.transaction_partager_collections Erreur enveloppe manquante"))?
+    };
+
+    let transaction_mappee: TransactionPartagerCollections = match transaction.convertir() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_partager_collections Erreur conversion transaction : {:?}", e))?
+    };
+
+    todo!("Fix me");
 }
