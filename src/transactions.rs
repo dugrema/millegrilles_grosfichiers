@@ -2199,5 +2199,29 @@ async fn transaction_partager_collections<M, T>(middleware: &M, gestionnaire: &G
         Err(e) => Err(format!("grosfichiers.transaction_partager_collections Erreur conversion transaction : {:?}", e))?
     };
 
-    todo!("Fix me");
+    let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
+    for contact_id in transaction_mappee.contact_ids {
+        for cuuid in &transaction_mappee.cuuids {
+            let filtre = doc! {
+                CHAMP_USER_ID: &user_id,
+                CHAMP_ID_CONTACT: &contact_id,
+                CHAMP_TUUID: cuuid,
+            };
+            let options = UpdateOptions::builder().upsert(true).build();
+            let ops = doc! {
+                "$setOnInsert": {
+                    CHAMP_USER_ID: &user_id,
+                    CHAMP_ID_CONTACT: &contact_id,
+                    CHAMP_TUUID: cuuid,
+                    CHAMP_CREATION: Utc::now(),
+                },
+                "$currentDate": { CHAMP_MODIFICATION: true }
+            };
+            if let Err(e) = collection.update_one(filtre, ops, options).await {
+                Err(format!("grosfichiers.transaction_partager_collections Erreur sauvegarde partage : {:?}", e))?
+            }
+        }
+    }
+
+    middleware.reponse_ok()
 }
