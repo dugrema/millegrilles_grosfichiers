@@ -177,6 +177,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         REQUETE_JOBS_VIDEO,
         REQUETE_CHARGER_CONTACTS,
         REQUETE_PARTAGES_USAGER,
+        REQUETE_PARTAGES_CONTACT,
     ];
     for req in requetes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L2Prive});

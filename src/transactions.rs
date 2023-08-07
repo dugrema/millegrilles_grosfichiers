@@ -2110,7 +2110,7 @@ async fn transaction_ajouter_contact_local<M, T>(middleware: &M, gestionnaire: &
     };
 
     let filtre = doc! {
-        CHAMP_ID_CONTACT: uuid_transaction,
+        CHAMP_CONTACT_ID: uuid_transaction,
         CHAMP_USER_ID: &transaction_mappee.user_id,
         "contact_user_id": &transaction_mappee.contact_user_id,
     };
@@ -2161,7 +2161,7 @@ async fn transaction_supprimer_contacts<M, T>(middleware: &M, gestionnaire: &Ges
 
     let filtre = doc! {
         CHAMP_USER_ID: &user_id,
-        CHAMP_ID_CONTACT: {"$in": transaction_mappee.contact_ids},
+        CHAMP_CONTACT_ID: {"$in": transaction_mappee.contact_ids},
     };
     let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_CONTACT)?;
     if let Err(e) = collection.delete_many(filtre, None).await {
@@ -2205,14 +2205,14 @@ async fn transaction_partager_collections<M, T>(middleware: &M, gestionnaire: &G
         for cuuid in &transaction_mappee.cuuids {
             let filtre = doc! {
                 CHAMP_USER_ID: &user_id,
-                CHAMP_ID_CONTACT: &contact_id,
+                CHAMP_CONTACT_ID: &contact_id,
                 CHAMP_TUUID: cuuid,
             };
             let options = UpdateOptions::builder().upsert(true).build();
             let ops = doc! {
                 "$setOnInsert": {
                     CHAMP_USER_ID: &user_id,
-                    CHAMP_ID_CONTACT: &contact_id,
+                    CHAMP_CONTACT_ID: &contact_id,
                     CHAMP_TUUID: cuuid,
                     CHAMP_CREATION: Utc::now(),
                 },
@@ -2254,7 +2254,7 @@ async fn transaction_supprimer_partage_usager<M, T>(middleware: &M, gestionnaire
 
     let filtre = doc! {
         CHAMP_USER_ID: &user_id,
-        CHAMP_ID_CONTACT: transaction_mappee.contact_id,
+        CHAMP_CONTACT_ID: transaction_mappee.contact_id,
         CHAMP_TUUID: transaction_mappee.tuuid,
     };
     let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;

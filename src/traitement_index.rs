@@ -684,6 +684,7 @@ pub struct ParametresRecherche {
 pub struct ParametresGetPermission {
     pub tuuids: Option<Vec<String>>,
     pub fuuids: Vec<String>,
+    pub partage: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

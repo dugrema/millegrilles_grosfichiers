@@ -43,6 +43,7 @@ pub const REQUETE_SYNC_CUUIDS: &str = "syncCuuids";
 pub const REQUETE_JOBS_VIDEO: &str = "requeteJobsVideo";
 pub const REQUETE_CHARGER_CONTACTS: &str = "chargerContacts";
 pub const REQUETE_PARTAGES_USAGER: &str = "getPartagesUsager";
+pub const REQUETE_PARTAGES_CONTACT: &str = "getPartagesContact";
 
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
@@ -134,7 +135,8 @@ pub const CHAMP_FLAG_MEDIA_ERREUR: &str = "flag_media_erreur";
 pub const CHAMP_FLAG_DB_RETRY: &str = "retry";
 pub const CHAMP_USER_ID: &str = "user_id";
 pub const CHAMP_CLE_CONVERSION: &str = "cle_conversion";
-pub const CHAMP_ID_CONTACT: &str = "contact_id";
+pub const CHAMP_CONTACT_ID: &str = "contact_id";
+pub const CHAMP_CONTACT_USER_ID: &str = "contact_user_id";
 
 pub const ERREUR_MEDIA_TOOMANYRETRIES: i32 = 1;
 
