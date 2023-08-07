@@ -73,6 +73,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_SYNC_CORBEILLE => requete_sync_corbeille(middleware, message, gestionnaire).await,
             REQUETE_JOBS_VIDEO => requete_jobs_video(middleware, message, gestionnaire).await,
             REQUETE_CHARGER_CONTACTS => requete_charger_contacts(middleware, message, gestionnaire).await,
+            REQUETE_PARTAGES_USAGER => requete_partages_usager(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (1): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -121,6 +122,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_SYNC_CORBEILLE => requete_sync_corbeille(middleware, message, gestionnaire).await,
             REQUETE_JOBS_VIDEO => requete_jobs_video(middleware, message, gestionnaire).await,
             REQUETE_CHARGER_CONTACTS => requete_charger_contacts(middleware, message, gestionnaire).await,
+            REQUETE_PARTAGES_USAGER => requete_partages_usager(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -1586,4 +1588,51 @@ async fn requete_charger_contacts<M>(middleware: &M, m: MessageValideAction, ges
 
     let reponse = ReponseContacts { contacts };
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+#[derive(Deserialize)]
+struct RequetePartagesUsager {}
+
+#[derive(Serialize, Deserialize)]
+struct RowPartagesUsager {
+    tuuid: String,
+    user_id: String,
+    contact_id: String,
+}
+
+#[derive(Serialize)]
+struct ReponsePartagesUsager {
+    ok: bool,
+    partages: Vec<RowPartagesUsager>
+}
+
+async fn requete_partages_usager<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("requete_partages_usager Consommer commande : {:?}", & m.message);
+
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => {
+            debug!("requete_partages_usager user_id manquant du certificat");
+            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+        }
+    };
+
+    let requete: RequetePartagesUsager = m.message.get_msg().map_contenu()?;
+
+    let filtre = doc! { CHAMP_USER_ID: &user_id };
+    let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
+    let mut curseur = collection.find(filtre, None).await?;
+
+    let mut partages = Vec::new();
+    while let Some(r) = curseur.next().await {
+        let row: RowPartagesUsager = convertir_bson_deserializable(r?)?;
+        partages.push(row);
+    }
+
+    let reponse = ReponsePartagesUsager { ok: true, partages };
+
+    Ok(Some(middleware.formatter_reponse(reponse, None)?))
 }

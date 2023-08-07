@@ -42,6 +42,7 @@ pub const REQUETE_SYNC_CORBEILLE: &str = "syncCorbeille";
 pub const REQUETE_SYNC_CUUIDS: &str = "syncCuuids";
 pub const REQUETE_JOBS_VIDEO: &str = "requeteJobsVideo";
 pub const REQUETE_CHARGER_CONTACTS: &str = "chargerContacts";
+pub const REQUETE_PARTAGES_USAGER: &str = "getPartagesUsager";
 
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
