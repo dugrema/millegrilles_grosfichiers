@@ -104,6 +104,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         TRANSACTION_AJOUTER_CONTACT_LOCAL => commande_ajouter_contact_local(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_CONTACTS => commande_supprimer_contacts(middleware, m, gestionnaire).await,
         TRANSACTION_PARTAGER_COLLECTIONS => commande_partager_collections(middleware, m, gestionnaire).await,
+        TRANSACTION_SUPPRIMER_PARTAGE_USAGER => commande_supprimer_partage_usager(middleware, m, gestionnaire).await,
 
         // Commandes inconnues
         _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
@@ -1535,6 +1536,25 @@ async fn commande_partager_collections<M>(middleware: &M, mut m: MessageValideAc
         error!("commande_partager_collections Il y a au moins un cuuid non couvert pour l'usager, SKIP");
         return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Au moins un repertoire est invalide"}), None)?))
     }
+
+    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+}
+
+async fn commande_supprimer_partage_usager<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("commande_supprimer_partage_usager Consommer commande : {:?}", & m.message);
+    let commande: TransactionSupprimerPartageUsager = m.message.get_msg().map_contenu()?;
+
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => {
+            debug!("commande_partager_collections user_id absent, SKIP");
+            ;
+            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
+        }
+    };
 
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }

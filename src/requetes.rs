@@ -1591,7 +1591,7 @@ async fn requete_charger_contacts<M>(middleware: &M, m: MessageValideAction, ges
 }
 
 #[derive(Deserialize)]
-struct RequetePartagesUsager {}
+struct RequetePartagesUsager { contact_id: Option<String> }
 
 #[derive(Serialize, Deserialize)]
 struct RowPartagesUsager {
@@ -1622,7 +1622,10 @@ async fn requete_partages_usager<M>(middleware: &M, m: MessageValideAction, gest
 
     let requete: RequetePartagesUsager = m.message.get_msg().map_contenu()?;
 
-    let filtre = doc! { CHAMP_USER_ID: &user_id };
+    let mut filtre = doc! { CHAMP_USER_ID: &user_id };
+    if let Some(inner) = requete.contact_id.as_ref() {
+        filtre.insert(CHAMP_ID_CONTACT, inner );
+    }
     let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
     let mut curseur = collection.find(filtre, None).await?;
 

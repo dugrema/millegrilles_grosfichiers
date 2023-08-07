@@ -100,6 +100,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_AJOUTER_CONTACT_LOCAL => transaction_ajouter_contact_local(middleware, gestionnaire, transaction).await,
         TRANSACTION_SUPPRIMER_CONTACTS => transaction_supprimer_contacts(middleware, gestionnaire, transaction).await,
         TRANSACTION_PARTAGER_COLLECTIONS => transaction_partager_collections(middleware, gestionnaire, transaction).await,
+        TRANSACTION_SUPPRIMER_PARTAGE_USAGER => transaction_supprimer_partage_usager(middleware, gestionnaire, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), action)),
     }
 }
@@ -2221,6 +2222,44 @@ async fn transaction_partager_collections<M, T>(middleware: &M, gestionnaire: &G
                 Err(format!("grosfichiers.transaction_partager_collections Erreur sauvegarde partage : {:?}", e))?
             }
         }
+    }
+
+    middleware.reponse_ok()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionSupprimerPartageUsager {
+    pub contact_id: String,
+    pub tuuid: String,
+}
+
+async fn transaction_supprimer_partage_usager<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_supprimer_partage_usager Consommer transaction : {:?}", &transaction);
+    let user_id = match transaction.get_enveloppe_certificat() {
+        Some(inner) => match inner.get_user_id()? {
+            Some(inner) => inner.to_owned(),
+            None => Err(format!("grosfichiers.transaction_supprimer_partage_usager User_id manquant du certificat"))?
+        },
+        None => Err(format!("grosfichiers.transaction_supprimer_partage_usager Erreur enveloppe manquante"))?
+    };
+
+    let transaction_mappee: TransactionSupprimerPartageUsager = match transaction.convertir() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_supprimer_partage_usager Erreur conversion transaction : {:?}", e))?
+    };
+
+    let filtre = doc! {
+        CHAMP_USER_ID: &user_id,
+        CHAMP_ID_CONTACT: transaction_mappee.contact_id,
+        CHAMP_TUUID: transaction_mappee.tuuid,
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
+    if let Err(e) = collection.delete_one(filtre, None).await {
+        Err(format!("transactions.transaction_supprimer_partage_usager Erreur delete_one : {:?}", e))?
     }
 
     middleware.reponse_ok()
