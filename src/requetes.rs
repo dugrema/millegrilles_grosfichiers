@@ -41,17 +41,6 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
     let user_id = message.get_user_id();
     let role_prive = message.verifier_roles(vec![RolesCertificats::ComptePrive]);
 
-    // if role_prive && user_id.is_some() {
-    //     // Ok, commande usager
-    // } else if message.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
-    //     // Autorisation : On accepte les requetes de 3.protege ou 4.secure
-    //     // Ok
-    // } else if message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-    //     // Ok
-    // } else {
-    //     Err(format!("consommer_requete autorisation invalide (pas d'un exchange reconnu)"))?
-    // }
-
     let domaine = message.domaine.as_str();
     if domaine != DOMAINE_NOM {
         error!("Message requete/domaine inconnu : '{}'. Message dropped.", message.domaine);
@@ -203,43 +192,6 @@ pub fn mapper_fichier_db(fichier: Document) -> Result<FichierDetail, Box<dyn Err
     debug!("Fichier mappe : {:?}", fichier_mappe);
     Ok(fichier_mappe)
 }
-
-// #[derive(Clone, Debug, Serialize, Deserialize)]
-// struct FichierVersionCourante {
-//     tuuid: String,
-//     #[serde(skip_serializing_if="Option::is_none")]
-//     cuuids: Option<Vec<String>>,
-//     nom: String,
-//     titre: Option<HashMap<String, String>>,
-//
-//     fuuid_v_courante: Option<String>,
-//     version_courante: Option<DBFichierVersion>,
-//
-//     favoris: Option<bool>,
-//
-//     date_creation: Option<DateEpochSeconds>,
-//     derniere_modification: Option<DateEpochSeconds>,
-//     supprime: Option<bool>,
-// }
-
-// #[derive(Clone, Debug, Serialize, Deserialize)]
-// struct DBFichierVersion {
-//     nom: String,
-//     fuuid: String,
-//     tuuid: String,
-//     mimetype: String,
-//     taille: usize,
-//     #[serde(rename="dateFichier")]
-//     date_fichier: DateEpochSeconds,
-//     #[serde(skip_serializing_if="Option::is_none")]
-//     height: Option<u32>,
-//     #[serde(skip_serializing_if="Option::is_none")]
-//     weight: Option<u32>,
-//     #[serde(skip_serializing_if="Option::is_none")]
-//     images: Option<HashMap<String, ImageConversion>>,
-//     #[serde(skip_serializing_if="Option::is_none")]
-//     anime: Option<bool>,
-// }
 
 async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -460,7 +412,13 @@ async fn requete_contenu_collection<M>(middleware: &M, m: MessageValideAction, g
         },
         None => doc!{"nom": 1}
     };
-    let filtre_fichiers = doc! { CHAMP_CUUIDS: {"$all": [&requete.tuuid_collection]}, CHAMP_SUPPRIME: false };
+    let filtre_fichiers = doc! {
+        "$or": {
+            CHAMP_CUUID: &requete.tuuid_collection,
+            CHAMP_CUUIDS: {"$all": [&requete.tuuid_collection]},
+        },
+        CHAMP_SUPPRIME: false
+    };
     let ops_fichiers = FindOptions::builder()
         .sort(sort)
         .skip(skip)
@@ -1177,7 +1135,8 @@ struct CuuidsSync {
     supprime: Option<bool>,
     metadata: DataChiffre,
     user_id: String,
-    cuuids: Option<Vec<String>>,
+    // cuuids: Option<Vec<String>>,
+    cuuid: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1243,13 +1202,18 @@ async fn requete_sync_collection<M>(middleware: &M, m: MessageValideAction, gest
     let mut filtre = doc!{"user_id": user_id};
     match requete.cuuid {
         Some(cuuid) => {
-            filtre.insert("cuuids", cuuid);
+            // filtre.insert("cuuids", cuuid);
+            filtre.insert("$or", vec![
+                doc!{ "cuuids": &cuuid},
+                doc!{"cuuid": &cuuid }
+            ]);
         },
         None => {
             // Requete sur les favoris
             filtre.insert("favoris", true);
         }
     }
+    debug!("requete_sync_collection Filtre {:?}", filtre);
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let mut fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
@@ -1461,7 +1425,7 @@ async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValideAction, gestionn
         CHAMP_SUPPRIME: 1,
         CHAMP_METADATA: 1,
         CHAMP_USER_ID: 1,
-        CHAMP_CUUIDS: 1,
+        CHAMP_CUUID: 1,
     };
     let opts = FindOptions::builder()
         .projection(projection)
@@ -1469,7 +1433,14 @@ async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValideAction, gestionn
         .skip(skip)
         .limit(limit.clone())
         .build();
-    let mut filtre = doc! {"supprime": false, "metadata": {"$exists": true}, "fuuid_v_courante": {"$exists": false}};
+
+    let type_node_repertoire: &str = TypeNode::Repertoire.into();
+    let type_node_collection: &str = TypeNode::Collection.into();
+    let mut filtre = doc! {
+        "type_node": {"$in": [type_node_repertoire, type_node_collection]},
+        "supprime": false,
+        "metadata": {"$exists": true}
+    };
 
     debug!("requete_sync_cuuids filtre : {:?}", filtre);
 

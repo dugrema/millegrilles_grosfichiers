@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use millegrilles_common_rust::bson::{DateTime, Document};
+use millegrilles_common_rust::bson::{Bson, DateTime, Document};
 use millegrilles_common_rust::chiffrage_cle::InformationCle;
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::formatteur_messages::DateEpochSeconds;
@@ -121,6 +121,7 @@ pub const CHAMP_TITRE: &str = "titre";
 pub const CHAMP_MIMETYPE: &str = "mimetype";
 pub const CHAMP_FUUID_V_COURANTE: &str = "fuuid_v_courante";
 pub const CHAMP_FAVORIS: &str = "favoris";
+pub const CHAMP_TYPE_NODE: &str = "type_node";
 // pub const CHAMP_FUUID_MIMETYPES: &str = "fuuidMimetypes";
 pub const CHAMP_FLAG_INDEX: &str = "flag_index";
 pub const CHAMP_FLAG_INDEX_RETRY: &str = "index_retry";
@@ -153,11 +154,57 @@ pub const VIDEO_CONVERSION_ETAT_ERROR_TOOMANYRETRIES: i32 = 5;
 pub const VIDEO_CONVERSION_TIMEOUT_RUNNING: i32 = 10 * 60;  // Secondes
 pub const VIDEO_CONVERSION_TIMEOUT_PERSISTING: i32 = 60 * 60;  // Secondes
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TypeNode {
+    Collection,
+    Repertoire,
+    Fichier,
+}
+
+impl Into<&str> for TypeNode {
+    fn into(self) -> &'static str {
+        match self {
+            TypeNode::Collection => "Collection",
+            TypeNode::Repertoire => "Repertoire",
+            TypeNode::Fichier => "Fichier",
+        }
+    }
+}
+
+// impl From<TypeNode> for Bson {
+//     fn from(value: TypeNode) -> Self {
+//         value.into()
+//     }
+// }
+
+impl TryFrom<&str> for TypeNode {
+    type Error = String;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let resultat = match value {
+            "Collection" => TypeNode::Collection,
+            "Repertoire" => TypeNode::Repertoire,
+            "Fichier" => TypeNode::Fichier,
+            _ => Err(format!("TypeNode {} non supporte", value))?
+        };
+        Ok(resultat)
+    }
+}
+
+impl Into<Bson> for TypeNode {
+    fn into(self) -> Bson {
+        let into_str: &str = self.into();
+        Bson::String(into_str.to_owned())
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FichierDetail {
     pub tuuid: String,
     #[serde(skip_serializing_if="Option::is_none")]
+    pub cuuid: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub cuuids: Option<Vec<String>>,
+    pub type_node: Option<String>,
     pub nom: Option<String>,
     pub titre: Option<HashMap<String, String>>,
     pub description: Option<HashMap<String, String>>,

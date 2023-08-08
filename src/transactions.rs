@@ -12,9 +12,12 @@ use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
+use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao, verifier_erreur_duplication_mongo};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, ReturnDocument, UpdateOptions};
+use millegrilles_common_rust::multibase::Base;
+use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
@@ -381,6 +384,8 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         add_to_set.insert(CHAMP_CUUIDS, c);
     }
 
+    let type_node: &str = TypeNode::Fichier.into();
+
     let ops = doc! {
         "$set": {
             "version_courante": doc_bson_transaction,
@@ -394,6 +399,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
             "tuuid": &tuuid,
             CHAMP_CREATION: Utc::now(),
             CHAMP_USER_ID: &user_id,
+            CHAMP_TYPE_NODE: type_node,
         },
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
@@ -487,6 +493,10 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
         Some(f) => f,
         None => false
     };
+    let type_node: &str = match favoris {
+        true => TypeNode::Collection.into(),
+        false => TypeNode::Repertoire.into(),
+    };
 
     // Creer document de collection (fichiersRep)
     let mut doc_collection = doc! {
@@ -499,14 +509,18 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
         CHAMP_USER_ID: &user_id,
         CHAMP_SUPPRIME: false,
         CHAMP_FAVORIS: favoris,
+        CHAMP_TYPE_NODE: type_node,
     };
     debug!("grosfichiers.transaction_nouvelle_collection Ajouter nouvelle collection doc : {:?}", doc_collection);
 
     // Ajouter collection parent au besoin
     if let Some(c) = cuuid.as_ref() {
-        let mut arr = millegrilles_common_rust::bson::Array::new();
-        arr.push(millegrilles_common_rust::bson::Bson::String(c.clone()));
-        doc_collection.insert("cuuids", arr);
+        //let mut arr = millegrilles_common_rust::bson::Array::new();
+        //arr.push(millegrilles_common_rust::bson::Bson::String(c.clone()));
+        doc_collection.insert("cuuid", c.clone());
+
+        // Charger le cuuid pour ajouter path vers root
+
     }
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
@@ -531,31 +545,102 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
     middleware.reponse_ok()
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RowFichiersRepCuuidNode {
+    tuuid: String,
+    cuuids: Option<Vec<String>>,
+    cuuids_paths: Option<HashMap<String, Vec<String>>>,
+    ancetres: Option<Vec<String>>,  // Liste (set) de tous les cuuids ancetres
+}
+
+async fn recalculer_hierarchies<M,S>(middleware: &M, cuuids: Vec<S>) -> Result<(), Box<dyn Error>>
+    where
+        M: GenerateurMessages + MongoDao,
+        S: AsRef<str>
+{
+    let cuuids: Vec<&str> = cuuids.iter().map(|s| s.as_ref()).collect();
+    debug!("recalculer_hierarchies Cuuids : {:?}", &cuuids);
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+    // Conserver les cuuids dans un cache - utiliser pour mapping des fichiers
+    let mut cache_cuuids = HashMap::new();
+    {
+        let filtre = doc! {
+            CHAMP_TUUID: {"$in": &cuuids},
+            "ancetres": {"$in": &cuuids},
+        };
+        let options = FindOptions::builder()
+            .projection(doc!{ CHAMP_TUUID: 1, CHAMP_CUUIDS: 1, "cuuids_paths": 1, "ancetres": 1})
+            .build();
+        let mut curseur = collection.find(filtre, options).await?;
+        while let Some(r) = curseur.next().await {
+            let row: RowFichiersRepCuuidNode = convertir_bson_deserializable(r?)?;
+            cache_cuuids.insert(row.tuuid.clone(), row);
+        }
+    }
+
+    // Recalculer tous les parents de chaque collection recuperee
+    let cuuids_trouves: Vec<String> = cache_cuuids.keys().map(|k| k.to_owned()).collect();
+
+    for cuuid in &cuuids_trouves {
+        let info_cuuid = match cache_cuuids.get_mut(cuuid) {
+            Some(inner) => inner,
+            None => {
+                debug!("Cuuid inconnu {}, SKIP pour hierarchie", cuuid);
+                continue;
+            }
+        };
+
+
+
+    }
+
+    // Recalculer le path de tous les fichiers affectes par au moins un cuuid modifie
+
+    Ok(())
+}
+
 async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
         M: GenerateurMessages + MongoDao,
         T: Transaction
 {
+    let uuid_transaction = transaction.get_uuid_transaction();
+
     debug!("transaction_ajouter_fichiers_collection Consommer transaction : {:?}", &transaction);
     let transaction_collection: TransactionAjouterFichiersCollection = match transaction.clone().convertir::<TransactionAjouterFichiersCollection>() {
         Ok(t) => t,
         Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur conversion transaction : {:?}", e))?
     };
 
-    // Conserver champs transaction uniquement (filtrer champs meta)
-    let add_to_set = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid};
-    let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.inclure_tuuids}};
-    let ops = doc! {
-        "$addToSet": add_to_set,
-        "$currentDate": {CHAMP_MODIFICATION: true}
-    };
-
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let resultat = match collection.update_many(filtre, ops, None).await {
-        Ok(r) => r,
-        Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur update_one sur transcation : {:?}", e))?
-    };
-    debug!("grosfichiers.transaction_ajouter_fichiers_collection Resultat transaction update : {:?}", resultat);
+
+    // Ajouter le cuuid aux fichiers
+    {
+        // Conserver champs transaction uniquement (filtrer champs meta)
+        let type_node_fichiers: &str = TypeNode::Fichier.into();
+        let add_to_set = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid};
+        let filtre = doc! {
+            CHAMP_TUUID: {"$in": &transaction_collection.inclure_tuuids},
+            "type_node": type_node_fichiers
+        };
+        let ops = doc! {
+            "$addToSet": add_to_set,
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        let resultat = match collection.update_many(filtre, ops, None).await {
+            Ok(r) => r,
+            Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur update_one sur transcation : {:?}", e))?
+        };
+        debug!("grosfichiers.transaction_ajouter_fichiers_collection Resultat transaction update : {:?}", resultat);
+    }
+
+    // Dupliquer la structure de repertoires
+    if let Err(e) = dupliquer_structure_repertoires(
+        middleware, uuid_transaction, &transaction_collection.cuuid, &transaction_collection.inclure_tuuids).await {
+        Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur dupliquer_structure_repertoires sur transcation : {:?}", e))?
+    }
 
     for tuuid in &transaction_collection.inclure_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
@@ -570,6 +655,87 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, transacti
     }
 
     middleware.reponse_ok()
+}
+
+#[derive(Clone)]
+struct CopieTuuidVersCuuid {
+    tuuid_original: String,
+    cuuid_destination: String,
+}
+
+async fn dupliquer_structure_repertoires<M,U,C,T>(middleware: &M, uuid_transaction: U, cuuid: C, tuuids: &Vec<T>)
+    -> Result<(), Box<dyn Error>>
+    where M: MongoDao, U: AsRef<str>, C: AsRef<str>, T: ToString
+{
+    let uuid_transaction = uuid_transaction.as_ref();
+    let cuuid = cuuid.as_ref();
+    let mut tuuids_remaining: Vec<CopieTuuidVersCuuid> = tuuids.iter().map(|t| {
+        CopieTuuidVersCuuid { tuuid_original: t.to_string(), cuuid_destination: cuuid.to_owned() }
+    }).collect();
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+    loop {
+        let type_node_repertoire: &str = TypeNode::Repertoire.into();
+        let copie_tuuids: Vec<CopieTuuidVersCuuid> = tuuids_remaining.clone();
+        tuuids_remaining.clear();
+
+        for repertoire_copie in copie_tuuids.into_iter() {
+            let filtre = doc! {CHAMP_TUUID: &repertoire_copie.tuuid_original, "type_node": type_node_repertoire};
+            let mut curseur = collection.find(filtre, None).await?;
+            while let Some(r) = curseur.next().await {
+                let repertoire: FichierDetail = convertir_bson_deserializable(r?)?;
+
+                debug!("Copier repertoire {} vers {}", repertoire_copie.tuuid_original, repertoire_copie.cuuid_destination);
+                // Creer nouveau tuuid unique pour le repertoire a dupliquer
+                let nouveau_tuuid_str = format!("{}/{}/{}", uuid_transaction, &repertoire_copie.cuuid_destination, repertoire.tuuid);
+                let nouveau_tuuid_multihash = hacher_bytes(nouveau_tuuid_str.into_bytes().as_slice(), Some(Code::Blake2s256), Some(Base::Base16Lower));
+                let nouveau_tuuid = (&nouveau_tuuid_multihash[9..]).to_string();
+                debug!("dupliquer_structure_repertoires Nouveau tuuid : {:?}", nouveau_tuuid);
+
+                // Copier le contenu de fichier detail dans une nouvelle entree de repertoire
+                // Conserver la meme cle de chiffrage
+                let now = Utc::now();
+                let type_node_repertoire: &str = TypeNode::Repertoire.into();
+                let doc_repertoire = doc! {
+                    CHAMP_TUUID: &nouveau_tuuid,
+                    CHAMP_CUUID: &repertoire_copie.cuuid_destination,
+                    CHAMP_CREATION: &now,
+                    CHAMP_MODIFICATION: now,
+                    CHAMP_METADATA: convertir_to_bson(repertoire.metadata.as_ref())?,
+                    CHAMP_USER_ID: &repertoire.user_id,
+                    CHAMP_SUPPRIME: false,
+                    CHAMP_FAVORIS: false,
+                    CHAMP_TYPE_NODE: type_node_repertoire,
+                };
+                collection.insert_one(doc_repertoire, None).await?;
+
+                // Ajouter le nouveau cuuid a tous les fichiers du sous-repertoire
+                let type_node_fichier: &str = TypeNode::Fichier.into();
+                let filtre_ajout_cuuid = doc! { CHAMP_CUUIDS: &repertoire.tuuid, CHAMP_TYPE_NODE: type_node_fichier };
+                let ops_ajout_cuuid = doc! {
+                    "$addToSet": { CHAMP_CUUIDS: &nouveau_tuuid },
+                    "$currentDate": { CHAMP_MODIFICATION: true }
+                };
+                collection.update_many(filtre_ajout_cuuid, ops_ajout_cuuid, None).await?;
+
+                // Trouver les sous-repertoires, traiter individuellement
+                let filtre_ajout_cuuid = doc! { CHAMP_CUUID: &repertoire.tuuid, CHAMP_TYPE_NODE: type_node_repertoire };
+                let mut curseur = collection.find(filtre_ajout_cuuid, None).await?;
+                while let Some(r) = curseur.next().await {
+                    let sous_repertoire: FichierDetail = convertir_bson_deserializable(r?)?;
+                    let copie_tuuid = CopieTuuidVersCuuid { tuuid_original: sous_repertoire.tuuid, cuuid_destination: nouveau_tuuid.clone() };
+                    tuuids_remaining.push(copie_tuuid);
+                }
+            }
+        }
+
+        if tuuids_remaining.is_empty() {
+            break;  // Termine
+        }
+    }
+
+    Ok(())
 }
 
 async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
