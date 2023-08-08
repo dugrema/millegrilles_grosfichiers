@@ -205,6 +205,8 @@ pub struct FichierDetail {
     #[serde(skip_serializing_if="Option::is_none")]
     pub cuuids: Option<Vec<String>>,
     pub type_node: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub path_cuuids: Option<Vec<String>>,
     pub nom: Option<String>,
     pub titre: Option<HashMap<String, String>>,
     pub description: Option<HashMap<String, String>>,

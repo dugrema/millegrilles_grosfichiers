@@ -513,6 +513,8 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
     };
     debug!("grosfichiers.transaction_nouvelle_collection Ajouter nouvelle collection doc : {:?}", doc_collection);
 
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
     // Ajouter collection parent au besoin
     if let Some(c) = cuuid.as_ref() {
         //let mut arr = millegrilles_common_rust::bson::Array::new();
@@ -520,10 +522,47 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
         doc_collection.insert("cuuid", c.clone());
 
         // Charger le cuuid pour ajouter path vers root
+        match get_path_cuuid(middleware, c).await {
+            Ok(inner) => {
+                if let Some(path_cuuids) = inner {
+                    let mut path_cuuids_modifie: Vec<Bson> = path_cuuids.iter().map(|c| Bson::String(c.to_owned())).collect();
+                    doc_collection.insert("path_cuuids", path_cuuids_modifie);
+                }
+            },
+            Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection get_path_cuuid : {:?}", e))?
+        }
 
+        // let filtre = doc! { CHAMP_TUUID: c };
+        // match collection.find_one(filtre, None).await {
+        //     Ok(inner) => {
+        //         match inner {
+        //             Some(doc_parent) => {
+        //                 match convertir_bson_deserializable::<FichierDetail>(doc_parent) {
+        //                     Ok(inner) => {
+        //                         match inner.path_cuuids.clone() {
+        //                             Some(mut path_cuuids) => {
+        //                                 // Inserer le nouveau parent
+        //                                 let mut path_cuuids_modifie: Vec<Bson> = path_cuuids.iter().map(|c| Bson::String(c.to_owned())).collect();
+        //                                 path_cuuids_modifie.insert(0, Bson::String(c.to_owned()));
+        //                                 doc_collection.insert("path_cuuids", path_cuuids_modifie);
+        //                             },
+        //                             None => {
+        //                                 doc_collection.insert("path_cuuids", vec![Bson::String(c.to_owned())]);
+        //                             }
+        //                         }
+        //                     },
+        //                     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection convertir_bson_deserializable : {:?}", e))?
+        //                 }
+        //             },
+        //             None => {
+        //                 doc_collection.insert("path_cuuids", vec![Bson::String(c.to_owned())]);
+        //             }
+        //         }
+        //     },
+        //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection find_one : {:?}", e))?
+        // }
     }
 
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let resultat = match collection.insert_one(doc_collection, None).await {
         Ok(r) => r,
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur update_one sur transcation : {:?}", e))?
@@ -543,6 +582,63 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
     }
 
     middleware.reponse_ok()
+}
+
+async fn get_path_cuuid<M,S>(middleware: &M, cuuid: S)
+    -> Result<Option<Vec<String>>, Box<dyn Error>>
+    where M: MongoDao, S: AsRef<str>
+{
+    let cuuid = cuuid.as_ref();
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let filtre = doc! { CHAMP_TUUID: cuuid };
+    let doc_parent: FichierDetail = match collection.find_one(filtre, None).await? {
+        Some(inner) => convertir_bson_deserializable(inner)?,
+        None => {
+            return Ok(None)
+        }
+    };
+
+    let path_cuuids = match doc_parent.path_cuuids {
+        Some(mut inner) => {
+            inner.insert(0, cuuid.to_owned());
+            inner
+        },
+        None => vec![cuuid.to_owned()]
+    };
+
+    Ok(Some(path_cuuids))
+
+    // // Charger le cuuid pour ajouter path vers root
+    // let filtre = doc! { CHAMP_TUUID: c };
+    // match collection.find_one(filtre, None).await {
+    //     Ok(inner) => {
+    //         match inner {
+    //             Some(doc_parent) => {
+    //                 match convertir_bson_deserializable::<FichierDetail>(doc_parent) {
+    //                     Ok(inner) => {
+    //                         match inner.path_cuuids.clone() {
+    //                             Some(mut path_cuuids) => {
+    //                                 // Inserer le nouveau parent
+    //                                 let mut path_cuuids_modifie: Vec<Bson> = path_cuuids.iter().map(|c| Bson::String(c.to_owned())).collect();
+    //                                 path_cuuids_modifie.insert(0, Bson::String(c.to_owned()));
+    //                                 doc_collection.insert("path_cuuids", path_cuuids_modifie);
+    //                             },
+    //                             None => {
+    //                                 doc_collection.insert("path_cuuids", vec![Bson::String(c.to_owned())]);
+    //                             }
+    //                         }
+    //                     },
+    //                     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection convertir_bson_deserializable : {:?}", e))?
+    //                 }
+    //             },
+    //             None => {
+    //                 doc_collection.insert("path_cuuids", vec![Bson::String(c.to_owned())]);
+    //             }
+    //         }
+    //     },
+    //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection find_one : {:?}", e))?
+    // }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -663,6 +759,8 @@ struct CopieTuuidVersCuuid {
     cuuid_destination: String,
 }
 
+/// Duplique la structure des repertoires listes dans tuuids.
+/// Les fichiers des sous-repertoires sont linkes (pas copies).
 async fn dupliquer_structure_repertoires<M,U,C,T>(middleware: &M, uuid_transaction: U, cuuid: C, tuuids: &Vec<T>)
     -> Result<(), Box<dyn Error>>
     where M: MongoDao, U: AsRef<str>, C: AsRef<str>, T: ToString
@@ -697,7 +795,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T>(middleware: &M, uuid_transacti
                 // Conserver la meme cle de chiffrage
                 let now = Utc::now();
                 let type_node_repertoire: &str = TypeNode::Repertoire.into();
-                let doc_repertoire = doc! {
+                let mut doc_repertoire = doc! {
                     CHAMP_TUUID: &nouveau_tuuid,
                     CHAMP_CUUID: &repertoire_copie.cuuid_destination,
                     CHAMP_CREATION: &now,
@@ -708,6 +806,17 @@ async fn dupliquer_structure_repertoires<M,U,C,T>(middleware: &M, uuid_transacti
                     CHAMP_FAVORIS: false,
                     CHAMP_TYPE_NODE: type_node_repertoire,
                 };
+
+                match get_path_cuuid(middleware, &repertoire_copie.cuuid_destination).await {
+                    Ok(inner) => {
+                        if let Some(path_cuuids) = inner {
+                            let mut path_cuuids_modifie: Vec<Bson> = path_cuuids.iter().map(|c| Bson::String(c.to_owned())).collect();
+                            doc_repertoire.insert("path_cuuids", path_cuuids_modifie);
+                        }
+                    },
+                    Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection get_path_cuuid : {:?}", e))?
+                }
+
                 collection.insert_one(doc_repertoire, None).await?;
 
                 // Ajouter le nouveau cuuid a tous les fichiers du sous-repertoire
