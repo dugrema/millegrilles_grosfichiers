@@ -408,9 +408,15 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
     debug!("transaction_nouvelle_version nouveau fichier update ops : {:?}", ops);
     let resultat = match collection.update_one(filtre, ops, opts).await {
         Ok(r) => r,
-        Err(e) => Err(format!("grosfichiers.transaction_cle Erreur update_one sur transcation : {:?}", e))?
+        Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur update_one sur transcation : {:?}", e))?
     };
     debug!("transaction_nouvelle_version nouveau fichier Resultat transaction update : {:?}", resultat);
+
+    if let Some(cuuid) = cuuid.as_ref() {
+        if let Err(e) = recalculer_cuuids_fichiers(middleware, vec![cuuid], Some(vec![&tuuid])).await {
+            Err(format!("grosfichiers.transaction_nouvelle_version Erreur recalculer_cuuids_fichiers : {:?}", e))?
+        }
+    }
 
     if flag_duplication == false {
         // On emet les messages de traitement uniquement si la transaction est nouvelle
@@ -584,6 +590,13 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
     middleware.reponse_ok()
 }
 
+#[derive(Deserialize)]
+struct RowRepertoirePaths {
+    tuuid: String,
+    cuuid: Option<String>,
+    path_cuuids: Option<Vec<String>>,
+}
+
 async fn get_path_cuuid<M,S>(middleware: &M, cuuid: S)
     -> Result<Option<Vec<String>>, Box<dyn Error>>
     where M: MongoDao, S: AsRef<str>
@@ -592,7 +605,8 @@ async fn get_path_cuuid<M,S>(middleware: &M, cuuid: S)
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let filtre = doc! { CHAMP_TUUID: cuuid };
-    let doc_parent: FichierDetail = match collection.find_one(filtre, None).await? {
+    let options = FindOneOptions::builder().projection(doc!{CHAMP_TUUID: 1, CHAMP_CUUID: 1, CHAMP_PATH_CUUIDS: 1}).build();
+    let doc_parent: RowRepertoirePaths = match collection.find_one(filtre, options).await? {
         Some(inner) => convertir_bson_deserializable(inner)?,
         None => {
             return Ok(None)
@@ -608,37 +622,6 @@ async fn get_path_cuuid<M,S>(middleware: &M, cuuid: S)
     };
 
     Ok(Some(path_cuuids))
-
-    // // Charger le cuuid pour ajouter path vers root
-    // let filtre = doc! { CHAMP_TUUID: c };
-    // match collection.find_one(filtre, None).await {
-    //     Ok(inner) => {
-    //         match inner {
-    //             Some(doc_parent) => {
-    //                 match convertir_bson_deserializable::<FichierDetail>(doc_parent) {
-    //                     Ok(inner) => {
-    //                         match inner.path_cuuids.clone() {
-    //                             Some(mut path_cuuids) => {
-    //                                 // Inserer le nouveau parent
-    //                                 let mut path_cuuids_modifie: Vec<Bson> = path_cuuids.iter().map(|c| Bson::String(c.to_owned())).collect();
-    //                                 path_cuuids_modifie.insert(0, Bson::String(c.to_owned()));
-    //                                 doc_collection.insert("path_cuuids", path_cuuids_modifie);
-    //                             },
-    //                             None => {
-    //                                 doc_collection.insert("path_cuuids", vec![Bson::String(c.to_owned())]);
-    //                             }
-    //                         }
-    //                     },
-    //                     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection convertir_bson_deserializable : {:?}", e))?
-    //                 }
-    //             },
-    //             None => {
-    //                 doc_collection.insert("path_cuuids", vec![Bson::String(c.to_owned())]);
-    //             }
-    //         }
-    //     },
-    //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection find_one : {:?}", e))?
-    // }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -649,50 +632,100 @@ pub struct RowFichiersRepCuuidNode {
     ancetres: Option<Vec<String>>,  // Liste (set) de tous les cuuids ancetres
 }
 
-async fn recalculer_hierarchies<M,S>(middleware: &M, cuuids: Vec<S>) -> Result<(), Box<dyn Error>>
+async fn recalculer_cuuids_fichiers<M,S,T>(middleware: &M, cuuids: Vec<S>, tuuids: Option<Vec<T>>) -> Result<(), Box<dyn Error>>
     where
-        M: GenerateurMessages + MongoDao,
-        S: AsRef<str>
+        M: MongoDao,
+        S: AsRef<str>,
+        T: ToString
 {
     let cuuids: Vec<&str> = cuuids.iter().map(|s| s.as_ref()).collect();
-    debug!("recalculer_hierarchies Cuuids : {:?}", &cuuids);
+    let tuuids: Option<Vec<Bson>> = match tuuids {
+        Some(inner) => Some(inner.iter().map(|s| Bson::String(s.to_string())).collect()),
+        None => None
+    };
+    debug!("recalculer_cuuids_fichiers Cuuids : {:?}", &cuuids);
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
 
     // Conserver les cuuids dans un cache - utiliser pour mapping des fichiers
     let mut cache_cuuids = HashMap::new();
-    {
-        let filtre = doc! {
-            CHAMP_TUUID: {"$in": &cuuids},
-            "ancetres": {"$in": &cuuids},
-        };
-        let options = FindOptions::builder()
-            .projection(doc!{ CHAMP_TUUID: 1, CHAMP_CUUIDS: 1, "cuuids_paths": 1, "ancetres": 1})
-            .build();
-        let mut curseur = collection.find(filtre, options).await?;
-        while let Some(r) = curseur.next().await {
-            let row: RowFichiersRepCuuidNode = convertir_bson_deserializable(r?)?;
-            cache_cuuids.insert(row.tuuid.clone(), row);
-        }
-    }
 
-    // Recalculer tous les parents de chaque collection recuperee
-    let cuuids_trouves: Vec<String> = cache_cuuids.keys().map(|k| k.to_owned()).collect();
-
-    for cuuid in &cuuids_trouves {
-        let info_cuuid = match cache_cuuids.get_mut(cuuid) {
-            Some(inner) => inner,
-            None => {
-                debug!("Cuuid inconnu {}, SKIP pour hierarchie", cuuid);
-                continue;
-            }
-        };
-
-
-
-    }
+    let type_node_fichier: &str = TypeNode::Fichier.into();
 
     // Recalculer le path de tous les fichiers affectes par au moins un cuuid modifie
+    let mut filtre = doc! {
+        CHAMP_CUUIDS: {"$in": &cuuids},
+        CHAMP_TYPE_NODE: type_node_fichier,
+    };
+    if let Some(tuuids) = tuuids {
+        filtre.insert("tuuid", doc!{"$in": tuuids});
+    };
+    let options = FindOptions::builder()
+        .projection(doc!{ CHAMP_TUUID: 1, CHAMP_CUUIDS: 1})
+        .build();
+    let mut curseur = collection.find(filtre, options).await?;
+    while let Some(r) = curseur.next().await {
+        let row: RowFichiersRepCuuidNode = convertir_bson_deserializable(r?)?;
+
+        let mut ancetres = HashSet::new();
+        let mut map_path_cuuids = HashMap::new();
+        if let Some(cuuids) = row.cuuids {
+            debug!("recalculer_cuuids_fichiers Recalculer paths pour fichier {} avec cuuids {:?}", row.tuuid, cuuids);
+            for cuuid in cuuids {
+                let row_cuuid = match cache_cuuids.get(&cuuid) {
+                    Some(inner) => inner,
+                    None => {
+                        // Charger le cuuid
+                        let filtre = doc! { CHAMP_TUUID: &cuuid };
+                        let doc_cuuid: RowRepertoirePaths = match collection.find_one(filtre, None).await? {
+                            Some(inner) => match convertir_bson_deserializable(inner) {
+                                Ok(inner) => inner,
+                                Err(e) => {
+                                    warn!("recalculer_cuuids_fichiers Erreur convertir_bson_deserializable pour cuuid {} vers RowRepertoirePaths (SKIP) : {:?}", cuuid, e);
+                                    continue;
+                                },
+                            },
+                            None => {
+                                warn!("recalculer_cuuids_fichiers Cuuid manquant {}, SKIP", cuuid);
+                                continue;
+                            }
+                        };
+                        cache_cuuids.insert(cuuid.clone(), doc_cuuid);
+                        cache_cuuids.get(&cuuid).expect("get cuuid")
+                    }
+                };
+
+                match row_cuuid.path_cuuids.clone() {
+                    Some(mut path_cuuids) => {
+                        // Repertoire
+                        // Ajouter le tuuid du repertoire a son path
+                        path_cuuids.insert(0, row_cuuid.tuuid.clone());
+
+                        for cuuid in &path_cuuids {
+                            ancetres.insert(cuuid.clone());
+                        }
+                        map_path_cuuids.insert(row_cuuid.tuuid.clone(), path_cuuids);
+                    },
+                    None => {
+                        // Collection (root)
+                        ancetres.insert(row_cuuid.tuuid.clone());
+                        map_path_cuuids.insert(row_cuuid.tuuid.clone(), vec![row_cuuid.tuuid.clone()]);
+                    }
+                }
+            }
+        }
+
+        let filtre = doc! { CHAMP_TUUID: row.tuuid };
+        let ancetres: Vec<String> = ancetres.into_iter().collect();
+        let ops = doc! {
+            "$set": {
+                CHAMP_MAP_PATH_CUUIDS: convertir_to_bson(map_path_cuuids)?,
+                CHAMP_CUUIDS_ANCETRES: ancetres,
+            },
+            "$currentDate": { CHAMP_MODIFICATION: true }
+        };
+        collection.update_one(filtre, ops, None).await?;
+    }
 
     Ok(())
 }
@@ -729,7 +762,12 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, transacti
             Ok(r) => r,
             Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur update_one sur transcation : {:?}", e))?
         };
-        debug!("grosfichiers.transaction_ajouter_fichiers_collection Resultat transaction update : {:?}", resultat);
+        debug!("transaction_ajouter_fichiers_collection Resultat transaction update : {:?}", resultat);
+    }
+
+    debug!("transaction_ajouter_fichiers_collection Recalculer cuuids fichiers pour cuuid {}", transaction_collection.cuuid);
+    if let Err(e) = recalculer_cuuids_fichiers(middleware, vec![&transaction_collection.cuuid], None::<Vec<&str>>).await {
+        error!("dupliquer_structure_repertoires Erreur recalculer_cuuids_fichiers : {:?}", e);
     }
 
     // Dupliquer la structure de repertoires
@@ -784,7 +822,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T>(middleware: &M, uuid_transacti
             while let Some(r) = curseur.next().await {
                 let repertoire: FichierDetail = convertir_bson_deserializable(r?)?;
 
-                debug!("Copier repertoire {} vers {}", repertoire_copie.tuuid_original, repertoire_copie.cuuid_destination);
+                debug!("dupliquer_structure_repertoires Copier repertoire {} vers {}", repertoire_copie.tuuid_original, repertoire_copie.cuuid_destination);
                 // Creer nouveau tuuid unique pour le repertoire a dupliquer
                 let nouveau_tuuid_str = format!("{}/{}/{}", uuid_transaction, &repertoire_copie.cuuid_destination, repertoire.tuuid);
                 let nouveau_tuuid_multihash = hacher_bytes(nouveau_tuuid_str.into_bytes().as_slice(), Some(Code::Blake2s256), Some(Base::Base16Lower));
@@ -814,7 +852,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T>(middleware: &M, uuid_transacti
                             doc_repertoire.insert("path_cuuids", path_cuuids_modifie);
                         }
                     },
-                    Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection get_path_cuuid : {:?}", e))?
+                    Err(e) => Err(format!("transactions.dupliquer_structure_repertoires get_path_cuuid : {:?}", e))?
                 }
 
                 collection.insert_one(doc_repertoire, None).await?;
@@ -828,6 +866,12 @@ async fn dupliquer_structure_repertoires<M,U,C,T>(middleware: &M, uuid_transacti
                 };
                 collection.update_many(filtre_ajout_cuuid, ops_ajout_cuuid, None).await?;
 
+                // Recalculer les paths des fichiers du nouveau repertoire
+                debug!("dupliquer_structure_repertoires Recalculer cuuids fichiers pour cuuid {}", nouveau_tuuid);
+                if let Err(e) = recalculer_cuuids_fichiers(middleware, vec![&nouveau_tuuid], None::<Vec<&str>>).await {
+                    error!("dupliquer_structure_repertoires Erreur recalculer_cuuids_fichiers : {:?}", e);
+                }
+
                 // Trouver les sous-repertoires, traiter individuellement
                 let filtre_ajout_cuuid = doc! { CHAMP_CUUID: &repertoire.tuuid, CHAMP_TYPE_NODE: type_node_repertoire };
                 let mut curseur = collection.find(filtre_ajout_cuuid, None).await?;
@@ -836,6 +880,52 @@ async fn dupliquer_structure_repertoires<M,U,C,T>(middleware: &M, uuid_transacti
                     let copie_tuuid = CopieTuuidVersCuuid { tuuid_original: sous_repertoire.tuuid, cuuid_destination: nouveau_tuuid.clone() };
                     tuuids_remaining.push(copie_tuuid);
                 }
+
+            }
+        }
+
+        if tuuids_remaining.is_empty() {
+            break;  // Termine
+        }
+    }
+
+    Ok(())
+}
+
+/// Recalcule les path de cuuids de tous les sous-repertoires et fichiers sous un cuuid
+async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
+    -> Result<(), Box<dyn Error>>
+    where M: MongoDao, C: ToString
+{
+    let mut tuuids_remaining: Vec<String> = vec![cuuid.to_string()];
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+    loop {
+        let type_node_repertoire: &str = TypeNode::Repertoire.into();
+        let copie_tuuids: Vec<String> = tuuids_remaining.clone();
+        tuuids_remaining.clear();
+
+        for tuuid in copie_tuuids.into_iter() {
+            recalculer_cuuids_fichiers(middleware, vec![&tuuid], None::<Vec<&str>>).await?;
+
+            let path_cuuids = get_path_cuuid(middleware, &tuuid).await?;
+
+            let filtre = doc! {CHAMP_TUUID: &tuuid, "type_node": type_node_repertoire};
+            let mut curseur = collection.find(filtre, None).await?;
+
+            while let Some(r) = curseur.next().await {
+                let repertoire: FichierDetail = convertir_bson_deserializable(r?)?;
+
+                // Ajouter le nouveau cuuid a tous les fichiers du sous-repertoire
+                let filtre_ajout_cuuid = doc! { CHAMP_TUUID: &repertoire.tuuid };
+                let ops_ajout_cuuid = doc! {
+                    "set": { CHAMP_PATH_CUUIDS: path_cuuids.as_ref() },
+                    "$currentDate": { CHAMP_MODIFICATION: true }
+                };
+                collection.update_one(filtre_ajout_cuuid, ops_ajout_cuuid, None).await?;
+
+                tuuids_remaining.push(repertoire.tuuid);
             }
         }
 
@@ -884,6 +974,16 @@ async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, transact
         };
         debug!("grosfichiers.transaction_deplacer_fichiers_collection Resultat transaction update : {:?}", resultat);
     }
+
+    // Recalculer les paths des sous-repertoires et fichiers
+    if let Err(e) = recalculer_path_cuuids(middleware, &transaction_collection.cuuid_destination).await {
+        error!("grosfichiers.transaction_nouvelle_version Erreur recalculer_cuuids_fichiers : {:?}", e);
+    }
+
+    // // Recalculer les paths des fichiers du nouveau repertoire
+    // if let Err(e) = recalculer_cuuids_fichiers(middleware, vec![&transaction_collection.cuuid_destination], None::<Vec<&str>>).await {
+    //     error!("grosfichiers.transaction_nouvelle_version Erreur recalculer_cuuids_fichiers : {:?}", e);
+    // }
 
     for tuuid in &transaction_collection.inclure_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour

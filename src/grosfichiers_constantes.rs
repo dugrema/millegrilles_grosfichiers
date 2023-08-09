@@ -138,6 +138,9 @@ pub const CHAMP_USER_ID: &str = "user_id";
 pub const CHAMP_CLE_CONVERSION: &str = "cle_conversion";
 pub const CHAMP_CONTACT_ID: &str = "contact_id";
 pub const CHAMP_CONTACT_USER_ID: &str = "contact_user_id";
+pub const CHAMP_PATH_CUUIDS: &str = "path_cuuids";
+pub const CHAMP_MAP_PATH_CUUIDS: &str = "map_path_cuuids";
+pub const CHAMP_CUUIDS_ANCETRES: &str = "cuuids_ancetres";
 
 pub const ERREUR_MEDIA_TOOMANYRETRIES: i32 = 1;
 
