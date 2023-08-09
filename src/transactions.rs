@@ -980,11 +980,6 @@ async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, transact
         error!("grosfichiers.transaction_nouvelle_version Erreur recalculer_cuuids_fichiers : {:?}", e);
     }
 
-    // // Recalculer les paths des fichiers du nouveau repertoire
-    // if let Err(e) = recalculer_cuuids_fichiers(middleware, vec![&transaction_collection.cuuid_destination], None::<Vec<&str>>).await {
-    //     error!("grosfichiers.transaction_nouvelle_version Erreur recalculer_cuuids_fichiers : {:?}", e);
-    // }
-
     for tuuid in &transaction_collection.inclure_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
         emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_DEPLACER_FICHIER_COLLECTION).await?;
@@ -1031,6 +1026,12 @@ async fn transaction_retirer_documents_collection<M, T>(middleware: &M, transact
         Err(e) => Err(format!("grosfichiers.transaction_retirer_documents_collection Erreur update_one sur transcation : {:?}", e))?
     };
     debug!("grosfichiers.transaction_retirer_documents_collection Resultat transaction update : {:?}", resultat);
+
+    // Recalculer les paths des sous-repertoires et fichiers
+    todo!("fonction obsolete, doit supporter quand meme - fix me");
+    // if let Err(e) = recalculer_path_cuuids(middleware, &transaction_collection.cuuid).await {
+    //     error!("grosfichiers.transaction_nouvelle_version Erreur recalculer_cuuids_fichiers : {:?}", e);
+    // }
 
     for tuuid in &transaction_collection.retirer_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
@@ -1298,6 +1299,8 @@ async fn transaction_changer_favoris<M, T>(middleware: &M, transaction: T) -> Re
         M: GenerateurMessages + MongoDao,
         T: Transaction
 {
+    todo!("obsolete?");
+
     debug!("transaction_changer_favoris Consommer transaction : {:?}", &transaction);
     let transaction_collection: TransactionChangerFavoris = match transaction.clone().convertir::<TransactionChangerFavoris>() {
         Ok(t) => t,
@@ -2025,7 +2028,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     let fuuids: Vec<&str> = fuuids.into_iter().collect();  // Convertir en vec
     let fuuids_reclames: Vec<&str> = fuuids_reclames.into_iter().collect();  // Convertir en vec
 
-    debug!("Fuuids fichier : {:?}", fuuids);
+    debug!("transaction_copier_fichier_tiers Fuuids fichier : {:?}", fuuids);
     doc_bson_transaction.insert(CHAMP_FUUIDS, &fuuids);
     doc_bson_transaction.insert(CHAMP_FUUIDS_RECLAMES, &fuuids_reclames);
 
@@ -2078,7 +2081,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         match collection.update_one(filtre, ops, options).await {
             Ok(resultat_update) => {
                 if resultat_update.upserted_id.is_none() && resultat_update.matched_count != 1 {
-                   Err(format!("Erreur mise a jour versionsFichiers, echec insertion document (updated count == 0)"))?;
+                   Err(format!("transactions.transaction_copier_fichier_tiers Erreur mise a jour versionsFichiers, echec insertion document (updated count == 0)"))?;
                 }
             },
             Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur update versionFichiers : {:?}", e))?
@@ -2100,7 +2103,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     };
 
     // Ajouter collection
-    add_to_set.insert("cuuids", cuuid);
+    add_to_set.insert("cuuids", &cuuid);
 
     let metadata = match metadata {
         Some(inner) => match convertir_to_bson(inner) {
@@ -2131,9 +2134,13 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     debug!("nouveau fichier update ops : {:?}", ops);
     let resultat = match collection.update_one(filtre, ops, opts).await {
         Ok(r) => r,
-        Err(e) => Err(format!("grosfichiers.transaction_cle Erreur update_one sur transcation : {:?}", e))?
+        Err(e) => Err(format!("grosfichiers.transaction_copier_fichier_tiers Erreur update_one sur transcation : {:?}", e))?
     };
-    debug!("nouveau fichier Resultat transaction update : {:?}", resultat);
+    debug!("transaction_copier_fichier_tiers nouveau fichier Resultat transaction update : {:?}", resultat);
+
+    if let Err(e) = recalculer_path_cuuids(middleware, cuuid).await {
+        Err(format!("grosfichiers.transaction_copier_fichier_tiers Erreur update_one sur transcation : {:?}", e))?
+    }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
     emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_COPIER_FICHIER_TIERS).await?;
@@ -2273,8 +2280,12 @@ async fn transaction_favoris_creerpath<M, T>(middleware: &M, transaction: T) -> 
             // Retourner le dernier identifcateur de collection (c'est le tuuid)
             cuuid_courant
         },
-        None => tuuid_favoris
+        None => tuuid_favoris.clone()
     };
+
+    if let Err(e) = recalculer_path_cuuids(middleware, tuuid_favoris).await {
+        Err(format!("grosfichiers.transaction_favoris_creerpath Erreur recalculer_path_cuuids : {:?}", e))?
+    }
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
     let reponse = match middleware.formatter_reponse(json!({CHAMP_TUUID: &tuuid_leaf}), None) {
