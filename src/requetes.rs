@@ -64,6 +64,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_CHARGER_CONTACTS => requete_charger_contacts(middleware, message, gestionnaire).await,
             REQUETE_PARTAGES_USAGER => requete_partages_usager(middleware, message, gestionnaire).await,
             REQUETE_PARTAGES_CONTACT => requete_partages_contact(middleware, message, gestionnaire).await,
+            REQUETE_INFO_STATISTIQUES => requete_info_statistiques(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (1): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -114,6 +115,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_CHARGER_CONTACTS => requete_charger_contacts(middleware, message, gestionnaire).await,
             REQUETE_PARTAGES_USAGER => requete_partages_usager(middleware, message, gestionnaire).await,
             REQUETE_PARTAGES_CONTACT => requete_partages_contact(middleware, message, gestionnaire).await,
+            REQUETE_INFO_STATISTIQUES => requete_info_statistiques(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -1688,6 +1690,78 @@ async fn requete_partages_contact<M>(middleware: &M, m: MessageValideAction, ges
     }
 
     let reponse = ReponsePartagesUsager { ok: true, partages };
+
+    Ok(Some(middleware.formatter_reponse(reponse, None)?))
+}
+
+#[derive(Deserialize)]
+struct RequeteInfoStatistiques {
+    /// Collection / repertoire a utiliser comme top de l'arborescence
+    cuuid: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ResultatStatistiquesRow {
+    #[serde(alias="_id")]
+    type_node: String,
+    taille: usize,
+    count: usize,
+}
+
+#[derive(Serialize)]
+struct ReponseInfoStatistiques {
+    info: Vec<ResultatStatistiquesRow>,
+}
+
+async fn requete_info_statistiques<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("requete_info_statistiques Consommer commande : {:?}", & m.message);
+
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => {
+            debug!("requete_info_statistiques user_id manquant du certificat");
+            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+        }
+    };
+
+    let requete: RequeteInfoStatistiques = m.message.get_msg().map_contenu()?;
+
+    let filtre = match requete.cuuid.as_ref() {
+        Some(cuuid) => {
+            doc! {
+                CHAMP_USER_ID: &user_id,
+                "$or": [
+                    {CHAMP_CUUIDS_ANCETRES: cuuid},
+                    {CHAMP_PATH_CUUIDS: cuuid}
+                ]
+            }
+        },
+        None => doc! { CHAMP_USER_ID: &user_id }
+    };
+
+    let pipeline = vec![
+        doc! { "$match": filtre },
+        doc! { "$project": {CHAMP_TYPE_NODE: 1, CHAMP_PATH_CUUIDS: 1, "version_courante.taille": 1} },
+        doc! { "$group": {
+                "_id": "$type_node",
+                "taille": {"$sum": "$version_courante.taille"},
+                "count": {"$count": {}},
+            }
+        }
+    ];
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut cursor = collection.aggregate(pipeline, None).await?;
+    let mut resultat = Vec::new();
+    while let Some(d) = cursor.next().await {
+        let row: ResultatStatistiquesRow = convertir_bson_deserializable(d?)?;
+        resultat.push(row);
+    }
+
+    let reponse = ReponseInfoStatistiques { info: resultat };
 
     Ok(Some(middleware.formatter_reponse(reponse, None)?))
 }
