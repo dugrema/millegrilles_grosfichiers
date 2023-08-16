@@ -234,10 +234,18 @@ pub struct FichierDetail {
     pub archive: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub metadata: Option<DataChiffre>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub supprime_cuuids_path: Option<Vec<String>>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub supprime_cuuids_path: Option<Vec<String>>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub visites: Option<HashMap<String, DateEpochSeconds>>,
+
+    /// Breadcrumbs pour chaque cuuid du fichier
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub map_path_cuuids: Option<HashMap<String, Vec<String>>>,
+
+    /// Liste de collections ou le fichier a ete supprime
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub cuuids_supprimes: Option<Vec<String>>,
 }
 
 impl TryFrom<Document> for FichierDetail {
@@ -530,5 +538,7 @@ pub struct NodeFichiersRepBorrow<'a> {
     pub type_node: &'a str,
     #[serde(borrow)]
     pub path_cuuids: Option<Vec<&'a str>>,
+    #[serde(borrow)]
+    pub map_path_cuuids: Option<HashMap<&'a str, Vec<&'a str>>>,
     pub supprime: bool,
 }
