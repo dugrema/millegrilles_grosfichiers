@@ -1211,16 +1211,27 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
                         let (cuuids, cuuids_supprimes) = if let Some(mut cuuids) = row_fichier.cuuids {
                             if let Some(paths) = row_fichier.map_path_cuuids {
                                 // Identifier les cuuids a retirer en fonction des paths
-                                let mut cuuids_supprimes = Vec::new();
+
+                                let mut cuuids_supprimes = match row_fichier.cuuids_supprimes {
+                                    Some(inner) => {
+                                        let mut cuuids_set = HashSet::new();
+                                        for cuuid in inner {
+                                            cuuids_set.insert(cuuid.to_owned());
+                                        }
+                                        cuuids_set
+                                    },
+                                    None => HashSet::new()
+                                };
+
                                 for (cuuid_path, paths) in paths {
                                     if paths.contains(&row.tuuid) {
                                         debug!("grosfichiers.transaction_supprimer_documents Retirer cuuid {} du fichier {}, mettre a cuuids_supprimes", cuuid_path, row_fichier.tuuid);
                                         // Le cuuid est un de ceux selectionnes indirectement pour retrait
                                         cuuids = cuuids.into_iter().filter(|c| *c != cuuid_path).collect();
-                                        cuuids_supprimes.push(cuuid_path.to_owned());
+                                        cuuids_supprimes.insert(cuuid_path.to_owned());
                                     }
                                 }
-                                (cuuids, cuuids_supprimes)
+                                (cuuids, cuuids_supprimes.into_iter().collect::<Vec<String>>())
                             } else {
                                 warn!("grosfichiers.transaction_supprimer_documents Aucuns map_path_cuuids pour {}", row_fichier.tuuid);
                                 (vec![], vec![])    // On n'a aucuns paths - anormal, supprimer le fichier

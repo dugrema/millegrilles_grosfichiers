@@ -540,5 +540,7 @@ pub struct NodeFichiersRepBorrow<'a> {
     pub path_cuuids: Option<Vec<&'a str>>,
     #[serde(borrow)]
     pub map_path_cuuids: Option<HashMap<&'a str, Vec<&'a str>>>,
+    #[serde(borrow)]
+    pub cuuids_supprimes: Option<Vec<&'a str>>,
     pub supprime: bool,
 }
