@@ -113,6 +113,7 @@ pub const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale (fichier ou
 pub const CHAMP_TUUIDS: &str = "tuuids";
 pub const CHAMP_CUUID: &str = "cuuid";  // UUID collection de tuuids
 pub const CHAMP_CUUIDS: &str = "cuuids";  // Liste de cuuids (e.g. appartenance a plusieurs collections)
+pub const CHAMP_CUUIDS_SUPPRIMES: &str = "cuuids_supprimes";  // Liste de cuuids (e.g. appartenance a plusieurs collections)
 pub const CHAMP_SUPPRIME: &str = "supprime";
 pub const CHAMP_SUPPRIME_PATH: &str = "supprime_cuuids_path";
 pub const CHAMP_ARCHIVE: &str = "archive";
@@ -165,13 +166,19 @@ pub enum TypeNode {
     Fichier,
 }
 
-impl Into<&str> for TypeNode {
-    fn into(self) -> &'static str {
+impl TypeNode {
+    pub fn to_str(&self) -> &'static str {
         match self {
             TypeNode::Collection => "Collection",
             TypeNode::Repertoire => "Repertoire",
             TypeNode::Fichier => "Fichier",
         }
+    }
+}
+
+impl Into<&str> for TypeNode {
+    fn into(self) -> &'static str {
+        self.to_str()
     }
 }
 
@@ -509,3 +516,19 @@ pub struct CommandeIndexationGetJob {
 //     pub cle: InformationCle,
 // }
 
+#[derive(Debug, Deserialize)]
+pub struct NodeFichiersRepBorrow<'a> {
+    #[serde(borrow)]
+    pub tuuid: &'a str,
+    #[serde(borrow)]
+    pub cuuid: Option<&'a str>,
+    #[serde(borrow)]
+    pub cuuids: Option<Vec<&'a str>>,
+    #[serde(borrow)]
+    pub user_id: &'a str,
+    #[serde(borrow)]
+    pub type_node: &'a str,
+    #[serde(borrow)]
+    pub path_cuuids: Option<Vec<&'a str>>,
+    pub supprime: bool,
+}

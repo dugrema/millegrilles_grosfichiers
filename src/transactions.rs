@@ -1060,8 +1060,8 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
     };
 
     let user_id = match transaction.get_enveloppe_certificat() {
-        Some(c) => c.get_user_id()?.to_owned(),
-        None => None
+        Some(c) => c.get_user_id()?.clone().expect("get_user_id NONE"),
+        None => Err(format!("grosfichiers.transaction_supprimer_documents Erreur user_id absent du certificat"))?
     };
 
     // Conserver liste de tuuids par cuuid, utilise pour evenement
@@ -1072,138 +1072,160 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
     let mut tuuids_retires: Vec<String> = Vec::new();
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.tuuids}};
-    let mut curseur = match collection.find(filtre, None).await {
-        Ok(c) => c,
-        Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur preparation curseur : {:?}", e))?
-    };
-    while let Some(r) = curseur.next().await {
-        if let Ok(d) = r {
-            let fichier: FichierDetail = match convertir_bson_deserializable(d) {
-                Ok(f) => f,
-                Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur mapping FichierDetail : {:?}", e))?
+
+    // Marquer les collections, repertoires et fichiers supprimes directement.
+    {
+        let filtre = doc! {
+            CHAMP_TUUID: {"$in": &transaction_collection.tuuids},
+            CHAMP_USER_ID: &user_id,
+        };
+        debug!("grosfichiers.transaction_supprimer_documents Filtre marquer tuuids supprimes : {:?}", filtre);
+        let ops = doc! {
+            "$set": { CHAMP_SUPPRIME: true },
+            "$currentDate": { CHAMP_MODIFICATION: true },
+        };
+        if let Err(e) = collection.update_many(filtre, ops, None).await {
+            Err(format!("grosfichiers.transaction_supprimer_documents Erreur supprimer fichiers : {:?}", e))?
+        }
+    }
+
+    // Parcourir les collections et repertoires pour appliquer les changements a l'arborescence (sous-repertoires).
+    {
+        let collection_nodes = middleware.get_collection_typed::<NodeFichiersRepBorrow>(
+            NOM_COLLECTION_FICHIERS_REP)?;
+        let filtre = doc! {
+            CHAMP_TUUID: {"$in": &transaction_collection.tuuids},
+            // CHAMP_TYPE_NODE: {"$in": [TypeNode::Collection.to_str(), TypeNode::Repertoire.to_str()]},
+            CHAMP_USER_ID: &user_id,
+        };
+        let projection_node_row = doc! {
+            CHAMP_TUUID: true, CHAMP_CUUID: true, CHAMP_CUUIDS: true, CHAMP_USER_ID: true,
+            CHAMP_TYPE_NODE: true, CHAMP_PATH_CUUIDS: true, CHAMP_SUPPRIME: true,
+        };
+        let options = FindOptions::builder().projection(projection_node_row.clone()).build();
+        debug!("grosfichiers.transaction_supprimer_documents Filtre charger collections/repertoires pour traitement arborescence : {:?}", filtre);
+        let mut curseur = match collection_nodes.find(filtre, options).await {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur find collections/repertoires changement arborescence : {:?}", e))?
+        };
+
+        loop {
+            match curseur.advance().await {
+                Ok(inner) => { if ! inner { break; } },  // Done
+                Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur curseur.advance() row NodeCollectionRepertoireBorrow : {:?}", e))?
+            }
+            let row = match curseur.deserialize_current() {
+                Ok(inner) => inner,
+                Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur deserialize_current row NodeCollectionRepertoireBorrow : {:?}", e))?
             };
-            let tuuid = fichier.tuuid;
-            match fichier.cuuids.as_ref() {
-                Some(cuuids) => {
-                    if cuuids.len() == 0 {
-                        // Document sans collection - traiter comme un favoris
-                        tuuids_supprimes.push(tuuid.clone());
 
-                        // Ajouter dans la liste de suppression des favoris (cuuid = user_id)
-                        if let Some(u) = user_id.as_ref() {
-                            match tuuids_retires_par_cuuid.get_mut(u) {
-                                Some(tuuids_supprimes) => {
-                                    tuuids_supprimes.push(tuuid.clone());
-                                },
-                                None => {
-                                    tuuids_retires_par_cuuid.insert(u.clone(), vec![tuuid.clone()]);
-                                }
-                            }
-                        }
-                    } else if cuuids.len() == 1 {
-                        let cuuid: &String = cuuids.get(0).expect("cuuid");
+            let type_node = TypeNode::try_from(row.type_node)?;
 
-                        // Ajouter dans la liste de suppression du cuuid (evenement)
-                        match tuuids_retires_par_cuuid.get_mut(cuuid) {
-                            Some(tuuids_supprimes) => {
-                                tuuids_supprimes.push(tuuid.clone());
-                            },
-                            None => {
-                                tuuids_retires_par_cuuid.insert(cuuid.clone(), vec![tuuid.clone()]);
-                            }
-                        }
-
-                        // Ajouter a la liste de documents a marquer supprime=true
-                        tuuids_supprimes.push(tuuid);
-                    } else {
-                        // Plusieurs cuuids - on retire celui qui est demande seulement
-                        match transaction_collection.cuuid.as_ref() {
-                            Some(cuuid) => {
-                                // Supprimer seulement le cuuid demande
-                                tuuids_retires.push(tuuid.clone());
-
-                                // Ajouter a la liste des tuuids supprimes par cuuid
-                                match tuuids_retires_par_cuuid.get_mut(cuuid) {
-                                    Some(tuuids_supprimes) => {
-                                        tuuids_supprimes.push(tuuid.clone());
-                                    },
-                                    None => {
-                                        tuuids_retires_par_cuuid.insert(cuuid.clone(), vec![tuuid.clone()]);
-                                    }
-                                }
-                            },
-                            None => {
-                                // Aucun cuuid en parametre - on supprime le document de tous les cuuids
-                                // Ajouter a la liste de documents a marquer supprime=true
-                                tuuids_supprimes.push(tuuid.clone());
-
-                                // Conserver le tuuid dans la liste pour les cuuids
-                                for cuuid in cuuids {
-                                    // Ajouter dans la liste de suppression du cuuid (evenement)
-                                    match tuuids_retires_par_cuuid.get_mut(cuuid) {
-                                        Some(tuuids_supprimes) => {
-                                            tuuids_supprimes.push(tuuid.clone());
-                                        },
-                                        None => {
-                                            tuuids_retires_par_cuuid.insert(cuuid.clone(), vec![tuuid.clone()]);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+            let cuuids = match type_node {
+                TypeNode::Fichier => {
+                    match row.cuuids {
+                        Some(inner) => inner,
+                        None => Err(format!("grosfichiers.transaction_supprimer_documents Erreur type_node a supprimer, cuuids du fichiers est null"))?
                     }
                 },
-                None => {
-                    // Document sans collection - traiter comme un favoris
-                    tuuids_supprimes.push(tuuid.clone());
+                TypeNode::Collection => {
+                    // Le cuuid est le user_id
+                    vec![user_id.as_str()]
+                },
+                TypeNode::Repertoire => {
+                    match row.cuuid {
+                        Some(inner) => vec![inner],
+                        None => Err(format!("grosfichiers.transaction_supprimer_documents Erreur type_node a supprimer, cuuid du repertoire est vide"))?
+                    }
+                }
+            };
 
-                    // Ajouter dans la liste de suppression des favoris (cuuid = user_id)
-                    if let Some(u) = user_id.as_ref() {
-                        match tuuids_retires_par_cuuid.get_mut(u) {
-                            Some(tuuids_supprimes) => {
-                                tuuids_supprimes.push(tuuid.clone());
-                            },
-                            None => {
-                                tuuids_retires_par_cuuid.insert(u.clone(), vec![tuuid.clone()]);
+            // Ajouter le tuuid a la liste de suppressions par cuuid (pour evenements)
+            for cuuid in cuuids {
+                let liste = match tuuids_retires_par_cuuid.get_mut(cuuid) {
+                    Some(inner) => inner,
+                    None => {
+                        tuuids_retires_par_cuuid.insert(cuuid.to_owned(), Vec::new());
+                        tuuids_retires_par_cuuid.get_mut(cuuid).expect("get_mut")
+                    }
+                };
+                liste.push(row.tuuid.to_owned());
+            }
+
+            if type_node != TypeNode::Fichier {
+                {
+                    debug!("grosfichiers.transaction_supprimer_documents On a une collection/repertoire - supprimer les sous-repertoires");
+                    let filtre_sous_repertoires = doc! {
+                        CHAMP_PATH_CUUIDS: row.tuuid,
+                        CHAMP_USER_ID: &user_id,
+                        CHAMP_TYPE_NODE: TypeNode::Repertoire.to_str(),
+                        CHAMP_SUPPRIME: false,
+                    };
+                    let ops = doc! {
+                        "$set": { CHAMP_SUPPRIME: true, "supprime_indirect": true },
+                        "$currentDate": { CHAMP_MODIFICATION: true },
+                    };
+                    if let Err(e) = collection.update_many(filtre_sous_repertoires, ops, None).await {
+                        Err(format!("grosfichiers.transaction_supprimer_documents Erreur type_node a supprimer, cuuid du repertoire est vide: {:?}", e))?
+                    }
+                }
+
+                // Traiter les fichiers des sous-repertoires
+                debug!("grosfichiers.transaction_supprimer_documents On a une collection/repertoire - supprimer les fichiers");
+                {
+                    let collection_fichiers = match middleware.get_collection_typed::<NodeFichiersRepBorrow>(NOM_COLLECTION_FICHIERS_REP) {
+                        Ok(inner) => inner,
+                        Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur ouverture collection fichiers: {:?}", e))?
+                    };
+
+                    let filtre_sous_repertoires = doc! {
+                        CHAMP_CUUIDS_ANCETRES: row.tuuid,
+                        CHAMP_USER_ID: &user_id,
+                        CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
+                        // CHAMP_SUPPRIME: false,
+                    };
+
+                    let options = FindOptions::builder().projection(projection_node_row.clone()).build();
+                    let mut curseur = match collection_nodes.find(filtre_sous_repertoires, options).await {
+                        Ok(inner) => inner,
+                        Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur find fichiers a supprimer sous repertoire : {:?}", e))?
+                    };
+
+                    loop {
+                        match curseur.advance().await {
+                            Ok(inner) => { if !inner { break; } },  // Done
+                            Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur curseur.advance() row NodeCollectionRepertoireBorrow (fichiers) : {:?}", e))?
+                        }
+
+                        let row_fichier = match curseur.deserialize_current() {
+                            Ok(inner) => inner,
+                            Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur deserialize_current row NodeCollectionRepertoireBorrow (fichiers) : {:?}", e))?
+                        };
+
+                        debug!("grosfichiers.transaction_supprimer_documents Supprimer fichier (indirect) {:?}", row_fichier);
+                        // Determiner si on supprime le fichier ou on fait juste le retirer de la collection
+                        let supprimer = if let Some(cuuids) = row_fichier.cuuids {
+                            if cuuids.len() < 2 {
+                                true    // Il y a 0 ou 1 cuuid, on supprime le fichier
+                            } else {
+                                false   // Il y a plus d'un cuuid, on retire le fichier
                             }
+                        } else {
+                            true    // Aucun cuuids - anormal, on supprime le fichier
+                        };
+                        let ops = doc! {
+                            "$set": { CHAMP_SUPPRIME: supprimer },
+                            "$pull": { CHAMP_CUUIDS: row.tuuid },
+                            "$addToSet": { CHAMP_CUUIDS_SUPPRIMES: row.tuuid },
+                            "$currentDate": { CHAMP_MODIFICATION: true },
+                        };
+                        let filtre = doc! { CHAMP_TUUID: row_fichier.tuuid, CHAMP_USER_ID: &user_id };
+                        if let Err(e) = collection.update_one(filtre, ops, None).await {
+                            Err(format!("grosfichiers.transaction_supprimer_documents Erreur update_one fichier supprime/retire : {:?}", e))?
                         }
                     }
                 }
             }
-        }
-    }
-
-    if tuuids_supprimes.len() > 0 {
-        // Marquer tuuids supprime=true
-        let filtre = doc! {CHAMP_TUUID: {"$in": &tuuids_supprimes}};
-        let ops = doc! {
-            "$set": {
-                CHAMP_SUPPRIME: true,
-                CHAMP_SUPPRIME_PATH: transaction_collection.cuuids_path,
-            },
-            "$currentDate": {CHAMP_MODIFICATION: true}
-        };
-        let resultat = match collection.update_many(filtre, ops, None).await {
-            Ok(r) => r,
-            Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur update_many supprimer=true sur transaction : {:?}", e))?
-        };
-        debug!("grosfichiers.transaction_supprimer_documents Resultat transaction update : {:?}", resultat);
-    }
-
-    if tuuids_retires.len() > 0 {
-        if let Some(cuuid) = transaction_collection.cuuid.as_ref() {
-            // Retirer cuuid
-            let filtre = doc! {CHAMP_TUUID: {"$in": &tuuids_retires}};
-            let ops = doc! {
-                "$pull": {CHAMP_CUUIDS: cuuid},
-                "$currentDate": {CHAMP_MODIFICATION: true}
-            };
-            let resultat = match collection.update_many(filtre, ops, None).await {
-                Ok(r) => r,
-                Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur update_many pour pull cuuid : {:?}", e))?
-            };
-            debug!("transaction_supprimer_documents Resultat transaction update : {:?}", resultat);
         }
     }
 
