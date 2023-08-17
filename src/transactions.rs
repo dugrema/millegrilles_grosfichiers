@@ -111,6 +111,20 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DataChiffreBorrow<'a> {
+    #[serde(borrow)]
+    pub data_chiffre: &'a str,
+    #[serde(borrow)]
+    pub header: Option<&'a str>,
+    #[serde(borrow)]
+    pub ref_hachage_bytes: Option<&'a str>,
+    #[serde(borrow)]
+    pub hachage_bytes: Option<&'a str>,
+    #[serde(borrow)]
+    pub format: Option<&'a str>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DataChiffre {
     pub data_chiffre: String,
     #[serde(skip_serializing_if="Option::is_none")]
@@ -125,18 +139,20 @@ pub struct DataChiffre {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionNouvelleVersion {
     pub fuuid: String,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub cuuid: Option<String>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub cuuid: Option<String>,
+    pub cuuid: String,
     #[serde(skip_serializing_if="Option::is_none")]
     pub tuuid: Option<String>,  // uuid de la premiere commande/transaction comme collateur de versions
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub nom: Option<String>,
+    //#[serde(skip_serializing_if="Option::is_none")]
+    //pub nom: Option<String>,
     pub mimetype: String,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub metadata: Option<DataChiffre>,
+    //#[serde(skip_serializing_if="Option::is_none")]
+    //pub metadata: Option<DataChiffre>,
+    pub metadata: DataChiffre,
     pub taille: u64,
-    #[serde(rename="dateFichier", skip_serializing_if="Option::is_none")]
-    pub date_fichier: Option<DateEpochSeconds>,
+    //#[serde(rename="dateFichier", skip_serializing_if="Option::is_none")]
+    //pub date_fichier: Option<DateEpochSeconds>,
     // #[serde(rename = "_cle", skip_serializing_if = "Option::is_none")]
     // pub cle: Option<MessageMilleGrille>,
 }
@@ -284,6 +300,206 @@ pub struct TransactionFavorisCreerpath {
     pub path_collections: Option<Vec<String>>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeFichierRepBorrowed<'a> {
+    /// Identificateur unique d'un node pour l'usager
+    #[serde(borrow)]
+    pub tuuid: &'a str,
+    #[serde(borrow)]
+    pub user_id: &'a str,
+    #[serde(borrow)]
+    pub type_node: &'a str,
+    pub supprime: bool,
+    pub supprime_indirect: bool,
+    #[serde(borrow)]
+    pub metadata: DataChiffreBorrow<'a>,
+
+    // Champs pour type_node Fichier
+    #[serde(borrow)]
+    pub mimetype: Option<&'a str>,
+    /// Fuuids des versions en ordre (plus recent en dernier)
+    #[serde(borrow)]
+    pub fuuids_versions: Option<Vec<&'a str>>,
+
+    // Champs pour type_node Fichiers/Repertoires
+    /// Path des cuuids parents (inverse, parent immediat est index 0)
+    #[serde(borrow)]
+    pub path_cuuids: Option<Vec<&'a str>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeFichierRepOwned {
+    /// Identificateur unique d'un node pour l'usager
+    pub tuuid: String,
+    pub user_id: String,
+    pub type_node: String,
+    pub supprime: bool,
+    pub supprime_indirect: bool,
+    pub metadata: DataChiffre,
+
+    // Champs pour type_node Fichier
+    pub mimetype: Option<String>,
+    /// Fuuids des versions en ordre (plus recent en dernier)
+    pub fuuids_versions: Option<Vec<String>>,
+
+    // Champs pour type_node Fichiers/Repertoires
+    /// Path des cuuids parents (inverse, parent immediat est index 0)
+    pub path_cuuids: Option<Vec<String>>,
+}
+
+impl NodeFichierRepOwned {
+    pub async fn from_nouvelle_version<M,U,S>(middleware: &M, value: &TransactionNouvelleVersion, uuid_transaction: S, user_id: U)
+        -> Result<Self, Box<dyn Error>>
+        where M: MongoDao, S: ToString, U: ToString
+    {
+        let user_id = user_id.to_string();
+
+        let tuuid = match &value.tuuid {
+            Some(t) => t.to_owned(),
+            None => uuid_transaction.to_string(),
+        };
+
+        let cuuid = value.cuuid.as_str();
+        //     match value.cuuid.as_ref() {
+        //     Some(inner) => inner.as_str(),
+        //     None => Err(format!("transactions.transaction_nouvelle_version Cuuid absent de transaction nouvelle_version"))?
+        // };
+
+        let mut cuuids = vec![cuuid.to_owned()];
+
+        // Inserer l'information du path (cuuids parents)
+        let filtre = doc!{ CHAMP_TUUID: &cuuid, CHAMP_USER_ID: &user_id };
+        let collection_nodes = middleware.get_collection_typed::<NodeFichiersRepBorrow>(
+            NOM_COLLECTION_FICHIERS_REP)?;
+        let mut curseur = collection_nodes.find(filtre, None).await?;
+        if curseur.advance().await? {
+            let row = curseur.deserialize_current()?;
+            if let Some(path_parent) = row.path_cuuids {
+                // Inserer les cuuids du parent
+                cuuids.extend(path_parent.into_iter().map(|c|c.to_owned()));
+            }
+        } else {
+            Err(format!("transactions.transaction_nouvelle_version Cuuid {} inconnu", cuuid))?;
+        };
+
+        Ok(Self {
+            tuuid: tuuid.to_owned(),
+            user_id,
+            type_node: TypeNode::Fichier.to_str().to_owned(),
+            supprime: false,
+            supprime_indirect: false,
+            metadata: value.metadata.clone(),
+            mimetype: Some(value.mimetype.clone()),
+            fuuids_versions: Some(vec![value.fuuid.clone()]),
+            path_cuuids: Some(cuuids),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeFichierVersionOwned {
+    pub fuuid: String,
+    pub tuuid: String,
+    pub user_id: String,
+    pub mimetype: String,
+    pub metadata: DataChiffre,
+    pub taille: u64,
+
+    pub fuuids: Vec<String>,
+    pub fuuids_reclames: Vec<String>,
+
+    pub supprime: bool,
+    pub visites: HashMap<String, DateEpochSeconds>,
+
+    // Champs optionnels media
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub duration: Option<f32>,
+    #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
+    pub video_codec: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub anime: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub images: Option<HashMap<String, ImageConversion>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub video: Option<HashMap<String, TransactionAssocierVideoVersionDetail>>,
+
+    #[serde(skip_serializing_if="Option::is_none")]
+    flag_media: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_media_retry: Option<i32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_media_traite: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_video_traite: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_index: Option<bool>,
+}
+
+impl NodeFichierVersionOwned {
+    pub async fn from_nouvelle_version<U, S>(value: &TransactionNouvelleVersion, tuuid: S, user_id: U)
+        -> Result<Self, Box<dyn Error>>
+        where S: ToString, U: ToString
+    {
+        let user_id = user_id.to_string();
+
+        let mimetype = value.mimetype.as_str();
+
+        let mut flag_media_traite = true;
+        let mut flag_video_traite = true;
+        let mut flag_media = None;
+
+        // Information optionnelle pour accelerer indexation/traitement media
+        if mimetype.starts_with("image") {
+            flag_media_traite = false;
+            flag_media = Some("image".to_string());
+            // doc_version.insert(CHAMP_FLAG_MEDIA, "image");
+            // doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
+        } else if mimetype.starts_with("video") {
+            flag_media_traite = false;
+            flag_video_traite = false;
+            flag_media = Some("video".to_string());
+            // doc_version.insert(CHAMP_FLAG_MEDIA, "video");
+            // doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
+            // doc_version.insert(CHAMP_FLAG_VIDEO_TRAITE, false);
+        } else if mimetype =="application/pdf" {
+            flag_media_traite = false;
+            flag_media = Some("poster".to_string());
+            // doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
+            // doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
+        }
+        // doc_version.insert(CHAMP_FLAG_INDEX, false);
+
+        Ok(Self {
+            fuuid: value.fuuid.clone(),
+            tuuid: tuuid.to_string(),
+            user_id: user_id.to_string(),
+            mimetype: value.mimetype.clone(),
+            metadata: value.metadata.clone(),
+            taille: value.taille,
+            fuuids: vec![value.fuuid.clone()],
+            fuuids_reclames: vec![value.fuuid.clone()],
+            supprime: false,
+            visites: Default::default(),
+            height: None,
+            width: None,
+            duration: None,
+            video_codec: None,
+            anime: None,
+            images: None,
+            video: None,
+            flag_media,
+            flag_media_retry: None,
+            flag_media_traite: Some(flag_media_traite),
+            flag_video_traite: Some(flag_video_traite),
+            flag_index: Some(false),
+        })
+    }
+}
+
 async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
         M: GenerateurMessages + MongoDao,
@@ -294,23 +510,6 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         Ok(t) => t,
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur conversion transaction : {:?}", e))?
     };
-
-    // Determiner tuuid - si non fourni, c'est l'uuid-transaction (implique un nouveau fichier)
-    let tuuid = match &transaction_fichier.tuuid {
-        Some(t) => t.clone(),
-        None => String::from(transaction.get_uuid_transaction())
-    };
-
-    // Conserver champs transaction uniquement (filtrer champs meta)
-    let mut doc_bson_transaction = match convertir_to_bson(&transaction_fichier) {
-        Ok(d) => d,
-        Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur conversion transaction en bson : {:?}", e))?
-    };
-
-    let fuuid = transaction_fichier.fuuid;
-    let cuuid = transaction_fichier.cuuid;
-    // let nom_fichier = transaction_fichier.nom;
-    let mimetype = transaction_fichier.mimetype;
 
     let enveloppe = match transaction.get_enveloppe_certificat() {
         Some(inner) => inner,
@@ -325,117 +524,194 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur get_user_id() : {:?}", e))?
     };
 
-    // Retirer champ CUUID, pas utile dans l'information de version
-    doc_bson_transaction.remove(CHAMP_CUUID);
+    // let cuuid = match transaction_fichier.cuuid {
+    //     Some(inner) => inner,
+    //     None => Err(format!("transactions.transaction_nouvelle_version Fichier sans cuuid, SKIP"))?
+    // };
+    // let cuuid = transaction_fichier.cuuid;
 
-    let mut flag_media = false;
+    // Determiner tuuid - si non fourni, c'est l'uuid-transaction (implique un nouveau fichier)
+    // let tuuid = match &transaction_fichier.tuuid {
+    //     Some(t) => t.clone(),
+    //     None => String::from(transaction.get_uuid_transaction())
+    // };
+
+    // Conserver champs transaction uniquement (filtrer champs meta)
+    // let mut doc_bson_transaction = match convertir_to_bson(&transaction_fichier) {
+    //     Ok(d) => d,
+    //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur conversion transaction en bson : {:?}", e))?
+    // };
+
+    let fichier_rep = match NodeFichierRepOwned::from_nouvelle_version(
+        middleware, &transaction_fichier, transaction.get_uuid_transaction(), &user_id).await {
+        Ok(inner) => inner,
+        Err(e) => Err(format!("grosfichiers.NodeFichierRepOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
+    };
+
+    let tuuid = fichier_rep.tuuid.clone();
+
+    let fichier_version = match NodeFichierVersionOwned::from_nouvelle_version(
+        &transaction_fichier, &tuuid, &user_id).await {
+        Ok(inner) => inner,
+        Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
+    };
+
+    let fuuid = transaction_fichier.fuuid;
+    let cuuid = transaction_fichier.cuuid;
+    let mimetype = transaction_fichier.mimetype;
+
+    // Retirer champ CUUID, pas utile dans l'information de version
+    // doc_bson_transaction.remove(CHAMP_CUUID);
+
+    // let mut flag_media = false;
     let mut flag_duplication = false;
 
     // Inserer document de version
     {
+        // Utiliser la struct fichier_version comme contenu initial
+        let mut doc_version_bson = match convertir_to_bson(fichier_version) {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur convertir_to_bson fichier_version : {:?}", e))?
+        };
+
+        // Ajouter date creation
+        doc_version_bson.insert(CHAMP_CREATION, Utc::now());
+
+        let ops = doc!{
+            "$setOnInsert": doc_version_bson,
+            "$currentDate": { CHAMP_MODIFICATION: true }
+        };
+
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-        let mut doc_version = doc_bson_transaction.clone();
-        doc_version.insert(CHAMP_TUUID, &tuuid);
-        doc_version.insert(CHAMP_USER_ID, &user_id);
-        doc_version.insert(CHAMP_FUUIDS, vec![&fuuid]);
-        doc_version.insert(CHAMP_FUUIDS_RECLAMES, vec![&fuuid]);
-
-        // Information optionnelle pour accelerer indexation/traitement media
-        if mimetype.starts_with("image") {
-            flag_media = true;
-            doc_version.insert(CHAMP_FLAG_MEDIA, "image");
-            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
-        } else if mimetype.starts_with("video") {
-            flag_media = true;
-            doc_version.insert(CHAMP_FLAG_MEDIA, "video");
-            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
-            doc_version.insert(CHAMP_FLAG_VIDEO_TRAITE, false);
-        } else if mimetype =="application/pdf" {
-            flag_media = true;
-            doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
-            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
-        }
-        doc_version.insert(CHAMP_FLAG_INDEX, false);
-
-        match collection.insert_one(doc_version, None).await {
-            Ok(_) => (),
-            Err(e) => {
-                flag_duplication = verifier_erreur_duplication_mongo(&*e.kind);
-                if(flag_duplication) {
-                    // Ok, on va traiter la version meme si elle est deja conservee (idempotent)
-                    info!("transaction_nouvelle_version Recu transaction deja presente dans versionsFichiers (fuuid: {}), on traite sans inserer", fuuid);
-                    ()
-                } else {
-                    Err(format!("transaction_nouvelle_version Erreur insertion nouvelle version {} : {:?}", fuuid, e))?
+        let filtre = doc! { CHAMP_FUUID: &fuuid, CHAMP_TUUID: &tuuid, CHAMP_USER_ID: &user_id };
+        let options = UpdateOptions::builder().upsert(true).build();
+        match collection.update_one(filtre, ops, options).await {
+            Ok(inner) => {
+                if inner.upserted_id.is_none() {
+                    // Row pas inseree, on a une duplication
+                    flag_duplication = true;
                 }
-            }
-        }
+            },
+            Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur update_one fichier_version : {:?}", e))?
+        };
     }
 
-    // Retirer champs cles - ils sont inutiles dans la version
-    doc_bson_transaction.remove(CHAMP_TUUID);
-    doc_bson_transaction.remove(CHAMP_FUUID);
+    // Inserer document FichierRep
+    {
+        // Utiliser la struct fichier_version comme contenu initial
+        let mut doc_rep_bson = match convertir_to_bson(fichier_rep) {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur convertir_to_bson fichier_rep : {:?}", e))?
+        };
 
-    let filtre = doc! {CHAMP_TUUID: &tuuid};
-    let mut add_to_set = doc!{
-        CHAMP_FUUIDS: &fuuid,
-        CHAMP_FUUIDS_RECLAMES: &fuuid,
-    };
-    // Ajouter collection au besoin
-    if let Some(c) = cuuid.as_ref() {
-        add_to_set.insert(CHAMP_CUUIDS, c);
+        // Ajouter date creation
+        doc_rep_bson.insert(CHAMP_CREATION, Utc::now());
+
+        let ops = doc!{
+            "$setOnInsert": doc_rep_bson,
+            "$currentDate": { CHAMP_MODIFICATION: true }
+        };
+
+        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+        let filtre = doc! { CHAMP_TUUID: &tuuid, CHAMP_USER_ID: &user_id };
+        let options = UpdateOptions::builder().upsert(true).build();
+        match collection.update_one(filtre, ops, options).await {
+            Ok(inner) => (),
+            Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur update_one fichier_version : {:?}", e))?
+        };
     }
 
-    let type_node: &str = TypeNode::Fichier.into();
-
-    let ops = doc! {
-        "$set": {
-            "version_courante": doc_bson_transaction,
-            CHAMP_FUUID_V_COURANTE: &fuuid,
-            CHAMP_MIMETYPE: &mimetype,
-            CHAMP_SUPPRIME: false,
-        },
-        "$addToSet": add_to_set,
-        "$setOnInsert": {
-            // "nom": &nom_fichier,
-            "tuuid": &tuuid,
-            CHAMP_CREATION: Utc::now(),
-            CHAMP_USER_ID: &user_id,
-            CHAMP_TYPE_NODE: type_node,
-        },
-        "$currentDate": {CHAMP_MODIFICATION: true}
-    };
-    let opts = UpdateOptions::builder().upsert(true).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    debug!("transaction_nouvelle_version nouveau fichier update ops : {:?}", ops);
-    let resultat = match collection.update_one(filtre, ops, opts).await {
-        Ok(r) => r,
-        Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur update_one sur transcation : {:?}", e))?
-    };
-    debug!("transaction_nouvelle_version nouveau fichier Resultat transaction update : {:?}", resultat);
-
-    if let Some(cuuid) = cuuid.as_ref() {
-        if let Err(e) = recalculer_cuuids_fichiers(middleware, vec![cuuid], Some(vec![&tuuid])).await {
-            Err(format!("grosfichiers.transaction_nouvelle_version Erreur recalculer_cuuids_fichiers : {:?}", e))?
-        }
-    }
+    // // Inserer document de version
+    // {
+    //     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    //     let mut doc_version = doc_bson_transaction.clone();
+    //     doc_version.insert(CHAMP_TUUID, &tuuid);
+    //     doc_version.insert(CHAMP_USER_ID, &user_id);
+    //     doc_version.insert(CHAMP_FUUIDS, vec![&fuuid]);
+    //     doc_version.insert(CHAMP_FUUIDS_RECLAMES, vec![&fuuid]);
+    //
+    //     // Information optionnelle pour accelerer indexation/traitement media
+    //     if mimetype.starts_with("image") {
+    //         flag_media = true;
+    //         doc_version.insert(CHAMP_FLAG_MEDIA, "image");
+    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
+    //     } else if mimetype.starts_with("video") {
+    //         flag_media = true;
+    //         doc_version.insert(CHAMP_FLAG_MEDIA, "video");
+    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
+    //         doc_version.insert(CHAMP_FLAG_VIDEO_TRAITE, false);
+    //     } else if mimetype =="application/pdf" {
+    //         flag_media = true;
+    //         doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
+    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
+    //     }
+    //     doc_version.insert(CHAMP_FLAG_INDEX, false);
+    //
+    //     match collection.insert_one(doc_version, None).await {
+    //         Ok(_) => (),
+    //         Err(e) => {
+    //             flag_duplication = verifier_erreur_duplication_mongo(&*e.kind);
+    //             if(flag_duplication) {
+    //                 // Ok, on va traiter la version meme si elle est deja conservee (idempotent)
+    //                 info!("transaction_nouvelle_version Recu transaction deja presente dans versionsFichiers (fuuid: {}), on traite sans inserer", fuuid);
+    //                 ()
+    //             } else {
+    //                 Err(format!("transaction_nouvelle_version Erreur insertion nouvelle version {} : {:?}", fuuid, e))?
+    //             }
+    //         }
+    //     }
+    // }
+    //
+    // // Retirer champs cles - ils sont inutiles dans la version
+    // doc_bson_transaction.remove(CHAMP_TUUID);
+    // doc_bson_transaction.remove(CHAMP_FUUID);
+    //
+    // let filtre = doc! {CHAMP_TUUID: &tuuid};
+    // let mut add_to_set = doc!{
+    //     CHAMP_FUUIDS: &fuuid,
+    //     CHAMP_FUUIDS_RECLAMES: &fuuid,
+    // };
+    // // Ajouter collection au besoin
+    // if let Some(c) = cuuid.as_ref() {
+    //     add_to_set.insert(CHAMP_CUUIDS, c);
+    // }
+    //
+    // let type_node: &str = TypeNode::Fichier.into();
+    //
+    // let ops = doc! {
+    //     "$set": {
+    //         "version_courante": doc_bson_transaction,
+    //         CHAMP_FUUID_V_COURANTE: &fuuid,
+    //         CHAMP_MIMETYPE: &mimetype,
+    //         CHAMP_SUPPRIME: false,
+    //     },
+    //     "$addToSet": add_to_set,
+    //     "$setOnInsert": {
+    //         // "nom": &nom_fichier,
+    //         "tuuid": &tuuid,
+    //         CHAMP_CREATION: Utc::now(),
+    //         CHAMP_USER_ID: &user_id,
+    //         CHAMP_TYPE_NODE: type_node,
+    //     },
+    //     "$currentDate": {CHAMP_MODIFICATION: true}
+    // };
+    // let opts = UpdateOptions::builder().upsert(true).build();
+    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    // debug!("transaction_nouvelle_version nouveau fichier update ops : {:?}", ops);
+    // let resultat = match collection.update_one(filtre, ops, opts).await {
+    //     Ok(r) => r,
+    //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur update_one sur transcation : {:?}", e))?
+    // };
+    // debug!("transaction_nouvelle_version nouveau fichier Resultat transaction update : {:?}", resultat);
+    //
+    // if let Some(cuuid) = cuuid.as_ref() {
+    //     if let Err(e) = recalculer_cuuids_fichiers(middleware, vec![cuuid], Some(vec![&tuuid])).await {
+    //         Err(format!("grosfichiers.transaction_nouvelle_version Erreur recalculer_cuuids_fichiers : {:?}", e))?
+    //     }
+    // }
 
     if flag_duplication == false {
         // On emet les messages de traitement uniquement si la transaction est nouvelle
-        // if flag_media == true {
-        //     debug!("Emettre une commande de conversion pour media {}", fuuid);
-        //     match emettre_commande_media(middleware, &tuuid, &fuuid, &mimetype, false).await {
-        //         Ok(()) => (),
-        //         Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
-        //     }
-        // }
-
-        // debug!("Emettre une commande d'indexation pour {}", fuuid);
-        // match emettre_commande_indexation(gestionnaire, middleware, &tuuid, &fuuid).await {
-        //     Ok(()) => (),
-        //     Err(e) => error!("transactions.transaction_nouvelle_version Erreur emission commande poster media {} : {:?}", fuuid, e)
-        // }
-
         // Conserver information pour indexer le fichier
         let mut parametres = HashMap::new();
         parametres.insert("mimetype".to_string(), Bson::String(mimetype.clone()));
@@ -451,12 +727,12 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         // Emettre fichier pour que tous les clients recoivent la mise a jour
         emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
 
-        if let Some(cuuid) = cuuid.as_ref() {
+        // if let Some(cuuid) = cuuid.as_ref() {
             let mut evenement_contenu = EvenementContenuCollection::new();
             evenement_contenu.cuuid = Some(cuuid.clone());
             evenement_contenu.fichiers_ajoutes = Some(vec![tuuid.clone()]);
             emettre_evenement_contenu_collection(middleware, evenement_contenu).await?;
-        }
+        // }
     }
 
     middleware.reponse_ok()
@@ -516,6 +792,7 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, transaction: T) -
         // CHAMP_SECURITE: &securite,
         CHAMP_USER_ID: &user_id,
         CHAMP_SUPPRIME: false,
+        CHAMP_SUPPRIME_INDIRECT: false,
         CHAMP_FAVORIS: favoris,
         CHAMP_TYPE_NODE: type_node,
     };
@@ -634,103 +911,103 @@ pub struct RowFichiersRepCuuidNode {
     ancetres: Option<Vec<String>>,  // Liste (set) de tous les cuuids ancetres
 }
 
-async fn recalculer_cuuids_fichiers<M,S,T>(middleware: &M, cuuids: Vec<S>, tuuids: Option<Vec<T>>) -> Result<(), Box<dyn Error>>
-    where
-        M: MongoDao,
-        S: AsRef<str>,
-        T: ToString
-{
-    let cuuids: Vec<&str> = cuuids.iter().map(|s| s.as_ref()).collect();
-    let tuuids: Option<Vec<Bson>> = match tuuids {
-        Some(inner) => Some(inner.iter().map(|s| Bson::String(s.to_string())).collect()),
-        None => None
-    };
-    debug!("recalculer_cuuids_fichiers Cuuids : {:?}", &cuuids);
-
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-
-    // Conserver les cuuids dans un cache - utiliser pour mapping des fichiers
-    let mut cache_cuuids = HashMap::new();
-
-    let type_node_fichier: &str = TypeNode::Fichier.into();
-
-    // Recalculer le path de tous les fichiers affectes par au moins un cuuid modifie
-    let mut filtre = doc! {
-        CHAMP_CUUIDS: {"$in": &cuuids},
-        CHAMP_TYPE_NODE: type_node_fichier,
-    };
-    if let Some(tuuids) = tuuids {
-        filtre.insert("tuuid", doc!{"$in": tuuids});
-    };
-    let options = FindOptions::builder()
-        .projection(doc!{ CHAMP_TUUID: 1, CHAMP_CUUIDS: 1})
-        .build();
-    let mut curseur = collection.find(filtre, options).await?;
-    while let Some(r) = curseur.next().await {
-        let row: RowFichiersRepCuuidNode = convertir_bson_deserializable(r?)?;
-
-        let mut ancetres = HashSet::new();
-        let mut map_path_cuuids = HashMap::new();
-        if let Some(cuuids) = row.cuuids {
-            debug!("recalculer_cuuids_fichiers Recalculer paths pour fichier {} avec cuuids {:?}", row.tuuid, cuuids);
-            for cuuid in cuuids {
-                let row_cuuid = match cache_cuuids.get(&cuuid) {
-                    Some(inner) => inner,
-                    None => {
-                        // Charger le cuuid
-                        let filtre = doc! { CHAMP_TUUID: &cuuid };
-                        let doc_cuuid: RowRepertoirePaths = match collection.find_one(filtre, None).await? {
-                            Some(inner) => match convertir_bson_deserializable(inner) {
-                                Ok(inner) => inner,
-                                Err(e) => {
-                                    warn!("recalculer_cuuids_fichiers Erreur convertir_bson_deserializable pour cuuid {} vers RowRepertoirePaths (SKIP) : {:?}", cuuid, e);
-                                    continue;
-                                },
-                            },
-                            None => {
-                                warn!("recalculer_cuuids_fichiers Cuuid manquant {}, SKIP", cuuid);
-                                continue;
-                            }
-                        };
-                        cache_cuuids.insert(cuuid.clone(), doc_cuuid);
-                        cache_cuuids.get(&cuuid).expect("get cuuid")
-                    }
-                };
-
-                match row_cuuid.path_cuuids.clone() {
-                    Some(mut path_cuuids) => {
-                        // Repertoire
-                        // Ajouter le tuuid du repertoire a son path
-                        path_cuuids.insert(0, row_cuuid.tuuid.clone());
-
-                        for cuuid in &path_cuuids {
-                            ancetres.insert(cuuid.clone());
-                        }
-                        map_path_cuuids.insert(row_cuuid.tuuid.clone(), path_cuuids);
-                    },
-                    None => {
-                        // Collection (root)
-                        ancetres.insert(row_cuuid.tuuid.clone());
-                        map_path_cuuids.insert(row_cuuid.tuuid.clone(), vec![row_cuuid.tuuid.clone()]);
-                    }
-                }
-            }
-        }
-
-        let filtre = doc! { CHAMP_TUUID: row.tuuid };
-        let ancetres: Vec<String> = ancetres.into_iter().collect();
-        let ops = doc! {
-            "$set": {
-                CHAMP_MAP_PATH_CUUIDS: convertir_to_bson(map_path_cuuids)?,
-                CHAMP_CUUIDS_ANCETRES: ancetres,
-            },
-            "$currentDate": { CHAMP_MODIFICATION: true }
-        };
-        collection.update_one(filtre, ops, None).await?;
-    }
-
-    Ok(())
-}
+// async fn recalculer_cuuids_fichiers<M,S,T>(middleware: &M, cuuids: Vec<S>, tuuids: Option<Vec<T>>) -> Result<(), Box<dyn Error>>
+//     where
+//         M: MongoDao,
+//         S: AsRef<str>,
+//         T: ToString
+// {
+//     let cuuids: Vec<&str> = cuuids.iter().map(|s| s.as_ref()).collect();
+//     let tuuids: Option<Vec<Bson>> = match tuuids {
+//         Some(inner) => Some(inner.iter().map(|s| Bson::String(s.to_string())).collect()),
+//         None => None
+//     };
+//     debug!("recalculer_cuuids_fichiers Cuuids : {:?}", &cuuids);
+//
+//     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+//
+//     // Conserver les cuuids dans un cache - utiliser pour mapping des fichiers
+//     let mut cache_cuuids = HashMap::new();
+//
+//     let type_node_fichier: &str = TypeNode::Fichier.into();
+//
+//     // Recalculer le path de tous les fichiers affectes par au moins un cuuid modifie
+//     let mut filtre = doc! {
+//         CHAMP_CUUIDS: {"$in": &cuuids},
+//         CHAMP_TYPE_NODE: type_node_fichier,
+//     };
+//     if let Some(tuuids) = tuuids {
+//         filtre.insert("tuuid", doc!{"$in": tuuids});
+//     };
+//     let options = FindOptions::builder()
+//         .projection(doc!{ CHAMP_TUUID: 1, CHAMP_CUUIDS: 1})
+//         .build();
+//     let mut curseur = collection.find(filtre, options).await?;
+//     while let Some(r) = curseur.next().await {
+//         let row: RowFichiersRepCuuidNode = convertir_bson_deserializable(r?)?;
+//
+//         let mut ancetres = HashSet::new();
+//         let mut map_path_cuuids = HashMap::new();
+//         if let Some(cuuids) = row.cuuids {
+//             debug!("recalculer_cuuids_fichiers Recalculer paths pour fichier {} avec cuuids {:?}", row.tuuid, cuuids);
+//             for cuuid in cuuids {
+//                 let row_cuuid = match cache_cuuids.get(&cuuid) {
+//                     Some(inner) => inner,
+//                     None => {
+//                         // Charger le cuuid
+//                         let filtre = doc! { CHAMP_TUUID: &cuuid };
+//                         let doc_cuuid: RowRepertoirePaths = match collection.find_one(filtre, None).await? {
+//                             Some(inner) => match convertir_bson_deserializable(inner) {
+//                                 Ok(inner) => inner,
+//                                 Err(e) => {
+//                                     warn!("recalculer_cuuids_fichiers Erreur convertir_bson_deserializable pour cuuid {} vers RowRepertoirePaths (SKIP) : {:?}", cuuid, e);
+//                                     continue;
+//                                 },
+//                             },
+//                             None => {
+//                                 warn!("recalculer_cuuids_fichiers Cuuid manquant {}, SKIP", cuuid);
+//                                 continue;
+//                             }
+//                         };
+//                         cache_cuuids.insert(cuuid.clone(), doc_cuuid);
+//                         cache_cuuids.get(&cuuid).expect("get cuuid")
+//                     }
+//                 };
+//
+//                 match row_cuuid.path_cuuids.clone() {
+//                     Some(mut path_cuuids) => {
+//                         // Repertoire
+//                         // Ajouter le tuuid du repertoire a son path
+//                         path_cuuids.insert(0, row_cuuid.tuuid.clone());
+//
+//                         for cuuid in &path_cuuids {
+//                             ancetres.insert(cuuid.clone());
+//                         }
+//                         map_path_cuuids.insert(row_cuuid.tuuid.clone(), path_cuuids);
+//                     },
+//                     None => {
+//                         // Collection (root)
+//                         ancetres.insert(row_cuuid.tuuid.clone());
+//                         map_path_cuuids.insert(row_cuuid.tuuid.clone(), vec![row_cuuid.tuuid.clone()]);
+//                     }
+//                 }
+//             }
+//         }
+//
+//         let filtre = doc! { CHAMP_TUUID: row.tuuid };
+//         let ancetres: Vec<String> = ancetres.into_iter().collect();
+//         let ops = doc! {
+//             "$set": {
+//                 CHAMP_MAP_PATH_CUUIDS: convertir_to_bson(map_path_cuuids)?,
+//                 CHAMP_CUUIDS_ANCETRES: ancetres,
+//             },
+//             "$currentDate": { CHAMP_MODIFICATION: true }
+//         };
+//         collection.update_one(filtre, ops, None).await?;
+//     }
+//
+//     Ok(())
+// }
 
 async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
@@ -745,32 +1022,32 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, transacti
         Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur conversion transaction : {:?}", e))?
     };
 
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
 
-    // Ajouter le cuuid aux fichiers
-    {
-        // Conserver champs transaction uniquement (filtrer champs meta)
-        let type_node_fichiers: &str = TypeNode::Fichier.into();
-        let add_to_set = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid};
-        let filtre = doc! {
-            CHAMP_TUUID: {"$in": &transaction_collection.inclure_tuuids},
-            "type_node": type_node_fichiers
-        };
-        let ops = doc! {
-            "$addToSet": add_to_set,
-            "$currentDate": {CHAMP_MODIFICATION: true}
-        };
-        let resultat = match collection.update_many(filtre, ops, None).await {
-            Ok(r) => r,
-            Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur update_one sur transcation : {:?}", e))?
-        };
-        debug!("transaction_ajouter_fichiers_collection Resultat transaction update : {:?}", resultat);
-    }
+    // // Ajouter le cuuid aux fichiers
+    // {
+    //     // Conserver champs transaction uniquement (filtrer champs meta)
+    //     let type_node_fichiers: &str = TypeNode::Fichier.into();
+    //     let add_to_set = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid};
+    //     let filtre = doc! {
+    //         CHAMP_TUUID: {"$in": &transaction_collection.inclure_tuuids},
+    //         "type_node": type_node_fichiers
+    //     };
+    //     let ops = doc! {
+    //         "$addToSet": add_to_set,
+    //         "$currentDate": {CHAMP_MODIFICATION: true}
+    //     };
+    //     let resultat = match collection.update_many(filtre, ops, None).await {
+    //         Ok(r) => r,
+    //         Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur update_one sur transcation : {:?}", e))?
+    //     };
+    //     debug!("transaction_ajouter_fichiers_collection Resultat transaction update : {:?}", resultat);
+    // }
 
-    debug!("transaction_ajouter_fichiers_collection Recalculer cuuids fichiers pour cuuid {}", transaction_collection.cuuid);
-    if let Err(e) = recalculer_cuuids_fichiers(middleware, vec![&transaction_collection.cuuid], None::<Vec<&str>>).await {
-        error!("dupliquer_structure_repertoires Erreur recalculer_cuuids_fichiers : {:?}", e);
-    }
+    // debug!("transaction_ajouter_fichiers_collection Recalculer cuuids fichiers pour cuuid {}", transaction_collection.cuuid);
+    // if let Err(e) = recalculer_cuuids_fichiers(middleware, vec![&transaction_collection.cuuid], None::<Vec<&str>>).await {
+    //     error!("dupliquer_structure_repertoires Erreur recalculer_cuuids_fichiers : {:?}", e);
+    // }
 
     // Dupliquer la structure de repertoires
     if let Err(e) = dupliquer_structure_repertoires(
@@ -812,82 +1089,78 @@ async fn dupliquer_structure_repertoires<M,U,C,T>(middleware: &M, uuid_transacti
     }).collect();
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_nodes = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
+        NOM_COLLECTION_FICHIERS_REP)?;
 
     loop {
-        let type_node_repertoire: &str = TypeNode::Repertoire.into();
-        let copie_tuuids: Vec<CopieTuuidVersCuuid> = tuuids_remaining.clone();
-        tuuids_remaining.clear();
+        let fichier_rep_tuuid = match tuuids_remaining.pop() {
+            Some(inner) => inner,
+            None => { break; }  // Termine
+        };
 
-        for repertoire_copie in copie_tuuids.into_iter() {
-            let filtre = doc! {CHAMP_TUUID: &repertoire_copie.tuuid_original, "type_node": type_node_repertoire};
-            let mut curseur = collection.find(filtre, None).await?;
-            while let Some(r) = curseur.next().await {
-                let repertoire: FichierDetail = convertir_bson_deserializable(r?)?;
+        let filtre = doc! {
+            CHAMP_TUUID: &fichier_rep_tuuid.tuuid_original,
+        };
+        let mut curseur = collection_nodes.find(filtre, None).await?;
+        if curseur.advance().await? {
+            let mut fichier_rep = curseur.deserialize_current()?;
+            let type_node = TypeNode::try_from(fichier_rep.type_node)?;
 
-                debug!("dupliquer_structure_repertoires Copier repertoire {} vers {}", repertoire_copie.tuuid_original, repertoire_copie.cuuid_destination);
-                // Creer nouveau tuuid unique pour le repertoire a dupliquer
-                let nouveau_tuuid_str = format!("{}/{}/{}", uuid_transaction, &repertoire_copie.cuuid_destination, repertoire.tuuid);
-                let nouveau_tuuid_multihash = hacher_bytes(nouveau_tuuid_str.into_bytes().as_slice(), Some(Code::Blake2s256), Some(Base::Base16Lower));
-                let nouveau_tuuid = (&nouveau_tuuid_multihash[9..]).to_string();
-                debug!("dupliquer_structure_repertoires Nouveau tuuid : {:?}", nouveau_tuuid);
+            debug!("dupliquer_structure_repertoires Copier fichier_rep {} vers {}", fichier_rep_tuuid.tuuid_original, fichier_rep_tuuid.cuuid_destination);
 
-                // Copier le contenu de fichier detail dans une nouvelle entree de repertoire
-                // Conserver la meme cle de chiffrage
-                let now = Utc::now();
-                let type_node_repertoire: &str = TypeNode::Repertoire.into();
-                let mut doc_repertoire = doc! {
-                    CHAMP_TUUID: &nouveau_tuuid,
-                    CHAMP_CUUID: &repertoire_copie.cuuid_destination,
-                    CHAMP_CREATION: &now,
-                    CHAMP_MODIFICATION: now,
-                    CHAMP_METADATA: convertir_to_bson(repertoire.metadata.as_ref())?,
-                    CHAMP_USER_ID: &repertoire.user_id,
-                    CHAMP_SUPPRIME: false,
-                    CHAMP_FAVORIS: false,
-                    CHAMP_TYPE_NODE: type_node_repertoire,
-                };
+            // Creer nouveau tuuid unique pour le fichier/repertoire a dupliquer
+            let nouveau_tuuid_str = format!("{}/{}/{}", uuid_transaction, &fichier_rep_tuuid.cuuid_destination, fichier_rep.tuuid);
+            let nouveau_tuuid_multihash = hacher_bytes(nouveau_tuuid_str.into_bytes().as_slice(), Some(Code::Blake2s256), Some(Base::Base16Lower));
+            let nouveau_tuuid = (&nouveau_tuuid_multihash[9..]).to_string();
+            debug!("dupliquer_structure_repertoires Nouveau tuuid : {:?}", nouveau_tuuid);
 
-                match get_path_cuuid(middleware, &repertoire_copie.cuuid_destination).await {
-                    Ok(inner) => {
-                        if let Some(path_cuuids) = inner {
-                            let mut path_cuuids_modifie: Vec<Bson> = path_cuuids.iter().map(|c| Bson::String(c.to_owned())).collect();
-                            doc_repertoire.insert("path_cuuids", path_cuuids_modifie);
-                        }
-                    },
-                    Err(e) => Err(format!("transactions.dupliquer_structure_repertoires get_path_cuuid : {:?}", e))?
+            // Remplacer le tuuid
+            fichier_rep.tuuid = nouveau_tuuid.as_str();
+
+            // Recuperer le path du cuuid destination, remplacer path_cuuids
+            let path_cuuids_option = match get_path_cuuid(middleware, &fichier_rep_tuuid.cuuid_destination).await {
+                Ok(inner) => inner,
+                Err(e) => Err(format!("transactions.dupliquer_structure_repertoires get_path_cuuid : {:?}", e))?
+            };
+
+            match path_cuuids_option.as_ref() {
+                Some(inner) => {
+                    fichier_rep.path_cuuids = Some(inner.iter().map(|s| s.as_str()).collect());
+                },
+                None => {
+                    fichier_rep.path_cuuids = None;
                 }
+            };
 
-                collection.insert_one(doc_repertoire, None).await?;
+            // collection.insert_one(doc_repertoire, None).await?;
+            let filtre = doc! { CHAMP_TUUID: &fichier_rep.tuuid, CHAMP_USER_ID: &fichier_rep.user_id };
+            let mut set_ops = convertir_to_bson(fichier_rep)?;
+            set_ops.insert(CHAMP_CREATION, Utc::now());
+            let ops = doc! {
+                "$setOnInsert": set_ops,
+                "$currentDate": { CHAMP_MODIFICATION: true }
+            };
+            let options = UpdateOptions::builder().upsert(true).build();
+            collection.update_one(filtre, ops, options).await?;
 
-                // Ajouter le nouveau cuuid a tous les fichiers du sous-repertoire
-                let type_node_fichier: &str = TypeNode::Fichier.into();
-                let filtre_ajout_cuuid = doc! { CHAMP_CUUIDS: &repertoire.tuuid, CHAMP_TYPE_NODE: type_node_fichier };
-                let ops_ajout_cuuid = doc! {
-                    "$addToSet": { CHAMP_CUUIDS: &nouveau_tuuid },
-                    "$currentDate": { CHAMP_MODIFICATION: true }
-                };
-                collection.update_many(filtre_ajout_cuuid, ops_ajout_cuuid, None).await?;
+            match type_node {
+                TypeNode::Fichier => {
 
-                // Recalculer les paths des fichiers du nouveau repertoire
-                debug!("dupliquer_structure_repertoires Recalculer cuuids fichiers pour cuuid {}", nouveau_tuuid);
-                if let Err(e) = recalculer_cuuids_fichiers(middleware, vec![&nouveau_tuuid], None::<Vec<&str>>).await {
-                    error!("dupliquer_structure_repertoires Erreur recalculer_cuuids_fichiers : {:?}", e);
+                },
+                TypeNode::Collection | TypeNode::Repertoire => {
+                    // Trouver les sous-repertoires, traiter individuellement
+                    let filtre_ajout_cuuid = doc! { CHAMP_CUUID: &nouveau_tuuid, CHAMP_TYPE_NODE: TypeNode::Repertoire.to_str() };
+                    let mut curseur = collection_nodes.find(filtre_ajout_cuuid, None).await?;
+                    if curseur.advance().await? {
+                        let sous_repertoire = curseur.deserialize_current()?;
+                        let copie_tuuid = CopieTuuidVersCuuid {
+                            tuuid_original: sous_repertoire.tuuid.to_owned(),
+                            cuuid_destination: nouveau_tuuid.clone()
+                        };
+                        tuuids_remaining.push(copie_tuuid);
+                    }
                 }
-
-                // Trouver les sous-repertoires, traiter individuellement
-                let filtre_ajout_cuuid = doc! { CHAMP_CUUID: &repertoire.tuuid, CHAMP_TYPE_NODE: type_node_repertoire };
-                let mut curseur = collection.find(filtre_ajout_cuuid, None).await?;
-                while let Some(r) = curseur.next().await {
-                    let sous_repertoire: FichierDetail = convertir_bson_deserializable(r?)?;
-                    let copie_tuuid = CopieTuuidVersCuuid { tuuid_original: sous_repertoire.tuuid, cuuid_destination: nouveau_tuuid.clone() };
-                    tuuids_remaining.push(copie_tuuid);
-                }
-
             }
-        }
-
-        if tuuids_remaining.is_empty() {
-            break;  // Termine
         }
     }
 
@@ -902,38 +1175,77 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
     let mut tuuids_remaining: Vec<String> = vec![cuuid.to_string()];
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_typed = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
+        NOM_COLLECTION_FICHIERS_REP)?;
 
     loop {
-        let type_node_repertoire: &str = TypeNode::Repertoire.into();
-        let copie_tuuids: Vec<String> = tuuids_remaining.clone();
-        tuuids_remaining.clear();
+        let tuuid = match tuuids_remaining.pop() {
+            Some(inner) => inner,
+            None => { break; }  // Termine
+        };
 
-        for tuuid in copie_tuuids.into_iter() {
-            recalculer_cuuids_fichiers(middleware, vec![&tuuid], None::<Vec<&str>>).await?;
+        let filtre = doc! { CHAMP_TUUID: &tuuid };
+        let mut curseur = collection_typed.find(filtre, None).await?;
+        if curseur.advance().await? {
+            let row = curseur.deserialize_current()?;
+            let type_node = TypeNode::try_from(row.type_node)?;
+            let path_cuuids = match row.path_cuuids {
+                Some(inner) => {
+                    match inner.get(0) {
+                        Some(cuuid_parent) => {
+                            match get_path_cuuid(middleware, cuuid_parent).await? {
+                                Some(mut inner) => {
+                                    inner.insert(0, row.tuuid.to_owned());
+                                    Some(inner)
+                                },
+                                None => Some(vec![cuuid_parent.to_string(), row.tuuid.to_owned()])
+                            }
+                        },
+                        None => None
+                    }
+                },
+                None => None
+            };
 
-            let path_cuuids = get_path_cuuid(middleware, &tuuid).await?;
+            // Mettre a jour path_cuuids
+            let filtre = doc! { CHAMP_TUUID: row.tuuid };
+            let ops = doc! {
+                "$set": { CHAMP_PATH_CUUIDS: path_cuuids },
+                "$currentDate": { CHAMP_MODIFICATION: true }
+            };
+            collection.update_one(filtre, ops, None).await?;
 
-            let filtre = doc! {CHAMP_TUUID: &tuuid, "type_node": type_node_repertoire};
-            let mut curseur = collection.find(filtre, None).await?;
-
-            while let Some(r) = curseur.next().await {
-                let repertoire: FichierDetail = convertir_bson_deserializable(r?)?;
-
-                // Ajouter le nouveau cuuid a tous les fichiers du sous-repertoire
-                let filtre_ajout_cuuid = doc! { CHAMP_TUUID: &repertoire.tuuid };
-                let ops_ajout_cuuid = doc! {
-                    "set": { CHAMP_PATH_CUUIDS: path_cuuids.as_ref() },
-                    "$currentDate": { CHAMP_MODIFICATION: true }
-                };
-                collection.update_one(filtre_ajout_cuuid, ops_ajout_cuuid, None).await?;
-
-                tuuids_remaining.push(repertoire.tuuid);
+            match type_node {
+                TypeNode::Fichier => {
+                    // Rien a faire
+                },
+                TypeNode::Collection | TypeNode::Repertoire => {
+                    // Ajouter aux tuuids remaining pour sous-reps/fichiers
+                    tuuids_remaining.push(row.tuuid.to_owned());
+                }
             }
         }
 
-        if tuuids_remaining.is_empty() {
-            break;  // Termine
-        }
+        // recalculer_cuuids_fichiers(middleware, vec![&tuuid], None::<Vec<&str>>).await?;
+
+        // let path_cuuids = get_path_cuuid(middleware, &tuuid).await?;
+        //
+        // let filtre = doc! {CHAMP_TUUID: &tuuid, "type_node": type_node_repertoire};
+        // let mut curseur = collection.find(filtre, None).await?;
+        //
+        // while let Some(r) = curseur.next().await {
+        //     let repertoire: FichierDetail = convertir_bson_deserializable(r?)?;
+        //
+        //     // Ajouter le nouveau cuuid a tous les fichiers du sous-repertoire
+        //     let filtre_ajout_cuuid = doc! { CHAMP_TUUID: &repertoire.tuuid };
+        //     let ops_ajout_cuuid = doc! {
+        //         "set": { CHAMP_PATH_CUUIDS: path_cuuids.as_ref() },
+        //         "$currentDate": { CHAMP_MODIFICATION: true }
+        //     };
+        //     collection.update_one(filtre_ajout_cuuid, ops_ajout_cuuid, None).await?;
+        //
+        //     tuuids_remaining.push(repertoire.tuuid);
+        // }
     }
 
     Ok(())
@@ -945,17 +1257,34 @@ async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, transact
         T: Transaction
 {
     debug!("transaction_deplacer_fichiers_collection Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionDeplacerFichiersCollection = match transaction.clone().convertir::<TransactionDeplacerFichiersCollection>() {
+    let user_id = match transaction.get_enveloppe_certificat() {
+        Some(e) => e.get_user_id()?.to_owned(),
+        None => None
+    };
+
+    let transaction_collection: TransactionDeplacerFichiersCollection = match transaction.convertir::<TransactionDeplacerFichiersCollection>() {
         Ok(t) => t,
         Err(e) => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Erreur conversion transaction : {:?}", e))?
     };
 
+    let path_cuuids_destination = match get_path_cuuid(middleware, transaction_collection.cuuid_destination.as_str()).await {
+        Ok(inner) => match inner {
+            Some(inner) => inner,
+            None => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Path cuuids None - SKIP"))?
+        },
+        Err(e) => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Erreur get_path_cuuid : {:?}", e))?
+    };
+
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.inclure_tuuids}};
-    { // Ajouter dans la destination
-        let add_to_set = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid_destination};
+    {
+        let filtre = doc! {
+            CHAMP_TUUID: {"$in": &transaction_collection.inclure_tuuids},
+            "path_cuuids.0": &transaction_collection.cuuid_origine
+        };
+
+        // Deplacer fichiers/repertoires en remplacant path_cuuids_destination
         let ops = doc! {
-            "$addToSet": &add_to_set,
+            "$set": { CHAMP_PATH_CUUIDS: &path_cuuids_destination },
             "$currentDate": {CHAMP_MODIFICATION: true}
         };
         let resultat = match collection.update_many(filtre.clone(), ops, None).await {
@@ -964,18 +1293,18 @@ async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, transact
         };
         debug!("grosfichiers.transaction_deplacer_fichiers_collection Resultat transaction update : {:?}", resultat);
     }
-    { // Retirer de l'origine
-        let pull_from_array = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid_origine};
-        let ops = doc! {
-            "$pull": &pull_from_array,
-            "$currentDate": {CHAMP_MODIFICATION: true}
-        };
-        let resultat = match collection.update_many(filtre, ops, None).await {
-            Ok(r) => r,
-            Err(e) => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Erreur update_one sur transaction : {:?}", e))?
-        };
-        debug!("grosfichiers.transaction_deplacer_fichiers_collection Resultat transaction update : {:?}", resultat);
-    }
+    // { // Retirer de l'origine
+    //     let pull_from_array = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid_origine};
+    //     let ops = doc! {
+    //         "$pull": &pull_from_array,
+    //         "$currentDate": {CHAMP_MODIFICATION: true}
+    //     };
+    //     let resultat = match collection.update_many(filtre, ops, None).await {
+    //         Ok(r) => r,
+    //         Err(e) => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Erreur update_one sur transaction : {:?}", e))?
+    //     };
+    //     debug!("grosfichiers.transaction_deplacer_fichiers_collection Resultat transaction update : {:?}", resultat);
+    // }
 
     // Recalculer les paths des sous-repertoires et fichiers
     if let Err(e) = recalculer_path_cuuids(middleware, &transaction_collection.cuuid_destination).await {

@@ -116,14 +116,18 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValideAction
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
+    let uuid_transaction = m.message.get_msg().id.as_str();
     debug!("commande_nouvelle_version Consommer commande : {:?}", & m.message);
     let mut commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu()?;
     debug!("Commande nouvelle versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.get_user_id();
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => Err(format!("commandes.commande_nouvelle_version user_id manquant du certificat - SKIP"))?
+    };
     let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
-    if role_prive && user_id.is_some() {
+    if role_prive {
         // Ok
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok
@@ -131,23 +135,20 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValideAction
         Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
     }
 
-    // if let Some(cle) = commande.cle.take() {
-    //     debug!("commande_nouvelle_version Sauvegarde cle fichier");
-    //     if let Some(routage) = cle.routage.as_ref() {
-    //         if let Some(partition) = routage.partition.as_ref() {
-    //             debug!("Sauvegarder cle de notification avec partition {}", partition);
-    //             let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE)
-    //                 .exchanges(vec![Securite::L3Protege])
-    //                 .partition(partition)
-    //                 .build();
-    //             middleware.transmettre_commande(routage, &cle, true).await?;
-    //         }
-    //     }
-    //
-    //     // Retirer la cle de la transaction
-    //     //m.message.parsed.contenu.remove("_cle");
-    //     warn!("commandes.commande_nouvelle_version TODO Fix handling _cle");
-    // }
+    // Valider la nouvelle version
+    {
+        let fichier_rep = match NodeFichierRepOwned::from_nouvelle_version(
+            middleware, &commande, uuid_transaction, &user_id).await {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("grosfichiers.NodeFichierRepOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
+        };
+        let tuuid = fichier_rep.tuuid.clone();
+        let fichier_version = match NodeFichierVersionOwned::from_nouvelle_version(
+            &commande, &tuuid, &user_id).await {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
+        };
+    }
 
     // Traiter la cle
     match m.message.parsed.attachements.take() {
@@ -1160,14 +1161,17 @@ async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValideAction, ges
         }
     };
     let cuuid = commande.cuuid;
-    let nom_fichier = commande.nom;
+    // let nom_fichier = commande.nom;
 
     let filtre = doc! {CHAMP_TUUID: &tuuid};
     let mut add_to_set = doc!{"fuuids": &fuuid};
     // Ajouter collection au besoin
-    if let Some(c) = cuuid.as_ref() {
-        add_to_set.insert("cuuids", c);
-    }
+    // if let Some(c) = cuuid.as_ref() {
+    //     add_to_set.insert("cuuids", c);
+    // }
+    todo!("fix me - get path_cuuids");
+    //add_to_set.insert("path_cuuids", cuuid.to_owned());
+    //add_to_set.insert("cuuids", cuuid.to_owned());
 
     let ops = doc! {
         "$set": {
@@ -1177,7 +1181,7 @@ async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValideAction, ges
         },
         "$addToSet": add_to_set,
         "$setOnInsert": {
-            "nom": &nom_fichier,
+            // "nom": &nom_fichier,
             "tuuid": &tuuid,
             CHAMP_CREATION: Utc::now(),
             CHAMP_USER_ID: &user_id,
@@ -1195,13 +1199,13 @@ async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValideAction, ges
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
     emettre_evenement_maj_fichier(middleware, tuuid.as_str(), EVENEMENT_AJOUTER_FICHIER).await?;
-    if let Some(c) = cuuid.as_ref() {
+    //if let Some(c) = cuuid.as_ref() {
         let mut event = EvenementContenuCollection::new();
         let fichiers_ajoutes = vec![tuuid.to_owned()];
-        event.cuuid = cuuid.clone();
+        event.cuuid = cuuid.into();
         event.fichiers_ajoutes = Some(fichiers_ajoutes);
         emettre_evenement_contenu_collection(middleware, event).await?;
-    }
+    //}
 
     Ok(middleware.reponse_ok()?)
 }
