@@ -71,6 +71,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => commande_retirer_documents_collection(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => commande_supprimer_documents(middleware, m, gestionnaire).await,
         TRANSACTION_RECUPERER_DOCUMENTS => commande_recuperer_documents(middleware, m, gestionnaire).await,
+        TRANSACTION_RECUPERER_DOCUMENTS_V2 => commande_recuperer_documents_v2(middleware, m, gestionnaire).await,
         TRANSACTION_ARCHIVER_DOCUMENTS => commande_archiver_documents(middleware, m, gestionnaire).await,
         TRANSACTION_CHANGER_FAVORIS => commande_changer_favoris(middleware, m, gestionnaire).await,
         TRANSACTION_DECRIRE_FICHIER => commande_decrire_fichier(middleware, m, gestionnaire).await,
@@ -186,9 +187,9 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValideAction, ges
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let tuuids = vec![commande.tuuid];
-        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
-        if err_reponse.is_some() {
-            return Ok(err_reponse)
+        let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
+        if resultat.erreur.is_some() {
+            return Ok(resultat.erreur)
         }
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok
@@ -217,9 +218,9 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValideAct
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let cuuid = commande.cuuid.as_ref();
-        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, None::<&Vec<String>>, cuuid).await?;
-        if err_reponse.is_some() {
-            return Ok(err_reponse)
+        let resultat = verifier_autorisation_usager(middleware, user_id_str, None::<&Vec<String>>, cuuid).await?;
+        if resultat.erreur.is_some() {
+            return Ok(resultat.erreur)
         }
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok
@@ -293,29 +294,58 @@ async fn commande_associer_video<M>(middleware: &M, m: MessageValideAction, gest
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
+#[derive(Debug)]
+pub struct InformationAutorisation {
+    pub erreur: Option<MessageMilleGrille>,
+    pub tuuids_repertoires: Vec<String>,
+    pub tuuids_fichiers: Vec<String>,
+    pub tuuids_refuses: Vec<String>,
+    pub fuuids: Vec<String>,
+}
+
+impl InformationAutorisation {
+    fn new() -> Self {
+        Self {
+            erreur: None,
+            tuuids_repertoires: Vec::new(),
+            tuuids_fichiers: Vec::new(),
+            tuuids_refuses: Vec::new(),
+            fuuids: Vec::new(),
+        }
+    }
+}
+
 async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuids: Option<&Vec<U>>, cuuid: Option<T>)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    -> Result<InformationAutorisation, Box<dyn Error>>
     where
         M: GenerateurMessages + MongoDao,
         S: AsRef<str>, T: AsRef<str>, U: AsRef<str>
 {
     let user_id_str = user_id.as_ref();
 
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut reponse = InformationAutorisation::new();
+
+    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     if cuuid.is_some() {
         let cuuid_ref = cuuid.expect("cuuid");
 
         // Verifier que la collection destination (cuuid) appartient a l'usager
         let filtre = doc!{CHAMP_TUUID: cuuid_ref.as_ref()};
-        let doc_collection = collection.find_one(filtre, None).await?;
+        let collection_row_fichiers = middleware.get_collection_typed::<FichierDetail>(
+            NOM_COLLECTION_FICHIERS_REP)?;
+        let doc_collection = collection_row_fichiers.find_one(filtre, None).await?;
         match doc_collection {
-            Some(d) => {
-                let mapping_collection: FichierDetail = mapper_fichier_db(d)?;
-                if Some(user_id_str.to_owned()) != mapping_collection.user_id {
-                    return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid n'appartient pas a l'usager"}), None)?))
+            Some(mapping_collection) => {
+                // let mapping_collection: FichierDetail = mapper_fichier_db(d)?;
+                if Some(user_id_str.to_owned()) == mapping_collection.user_id {
+                    reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid n'appartient pas a l'usager"}), None)?);
+                    return Ok(reponse)
                 }
             },
-            None => return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid inconnu"}), None)?))
+            None => {
+                reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid inconnu"}), None)?);
+                return Ok(reponse)
+            }
         }
     }
 
@@ -325,20 +355,55 @@ async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuid
         let filtre = doc!{CHAMP_TUUID: {"$in": &tuuids_vec}, CHAMP_USER_ID: user_id_str};
         tuuids_set.extend(&tuuids_vec);
 
-        let mut curseur_docs = collection.find(filtre, None).await?;
-        while let Some(fresult) = curseur_docs.next().await {
-            let d_result = fresult?;
-            let tuuid_doc = d_result.get_str("tuuid")?;
-            tuuids_set.remove(tuuid_doc);
+        let options = FindOptions::builder()
+            .projection(doc!{CHAMP_TUUID: true, CHAMP_USER_ID: true, CHAMP_TYPE_NODE: true, CHAMP_SUPPRIME: true, CHAMP_FUUIDS_RECLAMES: true})
+            .build();
+        let collection_row_fichiers = middleware.get_collection_typed::<NodeFichiersRepBorrow>(
+            NOM_COLLECTION_FICHIERS_REP)?;
+        let mut curseur_docs = collection_row_fichiers.find(filtre, options).await?;
+        while curseur_docs.advance().await? {
+            let row = curseur_docs.deserialize_current()?;
+            tuuids_set.remove(row.tuuid);
+            let type_node = TypeNode::try_from(row.type_node)?;
+            match type_node {
+                TypeNode::Fichier => {
+                    reponse.tuuids_fichiers.push(row.tuuid.to_owned());
+                    if let Some(fuuids) = row.fuuids_reclames {
+                        reponse.fuuids.extend(fuuids.into_iter().map(|c| c.to_owned()));
+                    }
+                },
+                TypeNode::Collection | TypeNode::Repertoire => {
+                    reponse.tuuids_repertoires.push(row.tuuid.to_owned());
+                }
+            }
         }
+        // while let Some(row) = curseur_docs.next().await {
+        //     let row = row?;
+        //     // let tuuid_doc = d_result.get_str("tuuid")?;
+        //     tuuids_set.remove(row.tuuid);
+        //     let type_node = TypeNode::try_from(row.type_node)?;
+        //     match type_node {
+        //         TypeNode::Fichier => {
+        //             reponse.tuuids_fichiers.push(row.tuuid.to_owned());
+        //         },
+        //         TypeNode::Collection | TypeNode::Repertoire => {
+        //             reponse.tuuids_repertoires.push(row.tuuid.to_owned());
+        //         }
+        //     }
+        // }
 
         if tuuids_set.len() > 0 {
             // Certains tuuids n'appartiennent pas a l'usager
-            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "message": "tuuids n'appartiennent pas a l'usager"}), None)?))
+            // let cuuids: Vec<String> = tuuids_set.into_iter().map(|c| c.to_owned()).collect();
+            reponse.tuuids_repertoires.extend(tuuids_set.into_iter().map(|c| c.to_owned()));
+            return {
+                reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "tuuids n'appartiennent pas a l'usager"}), None)?);
+                Ok(reponse)
+            }
         }
     }
 
-    Ok(None)
+    Ok(reponse)
 }
 
 async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -356,9 +421,9 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
         let user_id_str = user_id.as_ref().expect("user_id");
         let cuuid = commande.cuuid.as_str();
         let tuuids: Vec<&str> = commande.inclure_tuuids.iter().map(|t| t.as_str()).collect();
-        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
-        if err_reponse.is_some() {
-            return Ok(err_reponse)
+        let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
+        if resultat.erreur.is_some() {
+            return Ok(resultat.erreur)
         }
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok
@@ -387,9 +452,9 @@ async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageVali
         let cuuid_destination = commande.cuuid_destination.as_str();
         let mut tuuids: Vec<&str> = commande.inclure_tuuids.iter().map(|t| t.as_str()).collect();
         tuuids.push(cuuid_destination);  // Piggyback pour verifier un des 2 cuuids
-        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
-        if err_reponse.is_some() {
-            return Ok(err_reponse)
+        let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
+        if resultat.erreur.is_some() {
+            return Ok(resultat.erreur)
         }
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok
@@ -453,9 +518,9 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction,
                 tuuids.push(t.as_str());
             }
         }
-        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
-        if err_reponse.is_some() {
-            return Ok(err_reponse)
+        let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
+        if resultat.erreur.is_some() {
+            return Ok(resultat.erreur)
         }
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok
@@ -486,9 +551,9 @@ async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction,
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
-        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
-        if err_reponse.is_some() {
-            return Ok(err_reponse)
+        let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
+        if resultat.erreur.is_some() {
+            return Ok(resultat.erreur)
         }
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok
@@ -548,6 +613,101 @@ async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction,
     }
 }
 
+#[derive(Deserialize)]
+struct ReponseRecupererFichiers {
+    errors: Vec<String>,
+    inconnus: Vec<String>,
+    recuperes: Vec<String>,
+}
+
+async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("commande_recuperer_documents Consommer commande : {:?}", & m.message);
+    let commande: TransactionRecupererDocumentsV2 = m.message.get_msg().map_contenu() ?;
+
+    // Autorisation: Action usager avec compte prive ou delegation globale
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => Err(format!("commandes.commande_recuperer_documents_v2 User_id absent du certificat"))?
+    };
+    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    if role_prive {
+        // Ok
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("commandes.commande_recuperer_documents_v2: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
+
+    let mut tuuids = HashSet::new();
+    for (cuuid, liste) in &commande.items {
+        tuuids.insert(cuuid);
+        if let Some(liste) = liste {
+            tuuids.extend(liste);
+            // for tuuid in liste {
+            //     tuuids.insert(tuuid);
+            // }
+        }
+    }
+    let tuuids: Vec<&str> = tuuids.iter().map(|t| t.as_str()).collect();
+    let resultat = verifier_autorisation_usager(middleware, user_id, Some(&tuuids), None::<String>).await?;
+    if resultat.erreur.is_some() {
+        return Ok(resultat.erreur)
+    }
+
+    debug!("commande_recuperer_documents_v2 Verification autorisation fichiers : {:?}", resultat);
+
+    if resultat.fuuids.len() == 0 {
+        debug!("commande_recuperer_documents_v2 Aucuns fichiers a restaurer - juste des repertoires. Aucunes verifications additionnelles requises");
+        return Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    }
+
+    // Emettre une commande de reactivation a fichiers (consignation)
+    // Attendre 1 succes, timeout 5 secondes pour echec
+    let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS, COMMANDE_FICHIERS_REACTIVER)
+        .exchanges(vec![Securite::L2Prive])
+        .timeout_blocking(5_000)
+        .build();
+
+    let commande = json!({ "fuuids": resultat.fuuids });
+    match middleware.transmettre_commande(routage, &commande, true).await {
+        Ok(r) => match r {
+            Some(r) => match r {
+                TypeMessage::Valide(reponse) => {
+                    // Traiter la transaction
+                    debug!("commande_recuperer_documents_v2 Reponse recuperer document OK : {:?}", reponse);
+                    let parsed: ReponseRecupererFichiers = reponse.message.parsed.map_contenu()?;
+                    if parsed.inconnus.len() > 0 || parsed.errors.len() > 0 {
+                        let reponse = json!({
+                            "ok": false,
+                            "err": "Au moins 1 fichier supprime Fichiers supprimes",
+                            "recuperes": parsed.recuperes,
+                            "inconnus": parsed.inconnus,
+                            "errors": parsed.errors,
+                        });
+                        return Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+                    }
+                    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+                },
+                _ => {
+                    debug!("commande_recuperer_documents_v2 Reponse recuperer document est invalide");
+                    Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes"}), None)?))
+                }
+            },
+            None => {
+                debug!("commande_recuperer_documents_v2 Reponse recuperer : reponse vide");
+                Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Reponse des serveurs de fichiers vide (aucun contenu)"}), None)?))
+            }
+        },
+        Err(e) => {
+            debug!("commande_recuperer_documents_v2 Reponse recuperer document erreur : {:?}", e);
+            Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes/timeout"}), None)?))
+        }
+    }
+}
+
 async fn commande_archiver_documents<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
@@ -562,9 +722,9 @@ async fn commande_archiver_documents<M>(middleware: &M, m: MessageValideAction, 
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
-        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
-        if err_reponse.is_some() {
-            return Ok(err_reponse)
+        let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
+        if resultat.erreur.is_some() {
+            return Ok(resultat.erreur)
         }
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok
@@ -589,9 +749,9 @@ async fn commande_changer_favoris<M>(middleware: &M, m: MessageValideAction, ges
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let keys: Vec<String> = commande.favoris.keys().cloned().collect();
-        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&keys), None::<String>).await?;
-        if err_reponse.is_some() {
-            return Ok(err_reponse)
+        let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&keys), None::<String>).await?;
+        if resultat.erreur.is_some() {
+            return Ok(resultat.erreur)
         }
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok
@@ -617,9 +777,9 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValideAction, 
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let tuuids = vec![commande.tuuid];
-        let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
-        if err_reponse.is_some() {
-            return Ok(err_reponse)
+        let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
+        if resultat.erreur.is_some() {
+            return Ok(resultat.erreur)
         }
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok

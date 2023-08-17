@@ -53,6 +53,7 @@ pub const TRANSACTION_DEPLACER_FICHIERS_COLLECTION: &str = "deplacerFichiersColl
 pub const TRANSACTION_RETIRER_DOCUMENTS_COLLECTION: &str = "retirerDocumentsCollection";
 pub const TRANSACTION_SUPPRIMER_DOCUMENTS: &str = "supprimerDocuments";
 pub const TRANSACTION_RECUPERER_DOCUMENTS: &str = "recupererDocuments";
+pub const TRANSACTION_RECUPERER_DOCUMENTS_V2: &str = "recupererDocumentsV2";
 pub const TRANSACTION_ARCHIVER_DOCUMENTS: &str = "archiverDocuments";
 pub const TRANSACTION_CHANGER_FAVORIS: &str = "changerFavoris";
 pub const TRANSACTION_ASSOCIER_CONVERSIONS: &str = "associerConversions";
@@ -113,8 +114,10 @@ pub const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale (fichier ou
 pub const CHAMP_TUUIDS: &str = "tuuids";
 pub const CHAMP_CUUID: &str = "cuuid";  // UUID collection de tuuids
 pub const CHAMP_CUUIDS: &str = "cuuids";  // Liste de cuuids (e.g. appartenance a plusieurs collections)
-pub const CHAMP_CUUIDS_SUPPRIMES: &str = "cuuids_supprimes";  // Liste de cuuids (e.g. appartenance a plusieurs collections)
+pub const CHAMP_CUUIDS_SUPPRIMES: &str = "cuuids_supprimes";  /// Liste de cuuids (e.g. appartenance a plusieurs collections)
+pub const CHAMP_CUUIDS_SUPPRIMES_INDIRECT: &str = "cuuids_supprimes_indirect";  /// Liste de cuuids supprimes via parent
 pub const CHAMP_SUPPRIME: &str = "supprime";
+pub const CHAMP_SUPPRIME_INDIRECT: &str = "supprime_indirect";
 pub const CHAMP_SUPPRIME_PATH: &str = "supprime_cuuids_path";
 pub const CHAMP_ARCHIVE: &str = "archive";
 pub const CHAMP_NOM: &str = "nom";
@@ -542,5 +545,9 @@ pub struct NodeFichiersRepBorrow<'a> {
     pub map_path_cuuids: Option<HashMap<&'a str, Vec<&'a str>>>,
     #[serde(borrow)]
     pub cuuids_supprimes: Option<Vec<&'a str>>,
+    #[serde(borrow)]
+    pub cuuids_supprimes_indirect: Option<Vec<&'a str>>,
     pub supprime: bool,
+    #[serde(borrow)]
+    pub fuuids_reclames: Option<Vec<&'a str>>,
 }

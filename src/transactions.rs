@@ -48,6 +48,7 @@ where
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION |
         TRANSACTION_SUPPRIMER_DOCUMENTS |
         TRANSACTION_RECUPERER_DOCUMENTS |
+        TRANSACTION_RECUPERER_DOCUMENTS_V2 |
         TRANSACTION_ARCHIVER_DOCUMENTS |
         TRANSACTION_CHANGER_FAVORIS |
         TRANSACTION_DECRIRE_FICHIER |
@@ -89,6 +90,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => transaction_retirer_documents_collection(middleware, transaction).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, transaction).await,
         TRANSACTION_RECUPERER_DOCUMENTS => transaction_recuperer_documents(middleware, transaction).await,
+        TRANSACTION_RECUPERER_DOCUMENTS_V2 => transaction_recuperer_documents_v2(middleware, transaction).await,
         TRANSACTION_ARCHIVER_DOCUMENTS => transaction_archiver_documents(middleware, transaction).await,
         TRANSACTION_CHANGER_FAVORIS => transaction_changer_favoris(middleware, transaction).await,
         TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, gestionnaire, transaction).await,
@@ -196,7 +198,7 @@ pub struct TransactionListeDocuments {
 pub struct TransactionSupprimerDocuments {
     pub tuuids: Vec<String>,    // Fichiers/rep a supprimer
     pub cuuid: Option<String>,  // Collection a retirer des documents (suppression conditionnelle)
-    pub cuuids_path: Option<Vec<String>>,  // Path du fichier lors de la suppression (breadcrumb)
+    // pub cuuids_path: Option<Vec<String>>,  // Path du fichier lors de la suppression (breadcrumb)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1067,9 +1069,9 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
     // Conserver liste de tuuids par cuuid, utilise pour evenement
     let mut tuuids_retires_par_cuuid: HashMap<String, Vec<String>> = HashMap::new();
     // Liste de tuuids qui vont etre marques comme supprimes=true
-    let mut tuuids_supprimes: Vec<String> = Vec::new();
+    // let mut tuuids_supprimes: Vec<String> = Vec::new();
     // Liste de tuuids encore valides (plusieurs cuuids). On va juste retirer le cuuid en parametre.
-    let mut tuuids_retires: Vec<String> = Vec::new();
+    // let mut tuuids_retires: Vec<String> = Vec::new();
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
 
@@ -1100,7 +1102,8 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
         let projection_node_row = doc! {
             CHAMP_TUUID: true, CHAMP_CUUID: true, CHAMP_CUUIDS: true, CHAMP_USER_ID: true,
             CHAMP_TYPE_NODE: true, CHAMP_PATH_CUUIDS: true, CHAMP_SUPPRIME: true,
-            CHAMP_CUUIDS_SUPPRIMES: true, CHAMP_MAP_PATH_CUUIDS: true,
+            CHAMP_CUUIDS_SUPPRIMES: true, CHAMP_CUUIDS_SUPPRIMES_INDIRECT: true,
+            CHAMP_MAP_PATH_CUUIDS: true,
         };
         let options = FindOptions::builder().projection(projection_node_row.clone()).build();
         debug!("grosfichiers.transaction_supprimer_documents Filtre charger collections/repertoires pour traitement arborescence : {:?}", filtre);
@@ -1165,7 +1168,7 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
                         CHAMP_SUPPRIME: false,  // Ignorer sous-repertoires deja supprimes
                     };
                     let ops = doc! {
-                        "$set": { CHAMP_SUPPRIME: true, "supprime_indirect": true },
+                        "$set": { CHAMP_SUPPRIME: true, CHAMP_SUPPRIME_INDIRECT: true },
                         "$currentDate": { CHAMP_MODIFICATION: true },
                     };
                     if let Err(e) = collection.update_many(filtre_sous_repertoires, ops, None).await {
@@ -1212,7 +1215,7 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
                             if let Some(paths) = row_fichier.map_path_cuuids {
                                 // Identifier les cuuids a retirer en fonction des paths
 
-                                let mut cuuids_supprimes = match row_fichier.cuuids_supprimes {
+                                let mut cuuids_supprimes = match row_fichier.cuuids_supprimes_indirect {
                                     Some(inner) => {
                                         let mut cuuids_set = HashSet::new();
                                         for cuuid in inner {
@@ -1244,7 +1247,7 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
                             "$set": {
                                 CHAMP_SUPPRIME: cuuids.len() == 0,
                                 CHAMP_CUUIDS: cuuids,
-                                CHAMP_CUUIDS_SUPPRIMES: cuuids_supprimes,
+                                CHAMP_CUUIDS_SUPPRIMES_INDIRECT: cuuids_supprimes,
                             },
                             "$currentDate": { CHAMP_MODIFICATION: true },
                         };
@@ -1302,6 +1305,218 @@ async fn transaction_recuperer_documents<M, T>(middleware: &M, transaction: T) -
     }
 
     middleware.reponse_ok()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionRecupererDocumentsV2 {
+    /// Items a recuperer par { cuuid: [tuuid, ...] }
+    pub items: HashMap<String, Option<Vec<String>>>
+}
+
+async fn recuperer_parents<M,C,U>(middleware: &M, user_id: U, tuuid: C) -> Result<(), Box<dyn Error>>
+    where M: MongoDao, C: AsRef<str>, U: AsRef<str>
+{
+    let tuuid = tuuid.as_ref();
+    let filtre = doc!{ CHAMP_TUUID: tuuid, CHAMP_USER_ID: user_id.as_ref() };
+    let collection = middleware.get_collection_typed::<FichierDetail>(NOM_COLLECTION_FICHIERS_REP)?;
+    let repertoire = match collection.find_one(filtre, None).await? {
+        Some(inner) => inner,
+        None => Err(format!("recuperer_parents Tuuid inconnu {}", tuuid))?
+    };
+
+    let type_node = match repertoire.type_node {
+        Some(inner) => TypeNode::try_from(inner.as_str())?,
+        None => Err(format!("recuperer_parents Node sans information de type {}", tuuid))?
+    };
+
+    let cuuids = match type_node {
+        TypeNode::Fichier => Err(format!("recuperer_parents Node {} de type Fichier, invalide pour reactiver parents", tuuid))?,
+        TypeNode::Collection => {
+            // Ok, aucuns parents a reactiver
+            vec![tuuid.to_owned()]
+        },
+        TypeNode::Repertoire => {
+            match repertoire.path_cuuids {
+                Some(mut inner) => {
+                    inner.push(tuuid.to_owned());  // Ajouter le repertoire lui-meme
+                    inner
+                },
+                None => Err(format!("recuperer_parents Node {} est un Repertoire sans path_cuuids, invalide pour reactiver parents", tuuid))?,
+            }
+        }
+    };
+
+    let filtre = doc! { CHAMP_TUUID: {"$in": cuuids} };
+    let ops = doc! {
+        "$set": {
+            CHAMP_SUPPRIME: false,
+            CHAMP_SUPPRIME_INDIRECT: false,
+        },
+        "$currentDate": { CHAMP_MODIFICATION: true }
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    collection.update_many(filtre, ops, None).await?;
+
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RowRecupererFichierDb {
+    tuuid: String,
+    cuuid: Option<String>,
+    cuuids_supprimes: Option<Vec<String>>,
+    cuuids_supprimes_indirect: Option<Vec<String>>,
+    type_node: String,
+    supprime: bool,
+    supprime_indirect: Option<bool>,
+}
+
+/// Recupere les sous-repertoires et leurs fichiers
+/// Va ignorer les repertoires qui n'ont pas le flag supprime_indirect: true et
+async fn recuperer_sous_repertoires<M,C,U>(middleware: &M, user_id: U, cuuid: C) -> Result<(), Box<dyn Error>>
+    where M: MongoDao, C: AsRef<str>, U: AsRef<str>
+{
+    let user_id = user_id.as_ref();
+    let cuuid = cuuid.as_ref();
+
+    let mut tuuids_restants = Vec::new();
+    let collection = middleware.get_collection_typed::<RowRecupererFichierDb>(
+        NOM_COLLECTION_FICHIERS_REP)?;
+
+    {
+        // Chargement du repertoire initial
+        let filtre = doc! { CHAMP_TUUID: cuuid, CHAMP_USER_ID: user_id };
+        if let Some(row_initial) = collection.find_one(filtre, None).await? {
+            tuuids_restants.push(row_initial);
+        }
+    }
+
+    loop {
+        let row = match tuuids_restants.pop() {
+            Some(inner) => inner,
+            None => { break }  // Termine
+        };
+        let type_node = TypeNode::try_from(row.type_node.as_str())?;
+        match type_node {
+            TypeNode::Fichier => {
+                todo!("fix me");
+            },
+            TypeNode::Collection | TypeNode::Repertoire => {
+                if let Some(true) = row.supprime_indirect {
+                    debug!("Recuperer sous-reptoire supprime indirectement : {}", row.tuuid);
+                    let filtre = doc!{ CHAMP_TUUID: &row.tuuid, CHAMP_USER_ID: user_id };
+                    let ops = doc! {
+                        "$set": { CHAMP_SUPPRIME: true, CHAMP_SUPPRIME_INDIRECT: false },
+                        "$currentDate": { CHAMP_MODIFICATION: true }
+                    };
+                    collection.update_one(filtre, ops, None).await?;
+
+                    // Ajouter fichiers et sous-repertoires a la liste de fichiers a restaurer
+                    let filtre = doc!{
+                        CHAMP_USER_ID: user_id,
+                        "$or": [
+                            {CHAMP_CUUIDS_SUPPRIMES: &row.tuuid},
+                            {CHAMP_CUUID: &row.tuuid, CHAMP_SUPPRIME_INDIRECT: true},
+                        ],
+                    };
+                    let options = FindOptions::builder()
+                        .projection(doc!{
+                            CHAMP_TUUID: true, CHAMP_CUUID: true,
+                            CHAMP_CUUIDS_SUPPRIMES: true, CHAMP_CUUIDS_SUPPRIMES_INDIRECT: true,
+                            CHAMP_TYPE_NODE: true, CHAMP_SUPPRIME: true, CHAMP_SUPPRIME_INDIRECT: true,
+                        })
+                        .build();
+                    let mut curseur = collection.find(filtre, options).await?;
+                    while curseur.advance().await? {
+                        let sous_item = curseur.deserialize_current()?;
+                        tuuids_restants.push(sous_item);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_params: Option<Vec<T>>) -> Result<(), Box<dyn Error>>
+    where
+        M: MongoDao,
+        T: AsRef<str>,
+        C: AsRef<str>,
+        U: AsRef<str>
+{
+    let user_id = user_id.as_ref();
+    let cuuid = cuuid.as_ref();
+    let tuuids: Vec<&str> = match &tuuids_params {
+        Some(inner) => inner.iter().map(|c| c.as_ref()).collect(),
+        None => vec![cuuid]  // Recuperer une collection
+    };
+
+    debug!("recuperer_tuuids Recuperer tuuids {:?} sous cuuid {:?}", tuuids, cuuid);
+
+    let mut curseur = {
+        let filtre = doc! { CHAMP_TUUID: {"$in": tuuids}, CHAMP_USER_ID: user_id };
+        let collection_nodes = middleware.get_collection_typed::<NodeFichiersRepBorrow>(NOM_COLLECTION_FICHIERS_REP)?;
+        collection_nodes.find(filtre, None).await?
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    while curseur.advance().await? {
+        let row = curseur.deserialize_current()?;
+        let type_node = TypeNode::try_from(row.type_node)?;
+        match type_node {
+            TypeNode::Fichier => {
+                // Recuperer le fichier nomme directement (peu importe son etat)
+                let filtre = doc!{ CHAMP_TUUID: row.tuuid, CHAMP_USER_ID: user_id };
+                let ops = doc! {
+                    "$set": { CHAMP_SUPPRIME: false },
+                    "$pull": { CHAMP_CUUIDS_SUPPRIMES: cuuid, CHAMP_CUUIDS_SUPPRIMES_INDIRECT: cuuid },
+                    "$addToSet": { CHAMP_CUUIDS: cuuid },
+                    "$currentDate": { CHAMP_MODIFICATION: true },
+                };
+                collection.update_one(filtre, ops, None).await?;
+            },
+            TypeNode::Repertoire | TypeNode::Collection => {
+                recuperer_sous_repertoires(middleware, user_id, row.tuuid).await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn transaction_recuperer_documents_v2<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_recuperer_documents_v2 Consommer transaction : {:?}", &transaction);
+    let user_id = match transaction.get_enveloppe_certificat() {
+        Some(c) => c.get_user_id()?.clone().expect("get_user_id NONE"),
+        None => Err(format!("grosfichiers.transaction_recuperer_documents_v2 Erreur user_id absent du certificat"))?
+    };
+
+    let transaction: TransactionRecupererDocumentsV2 = match transaction.clone().convertir() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_recuperer_documents_v2 Erreur conversion transaction : {:?}", e))?
+    };
+
+    for (cuuid, paths) in transaction.items {
+        // Recuperer le cuuid (parent) jusqu'a la racine au besoin
+        debug!("transaction_recuperer_documents_v2 Recuperer cuuid {} et parents", cuuid);
+        if let Err(e) = recuperer_parents(middleware, &user_id, &cuuid).await {
+            Err(format!("grosfichiers.transaction_recuperer_documents_v2 Erreur recuperer_parents : {:?}", e))?
+        }
+
+        // Reactiver les fichiers avec le cuuid courant sous cuuids_supprimes.
+        debug!("transaction_recuperer_documents_v2 Recuperer tuuids {:?} sous cuuid {}", paths, cuuid);
+        if let Err(e) = recuperer_tuuids(middleware, &user_id, cuuid, paths).await {
+            Err(format!("grosfichiers.transaction_recuperer_documents_v2 Erreur recuperer_tuuids : {:?}", e))?
+        }
+    }
+
+    Ok(middleware.reponse_ok()?)
 }
 
 async fn transaction_archiver_documents<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
