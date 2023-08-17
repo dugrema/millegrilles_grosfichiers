@@ -45,16 +45,16 @@ where
         TRANSACTION_NOUVELLE_COLLECTION |
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION |
         TRANSACTION_DEPLACER_FICHIERS_COLLECTION |
-        TRANSACTION_RETIRER_DOCUMENTS_COLLECTION |
+        // TRANSACTION_RETIRER_DOCUMENTS_COLLECTION |
         TRANSACTION_SUPPRIMER_DOCUMENTS |
         TRANSACTION_RECUPERER_DOCUMENTS |
         TRANSACTION_RECUPERER_DOCUMENTS_V2 |
         TRANSACTION_ARCHIVER_DOCUMENTS |
-        TRANSACTION_CHANGER_FAVORIS |
+        // TRANSACTION_CHANGER_FAVORIS |
         TRANSACTION_DECRIRE_FICHIER |
         TRANSACTION_DECRIRE_COLLECTION |
         TRANSACTION_COPIER_FICHIER_TIERS |
-        TRANSACTION_FAVORIS_CREERPATH |
+        // TRANSACTION_FAVORIS_CREERPATH |
         TRANSACTION_SUPPRIMER_VIDEO |
         TRANSACTION_ASSOCIER_CONVERSIONS |
         TRANSACTION_ASSOCIER_VIDEO |
@@ -87,18 +87,18 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_NOUVELLE_COLLECTION => transaction_nouvelle_collection(middleware, transaction).await,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION => transaction_ajouter_fichiers_collection(middleware, transaction).await,
         TRANSACTION_DEPLACER_FICHIERS_COLLECTION => transaction_deplacer_fichiers_collection(middleware, transaction).await,
-        TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => transaction_retirer_documents_collection(middleware, transaction).await,
+        // TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => transaction_retirer_documents_collection(middleware, transaction).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, transaction).await,
         TRANSACTION_RECUPERER_DOCUMENTS => transaction_recuperer_documents(middleware, transaction).await,
         TRANSACTION_RECUPERER_DOCUMENTS_V2 => transaction_recuperer_documents_v2(middleware, transaction).await,
         TRANSACTION_ARCHIVER_DOCUMENTS => transaction_archiver_documents(middleware, transaction).await,
-        TRANSACTION_CHANGER_FAVORIS => transaction_changer_favoris(middleware, transaction).await,
+        // TRANSACTION_CHANGER_FAVORIS => transaction_changer_favoris(middleware, transaction).await,
         TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, gestionnaire, transaction).await,
         TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, gestionnaire, transaction).await,
         TRANSACTION_DECRIRE_FICHIER => transaction_decire_fichier(middleware, gestionnaire, transaction).await,
         TRANSACTION_DECRIRE_COLLECTION => transaction_decire_collection(middleware, transaction).await,
         TRANSACTION_COPIER_FICHIER_TIERS => transaction_copier_fichier_tiers(gestionnaire, middleware, transaction).await,
-        TRANSACTION_FAVORIS_CREERPATH => transaction_favoris_creerpath(middleware, transaction).await,
+        // TRANSACTION_FAVORIS_CREERPATH => transaction_favoris_creerpath(middleware, transaction).await,
         TRANSACTION_SUPPRIMER_VIDEO => transaction_supprimer_video(middleware, transaction).await,
         TRANSACTION_IMAGE_SUPPRIMER_JOB => transaction_supprimer_job_image(middleware, gestionnaire, transaction).await,
         TRANSACTION_VIDEO_SUPPRIMER_JOB => transaction_supprimer_job_video(middleware, gestionnaire, transaction).await,
