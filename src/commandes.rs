@@ -316,6 +316,7 @@ impl InformationAutorisation {
     }
 }
 
+/// Verifie si l'usager a acces aux tuuids (et cuuid au besoin)
 async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuids: Option<&Vec<U>>, cuuid: Option<T>)
     -> Result<InformationAutorisation, Box<dyn Error>>
     where
@@ -357,7 +358,10 @@ async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuid
         tuuids_set.extend(&tuuids_vec);
 
         let options = FindOptions::builder()
-            .projection(doc!{CHAMP_TUUID: true, CHAMP_USER_ID: true, CHAMP_TYPE_NODE: true, CHAMP_SUPPRIME: true, CHAMP_FUUIDS_RECLAMES: true})
+            .projection(doc!{
+                CHAMP_TUUID: true, CHAMP_USER_ID: true, CHAMP_TYPE_NODE: true, CHAMP_SUPPRIME: true,
+                CHAMP_FUUIDS_VERSIONS: true
+            })
             .build();
         let collection_row_fichiers = middleware.get_collection_typed::<NodeFichiersRepBorrow>(
             NOM_COLLECTION_FICHIERS_REP)?;
@@ -369,7 +373,7 @@ async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuid
             match type_node {
                 TypeNode::Fichier => {
                     reponse.tuuids_fichiers.push(row.tuuid.to_owned());
-                    if let Some(fuuids) = row.fuuids_reclames {
+                    if let Some(fuuids) = row.fuuids_versions {
                         reponse.fuuids.extend(fuuids.into_iter().map(|c| c.to_owned()));
                     }
                 },

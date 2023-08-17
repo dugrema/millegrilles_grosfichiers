@@ -110,6 +110,7 @@ pub const EVENEMENT_ANNULER_JOB_VIDEO: &str = "annulerJobVideo";
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 pub const CHAMP_FUUIDS: &str = "fuuids";
 pub const CHAMP_FUUIDS_RECLAMES: &str = "fuuids_reclames";
+pub const CHAMP_FUUIDS_VERSIONS: &str = "fuuids_versions";
 pub const CHAMP_TUUID: &str = "tuuid";  // UUID transaction initiale (fichier ou collection)
 pub const CHAMP_TUUIDS: &str = "tuuids";
 pub const CHAMP_CUUID: &str = "cuuid";  // UUID collection de tuuids
@@ -531,23 +532,26 @@ pub struct CommandeIndexationGetJob {
 pub struct NodeFichiersRepBorrow<'a> {
     #[serde(borrow)]
     pub tuuid: &'a str,
-    #[serde(borrow)]
-    pub cuuid: Option<&'a str>,
-    #[serde(borrow)]
-    pub cuuids: Option<Vec<&'a str>>,
+    // #[serde(borrow)]
+    // pub cuuid: Option<&'a str>,
+    // #[serde(borrow)]
+    // pub cuuids: Option<Vec<&'a str>>,
     #[serde(borrow)]
     pub user_id: &'a str,
     #[serde(borrow)]
     pub type_node: &'a str,
     #[serde(borrow)]
     pub path_cuuids: Option<Vec<&'a str>>,
-    #[serde(borrow)]
-    pub map_path_cuuids: Option<HashMap<&'a str, Vec<&'a str>>>,
-    #[serde(borrow)]
-    pub cuuids_supprimes: Option<Vec<&'a str>>,
-    #[serde(borrow)]
-    pub cuuids_supprimes_indirect: Option<Vec<&'a str>>,
+    // #[serde(borrow)]
+    // pub map_path_cuuids: Option<HashMap<&'a str, Vec<&'a str>>>,
+    // #[serde(borrow)]
+    // pub cuuids_supprimes: Option<Vec<&'a str>>,
+    // #[serde(borrow)]
+    // pub cuuids_supprimes_indirect: Option<Vec<&'a str>>,
     pub supprime: bool,
+    pub supprime_indirect: bool,
+    // #[serde(borrow)]
+    // pub fuuids_reclames: Option<Vec<&'a str>>,
     #[serde(borrow)]
-    pub fuuids_reclames: Option<Vec<&'a str>>,
+    pub fuuids_versions: Option<Vec<&'a str>>,
 }
