@@ -324,33 +324,50 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
     where M: MongoDao + ConfigMessages
 {
     // Index fuuids pour fichiers (liste par tuuid)
-    let options_unique_fuuid = IndexOptions {
-        nom_index: Some(format!("fichiers_fuuid")),
+    let options_unique_fuuids_versions = IndexOptions {
+        nom_index: Some(format!("fuuids_versions_user_id")),
         unique: false
     };
-    let champs_index_fuuid = vec!(
-        ChampIndex {nom_champ: String::from("fuuids"), direction: 1},
+    let champs_index_fuuids_version = vec!(
+        ChampIndex {nom_champ: String::from("fuuids_versions"), direction: 1},
+        ChampIndex {nom_champ: String::from("user_id"), direction: 1},
     );
     middleware.create_index(
         middleware,
         NOM_COLLECTION_FICHIERS_REP,
-        champs_index_fuuid,
-        Some(options_unique_fuuid)
+        champs_index_fuuids_version,
+        Some(options_unique_fuuids_versions)
     ).await?;
 
     // Index cuuids pour collections de fichiers (liste par cuuid)
     let options_unique_cuuid = IndexOptions {
-        nom_index: Some(format!("fichiers_cuuid")),
+        nom_index: Some(format!("path_cuuids")),
         unique: false
     };
     let champs_index_cuuid = vec!(
-        ChampIndex {nom_champ: String::from("cuuids"), direction: 1},
+        ChampIndex {nom_champ: String::from("path_cuuids"), direction: 1},
     );
     middleware.create_index(
         middleware,
         NOM_COLLECTION_FICHIERS_REP,
         champs_index_cuuid,
         Some(options_unique_cuuid)
+    ).await?;
+
+    // Index user_id_type_node pour collections de fichiers (liste par cuuid)
+    let options_user_id_type_node = IndexOptions {
+        nom_index: Some(format!("user_id_type_node")),
+        unique: false
+    };
+    let champs_index_user_id_type_node = vec!(
+        ChampIndex {nom_champ: String::from("user_id"), direction: 1},
+        ChampIndex {nom_champ: String::from("type_node"), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_FICHIERS_REP,
+        champs_index_user_id_type_node,
+        Some(options_user_id_type_node)
     ).await?;
 
     // tuuids (serie de fichiers)
@@ -416,6 +433,23 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         champs_index_versions_fuuid,
         Some(options_unique_versions_fuuid)
     ).await?;
+
+    // Index fuuid/user_id pour versions
+    let options_unique_fuuid_user_id = IndexOptions {
+        nom_index: Some(format!("fuuid_user_id")),
+        unique: true
+    };
+    let champs_index_fuuid_user_id = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_USER_ID), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_FUUID), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_VERSIONS,
+        champs_index_fuuid_user_id,
+        Some(options_unique_fuuid_user_id)
+    ).await?;
+
     // Index fuuids pour fichiers (liste par fsuuid)
     let options_unique_fuuid = IndexOptions {
         nom_index: Some(format!("Versions_fuuids")),

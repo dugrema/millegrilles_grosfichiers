@@ -356,7 +356,7 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
             match type_node {
                 TypeNode::Fichier => {
                     // Conserver le fichier separement pour requete sur versions
-                    let fuuid = match row.fuuids_versions.as_ref() {
+                    let fuuid: Option<&String> = match row.fuuids_versions.as_ref() {
                         Some(inner) => inner.get(0),
                         None => None
                     };
@@ -375,10 +375,13 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
 
     // Recuperer l'information de versions de tous les fichiers
     let fuuids_fichiers: Vec<&str> = map_fichiers_par_fuuid.keys().map(|s| s.as_str()).collect();
-    let filtre = doc! { CHAMP_FUUID: {"$in": fuuids_fichiers}, CHAMP_USER_ID: &user_id };
+    let filtre = doc! { CHAMP_USER_ID: &user_id, CHAMP_FUUID: {"$in": fuuids_fichiers} };
+    let options = FindOptions::builder()
+        .hint(Hint::Name(String::from("fuuid_user_id")))
+        .build();
     let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(
         NOM_COLLECTION_VERSIONS)?;
-    let mut curseur = collection_versions.find(filtre, None).await?;
+    let mut curseur = collection_versions.find(filtre, options).await?;
     while let Some(r) = curseur.next().await {
         let row = r?;
         match map_fichiers_par_fuuid.remove(row.fuuid.as_str()) {
@@ -392,11 +395,6 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
         }
     }
 
-    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    // let curseur = collection.find(filtre, None).await?;
-    // let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
-
-    // let reponse = json!({ "fichiers":  fichiers_mappes });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
@@ -407,6 +405,8 @@ async fn requete_documents_par_fuuid<M>(middleware: &M, m: MessageValideAction, 
     debug!("requete_documents_par_fuuid Message : {:?}", & m.message);
     let requete: RequeteDocumentsParFuuids = m.message.get_msg().map_contenu()?;
     debug!("requete_documents_par_fuuid cle parsed : {:?}", requete);
+
+    todo!("requete_documents_par_fuuid fixme");
 
     let user_id = m.get_user_id();
     let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
@@ -468,6 +468,8 @@ async fn requete_contenu_collection<M>(middleware: &M, m: MessageValideAction, g
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
+    todo!("requete_contenu_collection Fix me");
+
     debug!("requete_contenu_collection Message : {:?}", & m.message);
     let requete: RequeteContenuCollection = m.message.get_msg().map_contenu()?;
     debug!("requete_contenu_collection cle parsed : {:?}", requete);

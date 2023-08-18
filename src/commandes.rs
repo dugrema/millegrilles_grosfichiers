@@ -160,12 +160,12 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValideAction
                 }
             },
             None => {
-                error!("Cle de nouvelle collection manquante (1)");
+                error!("Cle de nouvelle version manquante (1)");
                 return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cle manquante"}), None)?));
             }
         },
         None => {
-            error!("Cle de nouvelle collection manquante (2)");
+            error!("Cle de nouvelle version manquante (2)");
             return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cle manquante"}), None)?));
         }
     }
