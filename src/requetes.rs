@@ -1577,14 +1577,16 @@ async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValideAction, gestionn
 async fn find_sync_fichiers<M>(middleware: &M, filtre: Document, opts: FindOptions) -> Result<Vec<FichierSync>, Box<dyn Error>>
     where M: MongoDao
 {
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection = middleware.get_collection_typed::<FichierSync>(NOM_COLLECTION_FICHIERS_REP)?;
 
     let mut curseur = collection.find(filtre, opts).await?;
     let mut fichiers_confirmation = Vec::new();
-    while let Some(d) = curseur.next().await {
-        let mut record: FichierSync = convertir_bson_deserializable(d?)?;
-        record.derniere_modification = Some(DateEpochSeconds::from(record.map_derniere_modification.clone()));
-        fichiers_confirmation.push(record);
+    // while let Some(d) = curseur.next().await {
+    while curseur.advance().await? {
+        let mut row = curseur.deserialize_current()?;
+        // let mut record: FichierSync = convertir_bson_deserializable(d?)?;
+        row.derniere_modification = Some(DateEpochSeconds::from(row.map_derniere_modification.clone()));
+        fichiers_confirmation.push(row);
     }
 
     Ok(fichiers_confirmation)

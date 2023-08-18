@@ -359,7 +359,8 @@ async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuid
 
         let options = FindOptions::builder()
             .projection(doc!{
-                CHAMP_TUUID: true, CHAMP_USER_ID: true, CHAMP_TYPE_NODE: true, CHAMP_SUPPRIME: true,
+                CHAMP_TUUID: true, CHAMP_USER_ID: true, CHAMP_TYPE_NODE: true,
+                CHAMP_SUPPRIME: true, CHAMP_SUPPRIME_INDIRECT: true,
                 CHAMP_FUUIDS_VERSIONS: true
             })
             .build();

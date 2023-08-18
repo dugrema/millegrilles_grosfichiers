@@ -594,7 +594,7 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
     Ok(())
 }
 
-pub async fn emettre_evenement_maj_fichier<M, S, T>(middleware: &M, tuuid: S, action: T) -> Result<(), String>
+pub async fn emettre_evenement_maj_fichier<M, S, T>(middleware: &M, tuuid: S, action: T) -> Result<(), Box<dyn Error>>
 where
     M: GenerateurMessages + MongoDao,
     S: AsRef<str>,
@@ -606,33 +606,59 @@ where
 
     // Charger fichier
     let filtre = doc! {CHAMP_TUUID: tuuid_str};
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let doc_fichier: FichierDetail = match collection.find_one(filtre, None).await {
-        Ok(inner) => match inner {
-            Some(d) => FichierDetail::try_from(d)?,
-            None => Err(format!("grosfichiers.emettre_evenement_maj_fichier Document {} introuvable", tuuid_str))?
-        },
-        Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_fichier Erreur collection.find_one pour {} : {:?}", tuuid_str, e))?
-    };
+    let collection = middleware.get_collection_typed::<NodeFichiersRepBorrow>(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut curseur = collection.find(filtre, None).await?;
+    if curseur.advance().await? {
+        let doc_fichier = curseur.deserialize_current()?;
+
+        // Extraire liste de fuuids directement
+        if let Some(fuuids) = doc_fichier.fuuids_versions.as_ref() {
+            if let Some(fuuid) = fuuids.first() {
+                let routage_action = RoutageMessageAction::builder(DOMAINE_NOM, action_str)
+                    .exchanges(vec![Securite::L2Prive])
+                    .build();
+                middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: vec![*fuuid]})).await?;
+            }
+        }
+
+        if let Some(cuuids) = doc_fichier.path_cuuids.as_ref() {
+            if let Some(cuuid) = cuuids.first() {
+                let mut evenement = EvenementContenuCollection::new();
+                evenement.cuuid = Some((*cuuid).to_owned());
+                evenement.fichiers_modifies = Some(vec![tuuid_str.to_owned()]);
+                emettre_evenement_contenu_collection(middleware, evenement).await?;
+            }
+        }
+
+    } else {
+        Err(format!("grosfichiers.emettre_evenement_maj_fichier Document {} introuvable", tuuid_str))?
+    }
+    // let doc_fichier: FichierDetail = match collection.find_one(filtre, None).await {
+    //     Ok(inner) => match inner {
+    //         Some(d) => FichierDetail::try_from(d)?,
+    //         None => Err(format!("grosfichiers.emettre_evenement_maj_fichier Document {} introuvable", tuuid_str))?
+    //     },
+    //     Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_fichier Erreur collection.find_one pour {} : {:?}", tuuid_str, e))?
+    // };
 
     // Extraire liste de fuuids directement
-    let routage_action = RoutageMessageAction::builder(DOMAINE_NOM, action_str)
-        .exchanges(vec![Securite::L2Prive])
-        .build();
-    middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: vec![&doc_fichier.fuuid_v_courante]})).await?;
+    // let routage_action = RoutageMessageAction::builder(DOMAINE_NOM, action_str)
+    //     .exchanges(vec![Securite::L2Prive])
+    //     .build();
+    // middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: vec![&doc_fichier.fuuid_v_courante]})).await?;
 
     // let fichier_mappe = match mapper_fichier_db(inner) {
     //     Ok(inner) => inner,
     //     Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_fichier Erreur mapper_fichier_db : {:?}", e))?
     // };
-    if let Some(cuuids) = doc_fichier.cuuids {
-        for cuuid in cuuids {
-            let mut evenement = EvenementContenuCollection::new();
-            evenement.cuuid = Some(cuuid);
-            evenement.fichiers_modifies = Some(vec![tuuid_str.to_owned()]);
-            emettre_evenement_contenu_collection(middleware, evenement).await?
-        }
-    }
+    // if let Some(cuuids) = doc_fichier.cuuids {
+    //     for cuuid in cuuids {
+    //         let mut evenement = EvenementContenuCollection::new();
+    //         evenement.cuuid = Some(cuuid);
+    //         evenement.fichiers_modifies = Some(vec![tuuid_str.to_owned()]);
+    //         emettre_evenement_contenu_collection(middleware, evenement).await?
+    //     }
+    // }
 
     Ok(())
 }

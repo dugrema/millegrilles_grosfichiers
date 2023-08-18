@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::convert::TryInto;
@@ -725,7 +726,9 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         // }
 
         // Emettre fichier pour que tous les clients recoivent la mise a jour
-        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await {
+            warn!("transaction_nouvelle_version Erreur emettre_evenement_maj_fichier : {:?}", e);
+        }
 
         // if let Some(cuuid) = cuuid.as_ref() {
             let mut evenement_contenu = EvenementContenuCollection::new();
@@ -1057,7 +1060,9 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, transacti
 
     for tuuid in &transaction_collection.inclure_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
-        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION).await?;
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION).await {
+            warn!("transaction_ajouter_fichiers_collection Erreur emettre_evenement_maj_fichier : {:?}", e)
+        }
     }
 
     {
@@ -1314,7 +1319,9 @@ async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, transact
 
     for tuuid in &transaction_collection.inclure_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
-        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_DEPLACER_FICHIER_COLLECTION).await?;
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_DEPLACER_FICHIER_COLLECTION).await {
+            warn!("transaction_nouvelle_version Erreur emettre_evenement_maj_fichier : {:?}", e);
+        }
     }
 
     {
@@ -1367,7 +1374,9 @@ async fn transaction_retirer_documents_collection<M, T>(middleware: &M, transact
 
     for tuuid in &transaction_collection.retirer_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
-        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_RETIRER_COLLECTION).await?;
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_RETIRER_COLLECTION).await {
+            warn!("transaction_retirer_documents_collection Erreur emettre_evenement_maj_fichier : {:?}", e);
+        }
     }
 
     {
@@ -1702,7 +1711,9 @@ async fn transaction_recuperer_documents<M, T>(middleware: &M, transaction: T) -
 
     for tuuid in &transaction_collection.tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
-        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_RECUPERER).await?;
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_RECUPERER).await {
+            warn!("transaction_recuperer_documents Erreur emettre_evenement_maj_fichier : {:?}", e);
+        }
     }
 
     middleware.reponse_ok()
@@ -1901,7 +1912,9 @@ async fn transaction_archiver_documents<M, T>(middleware: &M, transaction: T) ->
 
     for tuuid in &transaction_collection.tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
-        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_ARCHIVER).await?;
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_ARCHIVER).await {
+            warn!("transaction_archiver_documents Erreur emettre_evenement_maj_fichier : {:?}", e);
+        }
     }
 
     middleware.reponse_ok()
@@ -1970,6 +1983,38 @@ async fn transaction_changer_favoris<M, T>(middleware: &M, transaction: T) -> Re
     }
 
     middleware.reponse_ok()
+}
+
+/// Fait un touch sur les fichiers_rep identifies. User_id optionnel (e.g. pour ops systeme comme visites)
+async fn touch_fichiers_rep<M,U,S,V>(middleware: &M, user_id: Option<U>, fuuids_in: V) -> Result<(), Box<dyn Error>>
+    where
+        M: GenerateurMessages + MongoDao,
+        U: AsRef<str>,
+        S: AsRef<str>,
+        V: Borrow<Vec<S>>,
+{
+    let fuuids_in = fuuids_in.borrow();
+    let fuuids: Vec<&str> = fuuids_in.iter().map(|s| s.as_ref()).collect();
+
+    let filtre = match user_id {
+        Some(user_id) => {
+            doc! {
+                CHAMP_USER_ID: user_id.as_ref(),
+                CHAMP_FUUIDS_VERSIONS: {"$in": fuuids},
+            }
+        },
+        None => {
+            doc! { CHAMP_FUUIDS_VERSIONS: {"$in": fuuids } }
+        }
+    };
+
+    let ops = doc! {
+        "$currentDate": { CHAMP_MODIFICATION: true }
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    collection.update_many(filtre, ops, None).await?;
+
+    Ok(())
 }
 
 async fn transaction_associer_conversions<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
@@ -2069,68 +2114,74 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, gestionnaire: &G
         }
 
         if let Err(e) = gestionnaire.image_job_handler.set_flag(middleware, fuuid, user_id, None, true).await {
-            error!("Erreur set flag true pour traitement job images {:?}/{} : {:?}", user_id, fuuid, e);
+            error!("transaction_associer_conversions Erreur set flag true pour traitement job images {:?}/{} : {:?}", user_id, fuuid, e);
         }
     }
 
     // S'assurer d'appliquer le fitre sur la version courante
     {
-        let filtre = doc! {
-            CHAMP_TUUID: &transaction_mappee.tuuid,
-            CHAMP_FUUID_V_COURANTE: &transaction_mappee.fuuid,
-        };
+        if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), &fuuids).await {
+            error!("transaction_associer_conversions Erreur touch_fichiers_rep {:?}/{} : {:?}", user_id, fuuid, e);
+        }
 
-        let mut set_ops = doc! {};
-
-        // Inserer images par cle dans set_ops
-        for (k, v) in doc_images {
-            let cle_image = format!("version_courante.images.{}", k);
-            set_ops.insert(cle_image, v);
-        };
-
-        if let Some(inner) = &transaction_mappee.anime {
-            set_ops.insert("version_courante.anime", inner);
-        }
-        if let Some(inner) = &transaction_mappee.mimetype {
-            set_ops.insert("mimetype", inner);
-            set_ops.insert("version_courante.mimetype", inner);
-        }
-        if let Some(inner) = &transaction_mappee.width {
-            set_ops.insert("version_courante.width", inner);
-        }
-        if let Some(inner) = &transaction_mappee.height {
-            set_ops.insert("version_courante.height", inner);
-        }
-        if let Some(inner) = transaction_mappee.video_codec.as_ref() {
-            set_ops.insert("version_courante.videoCodec", inner);
-        }
-        if let Some(inner) = transaction_mappee.duration.as_ref() {
-            set_ops.insert("version_courante.duration", inner);
-        }
-        // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
-        //     set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
+        // let filtre = doc! {
+        //     CHAMP_TUUID: &transaction_mappee.tuuid,
+        //     CHAMP_FUUID_V_COURANTE: &transaction_mappee.fuuid,
+        // };
+        //
+        // let mut set_ops = doc! {};
+        //
+        // // Inserer images par cle dans set_ops
+        // for (k, v) in doc_images {
+        //     let cle_image = format!("version_courante.images.{}", k);
+        //     set_ops.insert(cle_image, v);
+        // };
+        //
+        // if let Some(inner) = &transaction_mappee.anime {
+        //     set_ops.insert("version_courante.anime", inner);
         // }
-
-        // Combiner les fuuids hors de l'info de version
-        let add_to_set = doc! {
-            CHAMP_FUUIDS: {"$each": &fuuids},
-            CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids_reclames},
-        };
-
-        let ops = doc! {
-            "$set": set_ops,
-            "$addToSet": add_to_set,
-            "$currentDate": { CHAMP_MODIFICATION: true }
-        };
-        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-        match collection.update_one(filtre, ops, None).await {
-            Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
-            Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
-        }
+        // if let Some(inner) = &transaction_mappee.mimetype {
+        //     set_ops.insert("mimetype", inner);
+        //     set_ops.insert("version_courante.mimetype", inner);
+        // }
+        // if let Some(inner) = &transaction_mappee.width {
+        //     set_ops.insert("version_courante.width", inner);
+        // }
+        // if let Some(inner) = &transaction_mappee.height {
+        //     set_ops.insert("version_courante.height", inner);
+        // }
+        // if let Some(inner) = transaction_mappee.video_codec.as_ref() {
+        //     set_ops.insert("version_courante.videoCodec", inner);
+        // }
+        // if let Some(inner) = transaction_mappee.duration.as_ref() {
+        //     set_ops.insert("version_courante.duration", inner);
+        // }
+        // // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
+        // //     set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
+        // // }
+        //
+        // // Combiner les fuuids hors de l'info de version
+        // let add_to_set = doc! {
+        //     CHAMP_FUUIDS: {"$each": &fuuids},
+        //     CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids_reclames},
+        // };
+        //
+        // let ops = doc! {
+        //     "$set": set_ops,
+        //     "$addToSet": add_to_set,
+        //     "$currentDate": { CHAMP_MODIFICATION: true }
+        // };
+        // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+        // match collection.update_one(filtre, ops, None).await {
+        //     Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
+        //     Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
+        // }
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION).await?;
+    if let Err(e) = emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION).await {
+        warn!("transaction_associer_conversions Erreur emettre_evenement_maj_fichier : {:?}", e);
+    }
 
     middleware.reponse_ok()
 }
@@ -2337,7 +2388,9 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
     //if let Some(t) = tuuid.as_ref() {
-        emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO).await?;
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
+            warn!("transaction_associer_video Erreur emettre_evenement_maj_fichier : {:?}", e);
+        }
     //}
 
     middleware.reponse_ok()
@@ -2477,7 +2530,9 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, gestionnaire: &Gestion
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_DECRIRE_FICHIER).await?;
+    if let Err(e) = emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_DECRIRE_FICHIER).await {
+        warn!("transaction_decire_fichier Erreur emettre_evenement_maj_fichier : {:?}", e);
+    }
 
     middleware.reponse_ok()
 }
@@ -2756,7 +2811,9 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_COPIER_FICHIER_TIERS).await?;
+    if let Err(e) = emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_COPIER_FICHIER_TIERS).await {
+        warn!("transaction_copier_fichier_tiers Erreur emettre_evenement_maj_fichier : {:?}", e);
+    }
 
     middleware.reponse_ok()
 }
@@ -3023,7 +3080,9 @@ async fn transaction_supprimer_video<M, T>(middleware: &M, transaction: T) -> Re
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
+    if let Err(e) = emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await {
+        warn!("transaction_favoris_creerpath Erreur emettre_evenement_maj_fichier : {:?}", e);
+    }
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
     match middleware.reponse_ok() {
