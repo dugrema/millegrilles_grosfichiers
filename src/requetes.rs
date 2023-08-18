@@ -244,6 +244,54 @@ struct Favoris {
     // titre: Option<HashMap<String, String>>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct ReponseFichierRepVersion {
+    pub tuuid: String,
+    pub user_id: String,
+    pub type_node: String,
+    pub supprime: bool,
+    pub supprime_indirect: bool,
+    pub metadata: DataChiffre,
+
+    // Champs pour type_node Fichier
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub mimetype: Option<String>,
+    /// Fuuids des versions en ordre (plus recent en dernier)
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub fuuids_versions: Option<Vec<String>>,
+
+    // Champs pour type_node Fichiers/Repertoires
+    /// Path des cuuids parents (inverse, parent immediat est index 0)
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub path_cuuids: Option<Vec<String>>,
+
+    // Champs recuperes a partir de la version courante
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub version_courante: Option<NodeFichierVersionOwned>,
+}
+
+impl From<NodeFichierRepOwned> for ReponseFichierRepVersion {
+    fn from(value: NodeFichierRepOwned) -> Self {
+        Self {
+            tuuid: value.tuuid,
+            user_id: value.user_id,
+            type_node: value.type_node,
+            supprime: value.supprime,
+            supprime_indirect: value.supprime_indirect,
+            metadata: value.metadata,
+            mimetype: value.mimetype,
+            fuuids_versions: value.fuuids_versions,
+            path_cuuids: value.path_cuuids,
+            version_courante: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ReponseDocumentsParTuuid {
+    fichiers: Vec<ReponseFichierRepVersion>
+}
+
 async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
@@ -263,43 +311,92 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
     }
 
     let filtre = if let Some(true) = requete.partage {
-        // Pre-filtrage pour le partage. Charger les tuuids partages avec le user_id.
-        let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_CONTACT)?;
-        let filtre_contacts = doc! ( CHAMP_CONTACT_USER_ID: user_id );
-        let mut contact_ids = Vec::new();
-        let mut curseur = collection.find(filtre_contacts, None).await?;
-        while let Some(r) = curseur.next().await {
-            let row: ContactRow = convertir_bson_deserializable(r?)?;
-            contact_ids.push(row.contact_id);
-        }
-
-        // Trouver les tuuids partages pour les contact_ids
-        let filtre_tuuids = doc! { CHAMP_CONTACT_ID: {"$in": contact_ids}, CHAMP_TUUID: {"$in": &requete.tuuids_documents }};
-        let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
-        let mut curseur = collection.find(filtre_tuuids, None).await?;
-        let mut tuuids = Vec::new();
-        while let Some(r) = curseur.next().await {
-            let row: RowPartagesUsager = convertir_bson_deserializable(r?)?;
-            tuuids.push(row.tuuid);
-        }
-
-        doc! {
-            CHAMP_TUUID: {"$in": tuuids}
-        }
+        todo!("fix me");
+        // // Pre-filtrage pour le partage. Charger les tuuids partages avec le user_id.
+        // let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_CONTACT)?;
+        // let filtre_contacts = doc! ( CHAMP_CONTACT_USER_ID: user_id );
+        // let mut contact_ids = Vec::new();
+        // let mut curseur = collection.find(filtre_contacts, None).await?;
+        // while let Some(r) = curseur.next().await {
+        //     let row: ContactRow = convertir_bson_deserializable(r?)?;
+        //     contact_ids.push(row.contact_id);
+        // }
+        //
+        // // Trouver les tuuids partages pour les contact_ids
+        // let filtre_tuuids = doc! { CHAMP_CONTACT_ID: {"$in": contact_ids}, CHAMP_TUUID: {"$in": &requete.tuuids_documents }};
+        // let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
+        // let mut curseur = collection.find(filtre_tuuids, None).await?;
+        // let mut tuuids = Vec::new();
+        // while let Some(r) = curseur.next().await {
+        //     let row: RowPartagesUsager = convertir_bson_deserializable(r?)?;
+        //     tuuids.push(row.tuuid);
+        // }
+        //
+        // doc! {
+        //     CHAMP_TUUID: {"$in": tuuids}
+        // }
     } else if user_id.is_some() {
         doc! {
             CHAMP_TUUID: {"$in": requete.tuuids_documents},
-            CHAMP_USER_ID: user_id,
+            CHAMP_USER_ID: &user_id,
         }
     } else {
         Err(format!("requetes.requete_documents_par_tuuid Combinaise de parametres de requete non supporte"))?
     };
 
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let curseur = collection.find(filtre, None).await?;
-    let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
+    let collection_typed = middleware.get_collection_typed::<NodeFichierRepOwned>(
+        NOM_COLLECTION_FICHIERS_REP)?;
+    let mut curseur = collection_typed.find(filtre, None).await?;
+    let mut reponse = ReponseDocumentsParTuuid { fichiers: Vec::new() };
+    let mut map_fichiers_par_fuuid: HashMap<String, ReponseFichierRepVersion> = HashMap::new();
+    {
+        while let Some(r) = curseur.next().await {
+            let row = r?;
+            let type_node = TypeNode::try_from(row.type_node.as_str())?;
+            match type_node {
+                TypeNode::Fichier => {
+                    // Conserver le fichier separement pour requete sur versions
+                    let fuuid = match row.fuuids_versions.as_ref() {
+                        Some(inner) => inner.get(0),
+                        None => None
+                    };
+                    if let Some(fuuid) = fuuid {
+                        map_fichiers_par_fuuid.insert(fuuid.clone(), row.into());
+                    } else {
+                        reponse.fichiers.push(row.into());
+                    }
+                },
+                TypeNode::Collection | TypeNode::Repertoire => {
+                    reponse.fichiers.push(row.into());
+                }
+            }
+        }
+    };
 
-    let reponse = json!({ "fichiers":  fichiers_mappes });
+    // Recuperer l'information de versions de tous les fichiers
+    let fuuids_fichiers: Vec<&str> = map_fichiers_par_fuuid.keys().map(|s| s.as_str()).collect();
+    let filtre = doc! { CHAMP_FUUID: {"$in": fuuids_fichiers}, CHAMP_USER_ID: &user_id };
+    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(
+        NOM_COLLECTION_VERSIONS)?;
+    let mut curseur = collection_versions.find(filtre, None).await?;
+    while let Some(r) = curseur.next().await {
+        let row = r?;
+        match map_fichiers_par_fuuid.remove(row.fuuid.as_str()) {
+            Some(mut inner) => {
+                inner.version_courante = Some(row);
+                reponse.fichiers.push(inner);  // Transferer vers la liste de reponses
+            },
+            None => {
+                warn!("requetes.requete_documents_par_tuuid Recu version {} qui ne match aucun element en memoire", row.tuuid);
+            }
+        }
+    }
+
+    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    // let curseur = collection.find(filtre, None).await?;
+    // let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
+
+    // let reponse = json!({ "fichiers":  fichiers_mappes });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
@@ -495,7 +592,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     if let Some(tuuids) = requete.tuuids {
         conditions.push(doc!{"tuuid": {"$in": tuuids}});
     }
-    conditions.push(doc!{"fuuids": {"$in": &requete.fuuids}});
+    conditions.push(doc!{CHAMP_FUUIDS_VERSIONS: {"$in": &requete.fuuids}});
     conditions.push(doc!{"metadata.ref_hachage_bytes": {"$in": &requete.fuuids}});
 
     let mut filtre = match m.get_user_id() {
@@ -531,28 +628,31 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     };
 
     debug!("requete_get_cles_fichiers Filtre : {:?}", filtre);
-    let projection = doc! {"fuuids": true, "tuuid": true, "metadata": true};
+    let projection = doc! { CHAMP_FUUIDS_VERSIONS: true, CHAMP_TUUID: true, CHAMP_METADATA: true };
     let opts = FindOptions::builder().projection(projection).limit(1000).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection = middleware.get_collection_typed::<ResultatDocsPermission>(
+        NOM_COLLECTION_FICHIERS_REP)?;
     let mut curseur = collection.find(filtre, Some(opts)).await?;
 
     let mut hachage_bytes_demandes = HashSet::new();
-    hachage_bytes_demandes.extend(requete.fuuids.iter().map(|f| f.to_string()));
+    hachage_bytes_demandes.extend(requete.fuuids.into_iter());
     let mut hachage_bytes = Vec::new();
-    while let Some(fresult) = curseur.next().await {
-        debug!("requete_get_cles_fichiers document trouve pour permission cle : {:?}", fresult);
-        let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
-        if let Some(fuuids) = doc_mappe.fuuids {
+    while curseur.advance().await? {
+    // while let Some(fresult) = curseur.next().await {
+        let doc_mappe = curseur.deserialize_current()?;
+        debug!("requete_get_cles_fichiers document trouve pour permission cle : {:?}", doc_mappe);
+        // let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
+        if let Some(fuuids) = doc_mappe.fuuids_versions {
             for d in fuuids {
-                if hachage_bytes_demandes.remove(d.as_str()) {
-                    hachage_bytes.push(d);
+                if hachage_bytes_demandes.remove(d) {
+                    hachage_bytes.push(d.to_owned());
                 }
             }
         }
         if let Some(metadata) = doc_mappe.metadata {
             if let Some(ref_hachage_bytes) = metadata.ref_hachage_bytes {
-                if hachage_bytes_demandes.remove(ref_hachage_bytes.as_str()) {
-                    hachage_bytes.push(ref_hachage_bytes);
+                if hachage_bytes_demandes.remove(ref_hachage_bytes) {
+                    hachage_bytes.push(ref_hachage_bytes.to_owned());
                 }
             }
         }
@@ -644,29 +744,33 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gest
         None => Err(format!(""))?
     };
 
+    todo!("Fix me - utiliser table versions");
     debug!("requete_get_cles_stream Filtre : {:?}", filtre);
-    let projection = doc! {"fuuids": true, "tuuid": true, "metadata": true};
+    let projection = doc! { CHAMP_FUUIDS_VERSIONS: true, CHAMP_TUUID: true, CHAMP_METADATA: true };
     let opts = FindOptions::builder().projection(projection).limit(1000).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection = middleware.get_collection_typed::<ResultatDocsPermission>(
+        NOM_COLLECTION_FICHIERS_REP)?;
     let mut curseur = collection.find(filtre, Some(opts)).await?;
 
     let mut hachage_bytes_demandes = HashSet::new();
     hachage_bytes_demandes.extend(requete.fuuids.iter().map(|f| f.to_string()));
     let mut hachage_bytes = Vec::new();
-    while let Some(fresult) = curseur.next().await {
-        debug!("requete_get_cles_stream document trouve pour permission cle : {:?}", fresult);
-        let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
-        if let Some(fuuids) = doc_mappe.fuuids {
+    while curseur.advance().await? {
+    // while let Some(fresult) = curseur.next().await {
+        let doc_mappe = curseur.deserialize_current()?;
+        debug!("requete_get_cles_stream document trouve pour permission cle : {:?}", doc_mappe);
+        // let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
+        if let Some(fuuids) = doc_mappe.fuuids_versions {
             for d in fuuids {
-                if hachage_bytes_demandes.remove(d.as_str()) {
-                    hachage_bytes.push(d);
+                if hachage_bytes_demandes.remove(d) {
+                    hachage_bytes.push(d.to_owned());
                 }
             }
         }
         if let Some(metadata) = doc_mappe.metadata {
             if let Some(ref_hachage_bytes) = metadata.ref_hachage_bytes {
-                if hachage_bytes_demandes.remove(ref_hachage_bytes.as_str()) {
-                    hachage_bytes.push(ref_hachage_bytes);
+                if hachage_bytes_demandes.remove(ref_hachage_bytes) {
+                    hachage_bytes.push(ref_hachage_bytes.to_owned());
                 }
             }
         }
@@ -967,10 +1071,12 @@ struct SortKey {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct ResultatDocsPermission {
-    tuuid: String,
-    fuuids: Option<Vec<String>>,
-    metadata: Option<DataChiffre>,
+struct ResultatDocsPermission<'a> {
+    tuuid: &'a str,
+    #[serde(borrow)]
+    fuuids_versions: Option<Vec<&'a str>>,
+    #[serde(borrow)]
+    metadata: Option<DataChiffreBorrow<'a>>,
 }
 
 async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -1198,21 +1304,22 @@ async fn requete_sync_collection<M>(middleware: &M, m: MessageValideAction, gest
         .sort(sort)
         .skip(skip)
         .limit(limit.clone())
-        .hint(Hint::Name("fichiers_cuuid".into()))
+        // .hint(Hint::Name("fichiers_cuuid".into()))
         .build();
 
     let mut filtre = doc!{"user_id": user_id};
     match requete.cuuid {
         Some(cuuid) => {
-            // filtre.insert("cuuids", cuuid);
-            filtre.insert("$or", vec![
-                doc!{ "cuuids": &cuuid},
-                doc!{"cuuid": &cuuid }
-            ]);
+            filtre.insert("path_cuuids.0", cuuid);
+            // filtre.insert("$or", vec![
+            //     doc!{ "cuuids": &cuuid},
+            //     doc!{"cuuid": &cuuid }
+            // ]);
         },
         None => {
-            // Requete sur les favoris
-            filtre.insert("favoris", true);
+            // Requete sur les Collections
+            filtre.insert(CHAMP_TYPE_NODE, TypeNode::Collection.to_str());
+            // filtre.insert("favoris", true);
         }
     }
     debug!("requete_sync_collection Filtre {:?}", filtre);
