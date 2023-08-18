@@ -731,10 +731,9 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gest
     // hachage_bytes_demandes.extend(requete.fuuids.iter().map(|f| f.to_string()));
 
     let filtre = doc!{
-        "fuuids": {"$in": &requete.fuuids},
+        "fuuids": { "$in": &requete.fuuids },
         "user_id": &user_id,
         "mimetype": {"$regex": "(video\\/|audio\\/)"},
-        // "mimetype": {"$regex": "video\\/"},
     };
 
     // Utiliser certificat du message client (requete) pour demande de rechiffrage
@@ -746,12 +745,11 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gest
         None => Err(format!(""))?
     };
 
-    todo!("Fix me - utiliser table versions");
     debug!("requete_get_cles_stream Filtre : {:?}", filtre);
-    let projection = doc! { CHAMP_FUUIDS_VERSIONS: true, CHAMP_TUUID: true, CHAMP_METADATA: true };
+    let projection = doc! { CHAMP_FUUID: true, CHAMP_FUUIDS: true, CHAMP_METADATA: true };
     let opts = FindOptions::builder().projection(projection).limit(1000).build();
-    let collection = middleware.get_collection_typed::<ResultatDocsPermission>(
-        NOM_COLLECTION_FICHIERS_REP)?;
+    let collection = middleware.get_collection_typed::<ResultatDocsVersionsFuuidsBorrow>(
+        NOM_COLLECTION_VERSIONS)?;
     let mut curseur = collection.find(filtre, Some(opts)).await?;
 
     let mut hachage_bytes_demandes = HashSet::new();
@@ -762,7 +760,7 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gest
         let doc_mappe = curseur.deserialize_current()?;
         debug!("requete_get_cles_stream document trouve pour permission cle : {:?}", doc_mappe);
         // let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
-        if let Some(fuuids) = doc_mappe.fuuids_versions {
+        if let Some(fuuids) = doc_mappe.fuuids {
             for d in fuuids {
                 if hachage_bytes_demandes.remove(d) {
                     hachage_bytes.push(d.to_owned());
@@ -1077,6 +1075,15 @@ struct ResultatDocsPermission<'a> {
     tuuid: &'a str,
     #[serde(borrow)]
     fuuids_versions: Option<Vec<&'a str>>,
+    #[serde(borrow)]
+    metadata: Option<DataChiffreBorrow<'a>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ResultatDocsVersionsFuuidsBorrow<'a> {
+    fuuid: &'a str,
+    #[serde(borrow)]
+    fuuids: Option<Vec<&'a str>>,
     #[serde(borrow)]
     metadata: Option<DataChiffreBorrow<'a>>,
 }
