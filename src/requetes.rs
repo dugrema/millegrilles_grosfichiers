@@ -1397,7 +1397,7 @@ async fn requete_sync_plusrecent<M>(middleware: &M, m: MessageValideAction, gest
         .sort(sort)
         .skip(skip)
         .limit(limit.clone())
-        .hint(Hint::Name("fichiers_cuuid".into()))
+        .hint(Hint::Name("user_id_type_node".into()))
         .build();
     let date_debut = requete.debut.get_datetime();
     let mut filtre = {
