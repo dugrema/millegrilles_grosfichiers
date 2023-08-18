@@ -53,7 +53,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
-            REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
+            // REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
             REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
@@ -104,7 +104,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
-            REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
+            // REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
             REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
@@ -468,7 +468,7 @@ async fn requete_contenu_collection<M>(middleware: &M, m: MessageValideAction, g
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
 {
-    todo!("requete_contenu_collection Fix me");
+    todo!("requete_contenu_collection Fix me ou obsolete?");
 
     debug!("requete_contenu_collection Message : {:?}", & m.message);
     let requete: RequeteContenuCollection = m.message.get_msg().map_contenu()?;
@@ -1097,7 +1097,7 @@ async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction
     debug!("requete_confirmer_etat_fuuids cle parsed : {:?}", requete);
 
     let mut fuuids = HashSet::new();
-    for fuuid in requete.fuuids.iter() {
+    for fuuid in &requete.fuuids {
         fuuids.insert(fuuid.clone());
     }
 
@@ -1111,15 +1111,18 @@ async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction
         .build();
     let mut filtre = doc!{"fuuids": {"$in": requete.fuuids}};
 
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection = middleware.get_collection_typed::<RowEtatFuuid>(NOM_COLLECTION_FICHIERS_REP)?;
     let mut fichiers_confirmation = Vec::new();
     let mut curseur = collection.find(filtre, opts).await?;
-    while let Some(d) = curseur.next().await {
-        let record: RowEtatFuuid = convertir_bson_deserializable(d?)?;
-        for fuuid in record.fuuids.into_iter() {
-            if fuuids.contains(&fuuid) {
-                fuuids.remove(&fuuid);
-                fichiers_confirmation.push( ConfirmationEtatFuuid { fuuid, supprime: record.supprime } );
+    //while let Some(d) = curseur.next().await {
+    while curseur.advance().await? {
+        // let record: RowEtatFuuid = convertir_bson_deserializable(d?)?;
+        let row = curseur.deserialize_current()?;
+        for fuuid in row.fuuids.into_iter() {
+            if fuuids.remove(fuuid) {
+            //if fuuids.contains(fuuid) {
+            //    fuuids.remove(fuuid);
+                fichiers_confirmation.push( ConfirmationEtatFuuid { fuuid: fuuid.to_owned(), supprime: row.supprime } );
             }
         }
     }
@@ -1135,35 +1138,42 @@ async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
-pub async fn verifier_acces_usager<M,S,T,V>(middleware: &M, user_id: S, fuuids: V)
+pub async fn verifier_acces_usager<M,S,T,V>(middleware: &M, user_id_in: S, fuuids_in: V)
     -> Result<Vec<String>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
           S: AsRef<str>,
           T: AsRef<str>,
           V: AsRef<Vec<T>>
 {
-    let _user_id = user_id.as_ref();
-    let _fuuids: Vec<&str> = fuuids.as_ref().iter().map(|s| s.as_ref()).collect();
+    let user_id = user_id_in.as_ref();
+    let fuuids: Vec<&str> = fuuids_in.as_ref().iter().map(|s| s.as_ref()).collect();
 
     let mut filtre = doc! {
-        CHAMP_USER_ID: _user_id,
-        CHAMP_FUUIDS: {"$in": &_fuuids},
+        CHAMP_FUUIDS: { "$in": &fuuids },
+        CHAMP_USER_ID: user_id,
         CHAMP_SUPPRIME: false,
     };
 
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let options = FindOptions::builder().projection(doc!{CHAMP_FUUIDS: 1, CHAMP_SUPPRIME: 1}).build();
+    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection = middleware.get_collection_typed::<RowEtatFuuid>(NOM_COLLECTION_VERSIONS)?;
+    let options = FindOptions::builder()
+        .projection(doc!{CHAMP_FUUIDS: 1, CHAMP_SUPPRIME: 1})
+        //.projection(doc!{CHAMP_FUUIDS: 1})
+        .hint(Hint::Name("Versions_fuuids".into()))
+        .build();
     let mut curseur = collection.find(filtre, Some(options)).await?;
 
     let mut fuuids_acces = HashSet::new();
 
-    while let Some(row) = curseur.next().await {
-        let doc_row = row?;
-        let doc_map: RowEtatFuuid = convertir_bson_deserializable(doc_row)?;
-        fuuids_acces.extend(doc_map.fuuids);
+    //while let Some(row) = curseur.next().await {
+    while curseur.advance().await? {
+        let doc_map = curseur.deserialize_current()?;
+        // let doc_row = row?;
+        // let doc_map: RowEtatFuuid = convertir_bson_deserializable(doc_row)?;
+        fuuids_acces.extend(doc_map.fuuids.into_iter().map(|s| s.to_owned()));
     }
 
-    let hashset_requete = HashSet::from_iter(_fuuids);
+    let hashset_requete = HashSet::from_iter(fuuids);
     let mut hashset_acces = HashSet::new();
     for fuuid in &fuuids_acces {
         hashset_acces.insert(fuuid.as_str());
@@ -1186,8 +1196,9 @@ struct ReponseConfirmerEtatFuuids {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct RowEtatFuuid {
-    fuuids: Vec<String>,
+struct RowEtatFuuid<'a> {
+    #[serde(borrow)]
+    fuuids: Vec<&'a str>,
     supprime: bool,
 }
 
