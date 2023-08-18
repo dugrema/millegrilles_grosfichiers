@@ -317,44 +317,45 @@ impl InformationAutorisation {
 }
 
 /// Verifie si l'usager a acces aux tuuids (et cuuid au besoin)
-async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuids: Option<&Vec<U>>, cuuid: Option<T>)
+async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuids: Option<&Vec<U>>, cuuid_in: Option<T>)
     -> Result<InformationAutorisation, Box<dyn Error>>
     where
         M: GenerateurMessages + MongoDao,
         S: AsRef<str>, T: AsRef<str>, U: AsRef<str>
 {
     let user_id_str = user_id.as_ref();
+    let cuuid = match cuuid_in.as_ref() { Some(cuuid) => Some(cuuid.as_ref()), None => None };
 
     let mut reponse = InformationAutorisation::new();
 
     // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    if cuuid.is_some() {
-        let cuuid_ref = cuuid.expect("cuuid");
-
+    if let Some(cuuid) = cuuid.as_ref() {
         // Verifier que la collection destination (cuuid) appartient a l'usager
-        let filtre = doc!{CHAMP_TUUID: cuuid_ref.as_ref()};
-        let collection_row_fichiers = middleware.get_collection_typed::<FichierDetail>(
+        let filtre = doc!{ CHAMP_TUUID: *cuuid, CHAMP_USER_ID: user_id_str };
+        let collection_row_fichiers = middleware.get_collection_typed::<NodeFichiersRepBorrow>(
             NOM_COLLECTION_FICHIERS_REP)?;
-        let doc_collection = collection_row_fichiers.find_one(filtre, None).await?;
-        match doc_collection {
-            Some(mapping_collection) => {
-                // let mapping_collection: FichierDetail = mapper_fichier_db(d)?;
-                if Some(user_id_str.to_owned()) == mapping_collection.user_id {
-                    reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid n'appartient pas a l'usager"}), None)?);
-                    return Ok(reponse)
-                }
-            },
-            None => {
-                reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid inconnu"}), None)?);
+        let mut curseur = collection_row_fichiers.find(filtre, None).await?;
+        if curseur.advance().await? {
+            let mapping_collection = curseur.deserialize_current()?;
+            if user_id_str != mapping_collection.user_id {
+                warn!("verifier_autorisation_usager Le cuuid {:?} n'appartiennent pas a l'usager {:?}", cuuid, user_id_str);
+                reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid n'appartient pas a l'usager"}), None)?);
                 return Ok(reponse)
             }
+        } else {
+            warn!("verifier_autorisation_usager Le cuuid {:?} n'appartient pas a l'usager {:?} ou est inconnu", cuuid, user_id_str);
+            reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid inconnu"}), None)?);
+            return Ok(reponse)
         }
     }
 
     if tuuids.is_some() {
         let tuuids_vec: Vec<&str> = tuuids.expect("tuuids").iter().map(|t| t.as_ref()).collect();
         let mut tuuids_set: HashSet<&str> = HashSet::new();
-        let filtre = doc!{CHAMP_TUUID: {"$in": &tuuids_vec}, CHAMP_USER_ID: user_id_str};
+        let filtre = doc!{
+            CHAMP_TUUID: { "$in": &tuuids_vec },
+            CHAMP_USER_ID: user_id_str
+        };
         tuuids_set.extend(&tuuids_vec);
 
         let options = FindOptions::builder()
@@ -401,6 +402,7 @@ async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuid
         if tuuids_set.len() > 0 {
             // Certains tuuids n'appartiennent pas a l'usager
             // let cuuids: Vec<String> = tuuids_set.into_iter().map(|c| c.to_owned()).collect();
+            warn!("verifier_autorisation_usager Les tuuids {:?} n'appartiennent pas a l'usager {:?}", tuuids_set, user_id_str);
             reponse.tuuids_repertoires.extend(tuuids_set.into_iter().map(|c| c.to_owned()));
             return {
                 reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "tuuids n'appartiennent pas a l'usager"}), None)?);
@@ -649,6 +651,7 @@ async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValideActi
 
     let mut tuuids = HashSet::new();
     for (cuuid, liste) in &commande.items {
+        debug!("commande_recuperer_documents_v2 Ajouter tuuids {:?} sous cuuid {}", liste, cuuid);
         tuuids.insert(cuuid);
         if let Some(liste) = liste {
             tuuids.extend(liste);
