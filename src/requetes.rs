@@ -300,9 +300,12 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
     let requete: RequeteDocumentsParTuuids = m.message.get_msg().map_contenu()?;
     debug!("requete_documents_par_tuuid cle parsed : {:?}", requete);
 
-    let user_id = m.get_user_id();
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => Err(format!("requetes.requete_documents_par_tuuid: User_id manquant pour message {:?}", m.correlation_id))?
+    };
     let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
-    if role_prive && user_id.is_some() {
+    if role_prive {
         // Ok
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok
@@ -310,39 +313,64 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
         Err(format!("requetes.requete_documents_par_tuuid: Commande autorisation invalide pour message {:?}", m.correlation_id))?
     }
 
-    let filtre = if let Some(true) = requete.partage {
-        todo!("fix me");
-        // // Pre-filtrage pour le partage. Charger les tuuids partages avec le user_id.
-        // let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_CONTACT)?;
-        // let filtre_contacts = doc! ( CHAMP_CONTACT_USER_ID: user_id );
-        // let mut contact_ids = Vec::new();
-        // let mut curseur = collection.find(filtre_contacts, None).await?;
-        // while let Some(r) = curseur.next().await {
-        //     let row: ContactRow = convertir_bson_deserializable(r?)?;
-        //     contact_ids.push(row.contact_id);
-        // }
-        //
-        // // Trouver les tuuids partages pour les contact_ids
-        // let filtre_tuuids = doc! { CHAMP_CONTACT_ID: {"$in": contact_ids}, CHAMP_TUUID: {"$in": &requete.tuuids_documents }};
-        // let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
-        // let mut curseur = collection.find(filtre_tuuids, None).await?;
-        // let mut tuuids = Vec::new();
-        // while let Some(r) = curseur.next().await {
-        //     let row: RowPartagesUsager = convertir_bson_deserializable(r?)?;
-        //     tuuids.push(row.tuuid);
-        // }
-        //
-        // doc! {
-        //     CHAMP_TUUID: {"$in": tuuids}
-        // }
-    } else if user_id.is_some() {
-        doc! {
-            CHAMP_TUUID: {"$in": requete.tuuids_documents},
-            CHAMP_USER_ID: &user_id,
+    let (user_id, filtre) = if let Some(true) = requete.partage {
+        // Pre-filtrage pour le partage. Charger les tuuids partages avec le user_id.
+        let mut user_id = user_id;
+        let contact_ids = {
+            let mut contact_ids = Vec::new();
+
+            let mut filtre_contacts = doc!( CHAMP_CONTACT_USER_ID: &user_id );
+            if let Some(contact_id) = requete.contact_id.as_ref() {
+                filtre_contacts.insert("contact_id", contact_id);
+            }
+            let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
+            let mut curseur = collection.find(filtre_contacts, None).await?;
+            while curseur.advance().await? {
+                let row = curseur.deserialize_current()?;
+                contact_ids.push(row.contact_id);
+
+                if requete.contact_id.is_some() {
+                    // Remplacer le user_id de l'usager par celui qui a partage la collection
+                    user_id = row.user_id;
+                    break;  // On a un seul contact
+                }
+            }
+
+            contact_ids
+        };
+
+        // Trouver les tuuids partages pour les contact_ids
+        let filtre_tuuids = doc! { CHAMP_CONTACT_ID: {"$in": contact_ids} };
+        let collection = middleware.get_collection_typed::<RowPartagesUsager>(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
+        let mut curseur = collection.find(filtre_tuuids, None).await?;
+        let mut tuuids_partages = Vec::new();
+        while curseur.advance().await? {
+            let row = curseur.deserialize_current()?;
+            tuuids_partages.push(row.tuuid);
         }
+
+        // Faire une requete pour les tuuids et leurs sous-repertoires
+        (
+            user_id,
+            doc! {
+                CHAMP_TUUID: {"$in": requete.tuuids_documents},
+                "$or": [
+                    { CHAMP_TUUID: {"$in": &tuuids_partages} },
+                    { CHAMP_PATH_CUUIDS: {"$in": &tuuids_partages} }
+                ]
+            }
+        )
     } else {
-        Err(format!("requetes.requete_documents_par_tuuid Combinaise de parametres de requete non supporte"))?
+        (
+            user_id.clone(),
+            doc! {
+                CHAMP_TUUID: {"$in": requete.tuuids_documents},
+                CHAMP_USER_ID: &user_id,
+            }
+        )
     };
+
+    debug!("requete_documents_par_tuuid Filtre {:?}", serde_json::to_string(&filtre)?);
 
     let collection_typed = middleware.get_collection_typed::<NodeFichierRepOwned>(
         NOM_COLLECTION_FICHIERS_REP)?;
@@ -372,6 +400,8 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
             }
         }
     };
+
+    debug!("requete_documents_par_tuuid Fichiers trouves : {:?}", reponse.fichiers);
 
     // Recuperer l'information de versions de tous les fichiers
     let fuuids_fichiers: Vec<&str> = map_fichiers_par_fuuid.keys().map(|s| s.as_str()).collect();
@@ -456,11 +486,28 @@ async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValideAction
         }
     };
 
-    let resultat = verifier_acces_usager(middleware, user_id, &requete.fuuids).await?;
+    let user_id = match requete.contact_id.as_ref() {
+        Some(contact_id) => {
+            // Verifier que le contact_id et les contact_user_id correspondent, extraire user_id partage
+            let filtre = doc! { CHAMP_CONTACT_ID: &contact_id, CHAMP_CONTACT_USER_ID: user_id };
+            let collection = middleware.get_collection_typed::<RowPartageContactOwned>(NOM_COLLECTION_PARTAGE_CONTACT)?;
+            let contact = match collection.find_one(filtre, None).await? {
+                Some(inner) => inner,
+                None => {
+                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "contact_id et user_id mismatch ou manquant"}), None)?))
+                }
+            };
+            // Ok, le contact est valide. Retourner user_id de l'usager qui a fait le partage.
+            contact.user_id
+        },
+        None => user_id.to_owned()
+    };
+
+    let resultat = verifier_acces_usager(middleware, &user_id, &requete.fuuids).await?;
 
     let acces_tous = resultat.len() == requete.fuuids.len();
 
-    let reponse = json!({ "fuuids_acces": resultat , "acces_tous": acces_tous });
+    let reponse = json!({ "fuuids_acces": resultat , "acces_tous": acces_tous, "user_id": user_id });
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
@@ -582,6 +629,80 @@ async fn requete_get_corbeille<M>(middleware: &M, m: MessageValideAction, gestio
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
+#[derive(Deserialize)]
+struct RowPartageContactOwned {
+    contact_id: String,
+    contact_user_id: String,
+    user_id: String,
+}
+
+async fn get_contacts_user<M,U>(middleware: &M, user_id: U) -> Result<Vec<RowPartageContactOwned>, Box<dyn Error>>
+    where M: MongoDao, U: AsRef<str>
+{
+    let user_id = user_id.as_ref();
+
+    let mut contacts = Vec::new();
+    let collection = middleware.get_collection_typed::<RowPartageContactOwned>(
+        NOM_COLLECTION_PARTAGE_CONTACT)?;
+    let filtre = doc! { CHAMP_CONTACT_USER_ID: user_id };
+    let mut curseur = collection.find(filtre, None).await?;
+    while curseur.advance().await? {
+        let row = curseur.deserialize_current()?;
+        contacts.push(row);
+    }
+
+    Ok(contacts)
+}
+
+#[derive(Deserialize)]
+struct RowPartageContactBorrowed<'a> {
+    #[serde(borrow)]
+    contact_id: &'a str,
+    #[serde(borrow)]
+    contact_user_id: &'a str,
+    #[serde(borrow)]
+    user_id: &'a str,
+}
+
+#[derive(Deserialize)]
+struct RowPartageCollection<'a> {
+    #[serde(borrow)]
+    contact_id: &'a str,
+    #[serde(borrow)]
+    tuuid: &'a str,
+    #[serde(borrow)]
+    user_id: &'a str,
+}
+
+async fn get_tuuids_partages_user<M,U>(middleware: &M, user_id: U) -> Result<Vec<String>, Box<dyn Error>>
+    where M: MongoDao, U: AsRef<str>
+{
+    let mut tuuids_partages = Vec::new();
+
+    let user_id = user_id.as_ref();
+
+    let mut contact_ids = Vec::new();
+    let collection = middleware.get_collection_typed::<RowPartageContactBorrowed>(
+        NOM_COLLECTION_PARTAGE_CONTACT)?;
+    let filtre = doc! { CHAMP_CONTACT_USER_ID: user_id };
+    let mut curseur = collection.find(filtre, None).await?;
+    while curseur.advance().await? {
+        let row = curseur.deserialize_current()?;
+        contact_ids.push(row.contact_id.to_string());
+    }
+
+    let filtre = doc! { CHAMP_CONTACT_ID: {"$in": contact_ids} };
+    let collection = middleware.get_collection_typed::<RowPartageCollection>(
+        NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
+    let mut curseur = collection.find(filtre, None).await?;
+    while curseur.advance().await? {
+        let row = curseur.deserialize_current()?;
+        tuuids_partages.push(row.tuuid.to_string());
+    }
+
+    Ok(tuuids_partages)
+}
+
 async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
                                       -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
@@ -597,28 +718,29 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     conditions.push(doc!{CHAMP_FUUIDS_VERSIONS: {"$in": &requete.fuuids}});
     conditions.push(doc!{"metadata.ref_hachage_bytes": {"$in": &requete.fuuids}});
 
-    let mut filtre = match m.get_user_id() {
-        Some(u) => {
-            doc! {
-                "user_id": u,
-                "$or": conditions,
-            }
-        },
-        None => {
-            if m.verifier_exchanges(vec![Securite::L4Secure]) && m.verifier_roles(vec![RolesCertificats::Media]) {
-                doc! {
-                    "$or": conditions,
-                }
-            } else if m.verifier_exchanges(vec![Securite::L2Prive]) && m.verifier_roles(vec![RolesCertificats::Stream]) {
-                doc! {
-                    "mimetype": {"$regex": "video\\/"},
-                    "$or": conditions,
-                }
-            } else {
-                return Ok(Some(middleware.formatter_reponse(json!({"err": true, "message": "user_id n'est pas dans le certificat/certificat n'est pas de role media/stream"}), None)?))
-            }
+    let mut filtre = doc! { "$or": conditions };
+
+    if let Some(user_id) = m.get_user_id() {
+        if Some(true) == requete.partage {
+            // Requete de cles sur partage - permettre de charger les tuuids de tous les partages
+            let tuuids_partages = get_tuuids_partages_user(middleware, user_id.as_str()).await?;
+            filtre.insert("$or", vec![
+                doc!{CHAMP_PATH_CUUIDS: {"$in": &tuuids_partages}},
+                doc!{CHAMP_TUUID: {"$in": tuuids_partages}}
+            ]);
+        } else {
+           filtre.insert(CHAMP_USER_ID, user_id);
         }
-    };
+    } else if m.verifier_exchanges(vec![Securite::L4Secure]) && m.verifier_roles(vec![RolesCertificats::Media]) {
+        // Ok, aucunes limitations
+    } else if m.verifier_exchanges(vec![Securite::L2Prive]) && m.verifier_roles(vec![RolesCertificats::Stream]) {
+        filtre.insert(CHAMP_MIMETYPE, doc! {"mimetype": {"$regex": "video\\/"}} );
+    } else {
+        return Ok(Some(middleware.formatter_reponse(
+            json!({"err": true, "message": "user_id n'est pas dans le certificat/certificat n'est pas de role media/stream"}),
+            None)?)
+        )
+    }
 
     // Utiliser certificat du message client (requete) pour demande de rechiffrage
     let pem_rechiffrage: Vec<String> = match &m.message.certificat {
@@ -629,7 +751,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
         None => Err(format!(""))?
     };
 
-    debug!("requete_get_cles_fichiers Filtre : {:?}", filtre);
+    debug!("requete_get_cles_fichiers Filtre : {:?}", serde_json::to_string(&filtre)?);
     let projection = doc! { CHAMP_FUUIDS_VERSIONS: true, CHAMP_TUUID: true, CHAMP_METADATA: true };
     let opts = FindOptions::builder().projection(projection).limit(1000).build();
     let collection = middleware.get_collection_typed::<ResultatDocsPermission>(
@@ -660,13 +782,6 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
         }
     }
 
-    // let permission = json!({
-    //     "liste_hachage_bytes": hachage_bytes,
-    //     "certificat_rechiffrage": pem_rechiffrage,
-    //     // Condition d'identite
-    //     // "user_id": user_id,
-    // });
-
     let permission = RequeteDechiffrage {
         domaine: DOMAINE_NOM.to_string(),
         liste_hachage_bytes: hachage_bytes,
@@ -692,21 +807,6 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     debug!("Transmettre requete permission dechiffrage cle : {:?}", permission);
 
     middleware.transmettre_requete(routage, &permission).await?;
-
-    // let permission = json!({
-    //     "permission_hachage_bytes": hachage_bytes,
-    //     "permission_duree": 30
-    // });
-    //
-    // // Emettre le message de permission vers le maitre des cles, faire repondre directement
-    // // au demandeur.
-    // let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRER_CLE)
-    //     .reply_to(message.reply_q)
-    //     .correlation_id(message.correlation_id)
-    //     .blocking(false)  // La reponse ne revient pas ici
-    //     .build();
-    //
-    // middleware.transmettre_requete(routage, &permission).await?;
 
     Ok(None)  // Aucune reponse a transmettre, c'est le maitre des cles qui va repondre
 }
@@ -1042,7 +1142,8 @@ impl ResultatDocumentRecherche {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RequeteDocumentsParTuuids {
     tuuids_documents: Vec<String>,
-    partage: Option<bool>,  // Flag qui indique qu'on utilise une permission (contact partage)
+    partage: Option<bool>,       // Flag qui indique qu'on utilise une permission (contact partage)
+    contact_id: Option<String>,  // Identificateur de contact direct
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1054,6 +1155,7 @@ struct RequeteDocumentsParFuuids {
 struct RequeteVerifierAccesFuuids {
     user_id: Option<String>,
     fuuids: Vec<String>,
+    contact_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1221,6 +1323,9 @@ struct RequeteSyncCollection {
     user_id: Option<String>,
     skip: Option<u64>,
     limit: Option<i64>,
+
+    /// Contact_id du partage comme autorisation
+    contact_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1301,6 +1406,23 @@ async fn requete_sync_collection<M>(middleware: &M, m: MessageValideAction, gest
                 }
             }
         }
+    };
+
+    let user_id = if let Some(contact_id) = requete.contact_id {
+        // Determiner le user_id effectif pour la requete en confirmant le droit d'acces via contact
+        let filtre = doc!{ CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: &user_id };
+        let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
+        match collection.find_one(filtre, None).await? {
+            Some(inner) => {
+                inner.user_id   // User id du proprietaire des fichiers
+            },
+            None => {
+                error!("requetes.requete_confirmer_etat_fuuids Acces refuse, mauvais contact_id : {:?}", uuid_transaction);
+                return Ok(None)
+            }
+        }
+    } else {
+        user_id
     };
 
     let limit = match requete.limit {
@@ -1621,7 +1743,7 @@ struct RequeteChargerContacts {}
 #[derive(Deserialize)]
 struct ContactRow { contact_id: String, user_id: String, contact_user_id: String }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct ReponseUsager {
     #[serde(rename(deserialize = "userId"))]
     user_id: String,
@@ -1647,6 +1769,31 @@ struct ReponseContact {
 #[derive(Serialize)]
 struct ReponseContacts {
     contacts: Vec<ReponseContact>,
+}
+
+async fn map_user_ids_nom_usager<M,U>(middleware: &M, user_ids_in: &Vec<U>) -> Result<Vec<ReponseUsager>, Box<dyn Error>>
+    where M: GenerateurMessages, U: AsRef<str>
+{
+    let user_ids: Vec<&str> = user_ids_in.iter().map(|s| s.as_ref()).collect();
+    debug!("map_user_ids_nom_usager Pour user_ids {:?}", user_ids);
+
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCOMPTES, "getListeUsagers")
+        .exchanges(vec![Securite::L3Protege])
+        .build();
+
+    let requete = json!({"liste_userids": user_ids});
+    let reponse = match middleware.transmettre_requete(routage, &requete).await? {
+        TypeMessage::Valide(inner) => {
+            let reponse: ReponseUsagers = inner.message.parsed.map_contenu()?;
+            reponse
+        },
+        _ => {
+            debug!("requete_charger_contacts Mauvais type de reponse");
+            Err(format!("requetes.map_user_ids_nom_usager Erreur chargement liste usagers"))?
+        }
+    };
+
+    Ok(reponse.usagers)
 }
 
 async fn requete_charger_contacts<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -1675,31 +1822,12 @@ async fn requete_charger_contacts<M>(middleware: &M, m: MessageValideAction, ges
         }
 
         // Faire une requete aupres de MaitreDesComptes pour mapper le user_id avec le nom_usager courant
-        let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCOMPTES, "getListeUsagers")
-            .exchanges(vec![Securite::L3Protege])
-            .build();
         let vec_user_ids: Vec<&String> = user_ids.keys().map(|u|u).collect();
-        let requete = json!({"user_ids": vec_user_ids});
-        let reponse = match middleware.transmettre_requete(routage, &requete).await {
-            Ok(inner) => match inner {
-                TypeMessage::Valide(inner) => {
-                    let reponse: ReponseUsagers = inner.message.parsed.map_contenu()?;
-                    reponse
-                },
-                _ => {
-                    debug!("requete_charger_contacts Mauvais type de reponse");
-                    return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Erreur chargement liste usagers"}), None)?));
-                }
-            },
-            Err(e) => {
-                debug!("requete_charger_contacts user_id manquant du certificat : {:?}", e);
-                return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": e}), None)?));
-            }
-        };
+        let reponse_usagers = map_user_ids_nom_usager(middleware, &vec_user_ids).await?;
 
         // Mapper contact_id et nom_usager
         let mut contacts = Vec::new();
-        for usager in reponse.usagers {
+        for usager in reponse_usagers {
             let contact_id = match user_ids.remove(usager.user_id.as_str()) {
                 Some(inner) => {
                     inner.contact_id
@@ -1737,7 +1865,8 @@ struct RowPartagesUsager {
 #[derive(Serialize)]
 struct ReponsePartagesUsager {
     ok: bool,
-    partages: Vec<RowPartagesUsager>
+    partages: Vec<RowPartagesUsager>,
+    usagers: Option<Vec<ReponseUsager>>,
 }
 
 async fn requete_partages_usager<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -1769,7 +1898,7 @@ async fn requete_partages_usager<M>(middleware: &M, m: MessageValideAction, gest
         partages.push(row);
     }
 
-    let reponse = ReponsePartagesUsager { ok: true, partages };
+    let reponse = ReponsePartagesUsager { ok: true, partages, usagers: None };
 
     Ok(Some(middleware.formatter_reponse(reponse, None)?))
 }
@@ -1777,6 +1906,7 @@ async fn requete_partages_usager<M>(middleware: &M, m: MessageValideAction, gest
 #[derive(Deserialize)]
 struct RequetePartagesContact { user_id: Option<String> }
 
+/// Retourne la liste de tuuids partages avec l'usager qui fait la requete
 async fn requete_partages_contact<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
                                      -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
@@ -1794,31 +1924,32 @@ async fn requete_partages_contact<M>(middleware: &M, m: MessageValideAction, ges
     let requete: RequetePartagesContact = m.message.get_msg().map_contenu()?;
 
     // Charger la liste des contact_id qui correspondent a l'usager courant
-    //let mut contacts = Vec::new();
-    let mut contact_ids = Vec::new();
-    let filtre = doc! { CHAMP_CONTACT_USER_ID: &user_id };
-    let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_CONTACT)?;
-    let mut curseur = collection.find(filtre, None).await?;
-    while let Some(r) = curseur.next().await {
-        let row: ContactRow = convertir_bson_deserializable(r?)?;
-        // contacts.push(row);
-        contact_ids.push(row.contact_id);
-    }
+    let contacts = get_contacts_user(middleware, user_id).await?;
 
     // Faire une requete pour obtenir tous les partages associes aux contacts
-    // let contact_ids: Vec<String> = contact_ids.into_iter().collect();
+    let contact_ids: Vec<&str> = contacts.iter().map(|c| c.contact_id.as_str()).collect();
     let filtre = doc! {
         CHAMP_CONTACT_ID: { "$in": contact_ids },
     };
     let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
     let mut curseur = collection.find(filtre, None).await?;
-    let mut partages = Vec::new();
-    while let Some(r) = curseur.next().await {
-        let row: RowPartagesUsager = convertir_bson_deserializable(r?)?;
-        partages.push(row);
-    }
+    let partages = {
+        let mut partages = Vec::new();
+        while let Some(r) = curseur.next().await {
+            let row: RowPartagesUsager = convertir_bson_deserializable(r?)?;
+            partages.push(row);
+        }
+        partages
+    };
 
-    let reponse = ReponsePartagesUsager { ok: true, partages };
+    // Faire une requete pour obtenir l'information des usagers. Dedupe avec HashSet
+    let mut user_ids = HashSet::new();
+    user_ids.extend(partages.iter().map(|s| s.user_id.as_str()));
+    let user_ids: Vec<&str> = user_ids.into_iter().collect();
+
+    let usagers = map_user_ids_nom_usager(middleware, &user_ids).await?;
+
+    let reponse = ReponsePartagesUsager { ok: true, partages, usagers: Some(usagers) };
 
     Ok(Some(middleware.formatter_reponse(reponse, None)?))
 }
