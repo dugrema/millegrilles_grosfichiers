@@ -2004,10 +2004,28 @@ async fn requete_info_statistiques<M>(middleware: &M, m: MessageValideAction, ge
 
     let pipeline = vec![
         doc! { "$match": filtre },
-        doc! { "$project": {CHAMP_TYPE_NODE: 1, CHAMP_PATH_CUUIDS: 1, "version_courante.taille": 1} },
+        doc! { "$project": {CHAMP_TYPE_NODE: 1, CHAMP_PATH_CUUIDS: 1, CHAMP_FUUIDS_VERSIONS: 1} },
+        doc! { "$lookup": {
+            "from": NOM_COLLECTION_VERSIONS,
+            "localField": "fuuids_versions",
+            "foreignField": "fuuid",
+            // "let": { "fuuid": "zSEfXUAKuWwK4NeWAGX573uCTCCG4xak1DEWCzk4JqcRjc6h25d2ov74c93pATRxbcCxQToY7kU3drygxWREuRkb7MCKET" },
+            "pipeline": [
+                // {"$match": { CHAMP_USER_ID: &user_id, CHAMP_FUUID: "$fuuid"}},
+                {"$match": { CHAMP_USER_ID: &user_id }},
+                {"$project": {CHAMP_TAILLE: 1, CHAMP_USER_ID: 1, CHAMP_FUUID: 1}},
+                { "$group": {
+                        "_id": "$user_id",
+                        "taille": {"$sum": "$taille"}
+                    }
+                }
+            ],
+            "as": "versions",
+        }},
+        doc! { "$replaceRoot": { "newRoot": {"$mergeObjects": [ {"$arrayElemAt": ["$versions", 0] }, "$$ROOT" ]}}},
         doc! { "$group": {
                 "_id": "$type_node",
-                "taille": {"$sum": "$version_courante.taille"},
+                "taille": {"$sum": "$taille"},
                 "count": {"$count": {}},
             }
         }
@@ -2017,7 +2035,9 @@ async fn requete_info_statistiques<M>(middleware: &M, m: MessageValideAction, ge
     let mut cursor = collection.aggregate(pipeline, None).await?;
     let mut resultat = Vec::new();
     while let Some(d) = cursor.next().await {
-        let row: ResultatStatistiquesRow = convertir_bson_deserializable(d?)?;
+        let data = d?;
+        // debug!("Data : {:?}", data);
+        let row: ResultatStatistiquesRow = convertir_bson_deserializable(data)?;
         resultat.push(row);
     }
 
