@@ -21,7 +21,6 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::grosfichiers_constantes::*;
-use crate::transactions::DataChiffre;
 
 const CONST_MAX_RETRY: i32 = 3;
 const CONST_LIMITE_BATCH: i64 = 1_000;

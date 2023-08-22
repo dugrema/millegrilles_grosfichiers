@@ -6,7 +6,6 @@ use millegrilles_common_rust::formatteur_messages::DateEpochSeconds;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use crate::requetes::mapper_fichier_db;
-use crate::transactions::DataChiffre;
 
 pub const DOMAINE_NOM: &str = "GrosFichiers";
 pub const NOM_COLLECTION_TRANSACTIONS: &str = "GrosFichiers";
@@ -45,6 +44,7 @@ pub const REQUETE_CHARGER_CONTACTS: &str = "chargerContacts";
 pub const REQUETE_PARTAGES_USAGER: &str = "getPartagesUsager";
 pub const REQUETE_PARTAGES_CONTACT: &str = "getPartagesContact";
 pub const REQUETE_INFO_STATISTIQUES: &str = "getInfoStatistiques";
+pub const REQUETE_STRUCTURE_REPERTOIRE: &str = "getStructureRepertoire";
 
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
@@ -145,8 +145,8 @@ pub const CHAMP_CLE_CONVERSION: &str = "cle_conversion";
 pub const CHAMP_CONTACT_ID: &str = "contact_id";
 pub const CHAMP_CONTACT_USER_ID: &str = "contact_user_id";
 pub const CHAMP_PATH_CUUIDS: &str = "path_cuuids";
-pub const CHAMP_MAP_PATH_CUUIDS: &str = "map_path_cuuids";
-pub const CHAMP_CUUIDS_ANCETRES: &str = "cuuids_ancetres";
+// pub const CHAMP_MAP_PATH_CUUIDS: &str = "map_path_cuuids";
+// pub const CHAMP_CUUIDS_ANCETRES: &str = "cuuids_ancetres";
 pub const CHAMP_TAILLE: &str = "taille";
 
 pub const ERREUR_MEDIA_TOOMANYRETRIES: i32 = 1;
@@ -555,4 +555,70 @@ pub struct NodeFichiersRepBorrow<'a> {
     // pub fuuids_reclames: Option<Vec<&'a str>>,
     #[serde(borrow)]
     pub fuuids_versions: Option<Vec<&'a str>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DataChiffreBorrow<'a> {
+    #[serde(borrow)]
+    pub data_chiffre: &'a str,
+    #[serde(borrow, skip_serializing_if="Option::is_none")]
+    pub header: Option<&'a str>,
+    #[serde(borrow, skip_serializing_if="Option::is_none")]
+    pub ref_hachage_bytes: Option<&'a str>,
+    #[serde(borrow, skip_serializing_if="Option::is_none")]
+    pub hachage_bytes: Option<&'a str>,
+    #[serde(borrow, skip_serializing_if="Option::is_none")]
+    pub format: Option<&'a str>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DataChiffre {
+    pub data_chiffre: String,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub header: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub ref_hachage_bytes: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub hachage_bytes: Option<String>,
+    pub format: Option<String>
+}
+
+impl<'a> From<DataChiffreBorrow<'a>> for DataChiffre {
+    fn from(value: DataChiffreBorrow) -> Self {
+        Self {
+            data_chiffre: value.data_chiffre.to_owned(),
+            header: match value.header { Some(inner) => Some(inner.to_owned()), None => None},
+            ref_hachage_bytes: match value.ref_hachage_bytes { Some(inner) => Some(inner.to_owned()), None => None},
+            hachage_bytes: match value.hachage_bytes { Some(inner) => Some(inner.to_owned()), None => None},
+            format: match value.format { Some(inner) => Some(inner.to_owned()), None => None},
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeVersionCouranteInlineOwned {
+    pub fuuid: String,
+    pub taille: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeFichierRepVersionCouranteOwned {
+    /// Identificateur unique d'un node pour l'usager
+    pub tuuid: String,
+    pub user_id: String,
+    pub type_node: String,
+    pub supprime: bool,
+    pub supprime_indirect: bool,
+    pub metadata: DataChiffre,
+
+    // Champs pour type_node Fichier
+    pub mimetype: Option<String>,
+    /// Fuuids des versions en ordre (plus recent en dernier)
+    pub fuuids_versions: Option<Vec<String>>,
+
+    // Champs pour type_node Fichiers/Repertoires
+    /// Path des cuuids parents (inverse, parent immediat est index 0)
+    pub path_cuuids: Option<Vec<String>>,
+
+    pub versions: Option<Vec<NodeVersionCouranteInlineOwned>>
 }

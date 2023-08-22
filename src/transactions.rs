@@ -112,32 +112,6 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DataChiffreBorrow<'a> {
-    #[serde(borrow)]
-    pub data_chiffre: &'a str,
-    #[serde(borrow, skip_serializing_if="Option::is_none")]
-    pub header: Option<&'a str>,
-    #[serde(borrow, skip_serializing_if="Option::is_none")]
-    pub ref_hachage_bytes: Option<&'a str>,
-    #[serde(borrow, skip_serializing_if="Option::is_none")]
-    pub hachage_bytes: Option<&'a str>,
-    #[serde(borrow, skip_serializing_if="Option::is_none")]
-    pub format: Option<&'a str>
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DataChiffre {
-    pub data_chiffre: String,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub header: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub ref_hachage_bytes: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub hachage_bytes: Option<String>,
-    pub format: Option<String>
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionNouvelleVersion {
     pub fuuid: String,
     // #[serde(skip_serializing_if="Option::is_none")]

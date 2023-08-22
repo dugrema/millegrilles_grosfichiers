@@ -33,6 +33,9 @@ use crate::traitement_index::{ParametresGetClesStream, ParametresGetPermission, 
 use crate::traitement_media::requete_jobs_video;
 use crate::transactions::*;
 
+const CONST_LIMITE_TAILLE_ZIP: u64 = 1024 * 1024 * 1024 * 100;   // Limite 100 GB
+const CONST_LIMITE_NOMBRE_ZIP: u64 = 1000;                       // Limite 1000 fichiers
+
 pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
 {
@@ -65,6 +68,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_PARTAGES_USAGER => requete_partages_usager(middleware, message, gestionnaire).await,
             REQUETE_PARTAGES_CONTACT => requete_partages_contact(middleware, message, gestionnaire).await,
             REQUETE_INFO_STATISTIQUES => requete_info_statistiques(middleware, message, gestionnaire).await,
+            REQUETE_STRUCTURE_REPERTOIRE => requete_structure_repertoire(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (1): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -116,6 +120,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_PARTAGES_USAGER => requete_partages_usager(middleware, message, gestionnaire).await,
             REQUETE_PARTAGES_CONTACT => requete_partages_contact(middleware, message, gestionnaire).await,
             REQUETE_INFO_STATISTIQUES => requete_info_statistiques(middleware, message, gestionnaire).await,
+            REQUETE_STRUCTURE_REPERTOIRE => requete_structure_repertoire(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -1994,7 +1999,7 @@ async fn requete_info_statistiques<M>(middleware: &M, m: MessageValideAction, ge
             doc! {
                 CHAMP_USER_ID: &user_id,
                 "$or": [
-                    {CHAMP_CUUIDS_ANCETRES: cuuid},
+                    {CHAMP_TUUID: cuuid},
                     {CHAMP_PATH_CUUIDS: cuuid}
                 ]
             }
@@ -2044,4 +2049,146 @@ async fn requete_info_statistiques<M>(middleware: &M, m: MessageValideAction, ge
     let reponse = ReponseInfoStatistiques { info: resultat };
 
     Ok(Some(middleware.formatter_reponse(reponse, None)?))
+}
+
+#[derive(Deserialize)]
+struct RequeteStructureRepertoire {
+    cuuid: Option<String>,
+    // limite_bytes: Option<u64>,
+    limite_nombre: Option<u64>,
+}
+
+// #[derive(Serialize)]
+// struct ReponseStructureRepertoireItem {
+//     tuuid: String,
+//     type_node: String,
+//     metadata: DataChiffre,
+//     path_cuuids: Option<Vec<String>>,
+//     fuuids_versions: Option<Vec<String>>,
+// }
+//
+// impl<'a> From<NodeFichierRepBorrowed<'a>> for ReponseStructureRepertoireItem {
+//     fn from(value: NodeFichierRepBorrowed<'a>) -> Self {
+//         let path_cuuids = match value.path_cuuids {
+//             Some(inner) => Some(inner.into_iter().map(|s| s.to_owned()).collect()),
+//             None => None
+//         };
+//         let fuuids_versions = match value.fuuids_versions {
+//             Some(inner) => Some(inner.into_iter().map(|s| s.to_owned()).collect()),
+//             None => None,
+//         };
+//
+//         Self {
+//             tuuid: value.tuuid.to_owned(),
+//             type_node: value.type_node.to_owned(),
+//             metadata: value.metadata.into(),
+//             path_cuuids,
+//             fuuids_versions,
+//         }
+//     }
+// }
+
+#[derive(Serialize)]
+struct ReponseStructureRepertoire {
+    ok: bool,
+    #[serde(skip_serializing_if="Option::is_none")]
+    err: Option<String>,
+    liste: Vec<NodeFichierRepVersionCouranteOwned>,
+}
+
+async fn requete_structure_repertoire<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("requete_info_statistiques Consommer commande : {:?}", & m.message);
+
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => {
+            debug!("requete_info_statistiques user_id manquant du certificat");
+            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+        }
+    };
+
+    let requete: RequeteStructureRepertoire = m.message.get_msg().map_contenu()?;
+    // let limite_bytes = match requete.limite_bytes { Some(inner) => inner, None => CONST_LIMITE_TAILLE_ZIP};
+    let limite_nombre = match requete.limite_nombre { Some(inner) => inner, None => CONST_LIMITE_NOMBRE_ZIP};
+
+    let mut filtre = doc! {
+        CHAMP_USER_ID: &user_id,
+        CHAMP_SUPPRIME: false,
+    };
+
+    // Ajouter le filtre sur le cuuid (si cuuid est None, la requete est sur tous les fichiers)
+    if let Some(cuuid) = requete.cuuid.as_ref() {
+        filtre.insert("$or", vec![
+            doc!{ CHAMP_PATH_CUUIDS: cuuid },
+            doc!{ CHAMP_TUUID: cuuid }
+        ]);
+    }
+
+    let pipeline = vec![
+        doc! { "$match": filtre },
+        doc! { "$project": {
+            CHAMP_TUUID: 1, CHAMP_USER_ID: 1, CHAMP_TYPE_NODE: 1, CHAMP_PATH_CUUIDS: 1,
+            CHAMP_FUUIDS_VERSIONS: 1, CHAMP_METADATA: 1, CHAMP_MIMETYPE: 1,
+            CHAMP_SUPPRIME: 1, CHAMP_SUPPRIME_INDIRECT: 1
+        }},
+        doc! { "$lookup": {
+            "from": NOM_COLLECTION_VERSIONS,
+            "localField": "fuuids_versions.0",
+            "foreignField": "fuuid",
+            // "let": { "fuuid": "zSEfXUAKuWwK4NeWAGX573uCTCCG4xak1DEWCzk4JqcRjc6h25d2ov74c93pATRxbcCxQToY7kU3drygxWREuRkb7MCKET" },
+            "pipeline": [
+                // {"$match": { CHAMP_USER_ID: &user_id, CHAMP_FUUID: "$fuuid"}},
+                {"$match": { CHAMP_USER_ID: &user_id }},
+                {"$project": {CHAMP_TAILLE: 1, CHAMP_USER_ID: 1, CHAMP_FUUID: 1}},
+                // { "$group": {
+                //         "_id": "$user_id",
+                //         "taille": {"$sum": "$taille"}
+                //     }
+                // }
+            ],
+            "as": "versions",
+        }},
+        // doc! { "$replaceRoot": { "newRoot": {"$mergeObjects": [ {"$arrayElemAt": ["$version_courante", 0] }, "$$ROOT" ]}}},
+    ];
+
+    let mut reponse = ReponseStructureRepertoire { ok: true, err: None, liste: Vec::new() };
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut cursor = collection.aggregate(pipeline, None).await?;
+    while let Some(d) = cursor.next().await {
+        let data = d?;
+        debug!("Data : {:?}", data);
+        let row: NodeFichierRepVersionCouranteOwned = convertir_bson_deserializable(data)?;
+        debug!("Data row mappe : {:?}", row);
+        reponse.liste.push(row);
+    }
+
+    // let options = FindOptions::builder()
+    //     .projection(doc!{
+    //         CHAMP_TUUID: 1, CHAMP_USER_ID: 1, CHAMP_TYPE_NODE: 1, CHAMP_PATH_CUUIDS: 1,
+    //         CHAMP_FUUIDS_VERSIONS: 1, CHAMP_METADATA: 1,
+    //         CHAMP_SUPPRIME: 1, CHAMP_SUPPRIME_INDIRECT: 1
+    //     })
+    //     .limit((limite_nombre + 1) as i64)
+    //     .build();
+    // let collection = middleware.get_collection_typed::<NodeFichierRepBorrowed>(NOM_COLLECTION_FICHIERS_REP)?;
+    // let mut curseur = collection.find(filtre, options).await?;
+    // while curseur.advance().await? {
+    //     let row = curseur.deserialize_current()?;
+    //     reponse.liste.push(row.into());
+    // }
+
+    let reponse = if reponse.liste.len() <= limite_nombre as usize {
+        middleware.formatter_reponse(reponse, None)?
+    } else {
+        // On a depasser la limite, retourner une erreur
+        reponse.liste.clear();
+        reponse.err = Some("Limite nombre atteinte".into());
+        reponse.ok = false;
+        middleware.formatter_reponse(reponse, None)?
+    };
+
+    Ok(Some(reponse))
 }
