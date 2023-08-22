@@ -1614,7 +1614,7 @@ async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValideAction, gesti
         .sort(sort)
         .skip(skip)
         .limit(limit.clone())
-        .hint(Hint::Name("fichiers_cuuid".into()))
+        // .hint(Hint::Name("path_cuuids".into()))
         .build();
     let date_debut = requete.debut.get_datetime();
     let mut filtre = doc! {"user_id": user_id, "supprime": true};

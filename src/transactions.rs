@@ -1151,7 +1151,8 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
     -> Result<(), Box<dyn Error>>
     where M: MongoDao, C: ToString
 {
-    let mut tuuids_remaining: Vec<String> = vec![cuuid.to_string()];
+    let cuuid = cuuid.to_string();
+    let mut tuuids_remaining: Vec<String> = vec![cuuid.to_owned()];
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let collection_typed = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
@@ -1163,7 +1164,7 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
             None => { break; }  // Termine
         };
 
-        let filtre = doc! { CHAMP_TUUID: &tuuid };
+        let filtre = doc! { format!("{}.0", CHAMP_PATH_CUUIDS): &tuuid };
         let mut curseur = collection_typed.find(filtre, None).await?;
         if curseur.advance().await? {
             let row = curseur.deserialize_current()?;
@@ -1172,12 +1173,19 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
                 Some(inner) => {
                     match inner.get(0) {
                         Some(cuuid_parent) => {
+                            if *cuuid_parent == row.tuuid {
+                                Err(format!("transactions.recalculer_path_cuuids Cycle dans un path cuuid : {}", cuuid))?
+                            }
+                            // match get_path_cuuid(middleware, cuuid_parent).await? {
+                            //     Some(mut inner) => {
+                            //         inner.insert(0, row.tuuid.to_owned());
+                            //         Some(inner)
+                            //     },
+                            //     None => Some(vec![cuuid_parent.to_string(), row.tuuid.to_owned()])
+                            // }
                             match get_path_cuuid(middleware, cuuid_parent).await? {
-                                Some(mut inner) => {
-                                    inner.insert(0, row.tuuid.to_owned());
-                                    Some(inner)
-                                },
-                                None => Some(vec![cuuid_parent.to_string(), row.tuuid.to_owned()])
+                                Some(inner) => Some(inner),
+                                None => Some(vec![cuuid_parent.to_string()])
                             }
                         },
                         None => None
@@ -1287,14 +1295,15 @@ async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, transact
     // }
 
     // Recalculer les paths des sous-repertoires et fichiers
+    debug!("transaction_deplacer_fichiers_collection Recalculer path fuuids sous {}", transaction_collection.cuuid_destination);
     if let Err(e) = recalculer_path_cuuids(middleware, &transaction_collection.cuuid_destination).await {
-        error!("grosfichiers.transaction_nouvelle_version Erreur recalculer_cuuids_fichiers : {:?}", e);
+        error!("transaction_deplacer_fichiers_collection Erreur recalculer_cuuids_fichiers : {:?}", e);
     }
 
     for tuuid in &transaction_collection.inclure_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
         if let Err(e) = emettre_evenement_maj_fichier(middleware, &tuuid, EVENEMENT_FUUID_DEPLACER_FICHIER_COLLECTION).await {
-            warn!("transaction_nouvelle_version Erreur emettre_evenement_maj_fichier : {:?}", e);
+            warn!("transaction_deplacer_fichiers_collection Erreur emettre_evenement_maj_fichier : {:?}", e);
         }
     }
 
@@ -2860,8 +2869,8 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
 
     let ops = doc! {
         "$set": {
-            "version_courante": doc_bson_transaction,
-            CHAMP_FUUID_V_COURANTE: &fuuid,
+            // "version_courante": doc_bson_transaction,
+            CHAMP_FUUIDS_VERSIONS: vec![&fuuid],
             CHAMP_MIMETYPE: &mimetype,
             CHAMP_SUPPRIME: false,
         },
@@ -2871,6 +2880,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
             CHAMP_CREATION: Utc::now(),
             CHAMP_USER_ID: &user_id,
             CHAMP_METADATA: metadata,
+            CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
         },
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
