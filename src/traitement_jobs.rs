@@ -13,7 +13,7 @@ use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
-use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, ReturnDocument, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::serde_json::{json, Value};
 use millegrilles_common_rust::tokio::time::sleep;
@@ -21,6 +21,7 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::grosfichiers_constantes::*;
+use crate::transactions::{NodeFichierRepOwned, NodeFichierVersionOwned};
 
 const CONST_MAX_RETRY: i32 = 3;
 const CONST_LIMITE_BATCH: i64 = 1_000;
@@ -29,8 +30,6 @@ const CONST_INTERVALLE_ENTRETIEN: u64 = 60;
 
 const CONST_CHAMP_RETRY: &str = "retry";
 const CONST_CHAMP_DATE_MAJ: &str = "date_maj";
-const CHAMP_ETAT: &str = "etat";
-const CHAMP_INSTANCES: &str = "instances";
 
 #[async_trait]
 pub trait JobHandler: Clone + Sized + Sync {
@@ -155,7 +154,7 @@ pub async fn trouver_jobs_instances<J,M>(middleware: &M, job_handler: &J)
 {
     let doc_job: Option<DocJob> = {
         let mut filtre = doc! {
-            CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING
+            CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_PENDING
         };
         let options = FindOneOptions::builder().projection(doc! {"instances": true}).build();
         let collection = middleware.get_collection(job_handler.get_nom_collection())?;
@@ -260,12 +259,12 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
     // Reset jobs indexation avec start_date expire pour les reprendre immediatement
     {
         let filtre_start_expire = doc! {
-            CHAMP_ETAT: VIDEO_CONVERSION_ETAT_RUNNING,
+            CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_RUNNING,
             CONST_CHAMP_DATE_MAJ: { "$lte": Utc::now() - Duration::seconds(CONST_EXPIRATION_SECS) },
             // CONST_CHAMP_RETRY: { "$lt": CONST_MAX_RETRY },
         };
         let ops_expire = doc! {
-            "$set": { CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING },
+            "$set": { CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_PENDING },
             "$unset": { CONST_CHAMP_DATE_MAJ: true },
             "$currentDate": { CHAMP_MODIFICATION: true },
         };
@@ -385,7 +384,7 @@ pub async fn sauvegarder_job<M,J,S,U>(
     let mut set_on_insert = doc!{
         CHAMP_FUUID: fuuid,
         CHAMP_USER_ID: user_id,
-        CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING,
+        CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_PENDING,
         CONST_CHAMP_RETRY: 0,
         CHAMP_CREATION: &now,
     };
@@ -601,34 +600,60 @@ pub async fn get_prochaine_job<M,S>(middleware: &M, nom_collection: S, certifica
 {
     let nom_collection = nom_collection.as_ref();
     debug!("commande_get_job Get pour {}", nom_collection);
-    let prochaine_job = trouver_prochaine_job_indexation(middleware, nom_collection, &commande).await?;
+    let prochaine_job = trouver_prochaine_job_traitement(middleware, nom_collection, &commande).await?;
 
     debug!("commande_get_job Prochaine job : {:?}", prochaine_job);
 
     match prochaine_job {
         Some(job) => {
-            if let Some(retry) = job.retry {
-                if retry >= MEDIA_RETRY_LIMIT {
+            if let Some(retry) = job.retry.as_ref() {
+                if *retry >= MEDIA_RETRY_LIMIT {
                     Err(format!("commande_get_job Job avec exces de retry, ok skip jusqu'a l'entretien"))?
                 }
             }
 
-            // Recuperer les metadonnees
-            let fichier_detail: FichierDetail = {
+            let fuuid = job.fuuid.as_str();
+
+            // Recuperer les metadonnees et information de version
+            let (fichier_rep, fichier_version) = {
                 let mut filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: &job.tuuid };
-                debug!("commande_get_job Chargement job pour fichier {:?}", filtre);
-                let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-                if let Some(inner) = collection.find_one(filtre, None).await? {
-                    convertir_bson_deserializable(inner)?
-                } else {
-                    Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document inexistant user_id:{} tuuid:{}", job.user_id, job.tuuid))?
-                }
+                let collection_rep = middleware.get_collection_typed::<NodeFichierRepOwned>(
+                    NOM_COLLECTION_FICHIERS_REP)?;
+                let fichier_rep = match collection_rep.find_one(filtre, None).await? {
+                    Some(inner) => inner,
+                    None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document inexistant user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+                };
+                match fichier_rep.fuuids_versions.as_ref() {
+                    Some(inner) => if ! inner.contains(&job.fuuid) {
+                        Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - fuuid {} non associe au document user_id:{} tuuid:{}", job.fuuid, job.user_id, job.tuuid))?
+                    },
+                    None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document sans fuuids user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+                };
+                let filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_FUUID: fuuid };
+                let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(
+                    NOM_COLLECTION_VERSIONS)?;
+                let fichier_version = match collection_versions.find_one(filtre, None).await? {
+                    Some(inner) => inner,
+                    None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document version inexistant user_id:{} fuuid:{}", job.user_id, fuuid))?
+                };
+                (fichier_rep, fichier_version)
             };
 
-            let metadata = match fichier_detail.metadata {
-                Some(inner) => inner,
-                None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans metadata (1) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
-            };
+            // let fichier_detail: FichierDetail = {
+            //     let mut filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: &job.tuuid };
+            //     debug!("commande_get_job Chargement job pour fichier {:?}", filtre);
+            //     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+            //     if let Some(inner) = collection.find_one(filtre, None).await? {
+            //         convertir_bson_deserializable(inner)?
+            //     } else {
+            //         Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document inexistant user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+            //     }
+            // };
+
+            // let metadata = match fichier_rep.metadata {
+            //     Some(inner) => inner,
+            //     None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document sans metadata (1) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+            // };
             // let metadata = match fichier_detail.version_courante {
             //     Some(inner) => match inner.metadata {
             //         Some(inner) => inner,
@@ -637,14 +662,15 @@ pub async fn get_prochaine_job<M,S>(middleware: &M, nom_collection: S, certifica
             //     None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans version_courante (2) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
             // };
 
-            let mimetype = match fichier_detail.mimetype.as_ref() {
+            let metadata = fichier_rep.metadata;
+
+            let mimetype = match fichier_rep.mimetype.as_ref() {
                 Some(inner) => inner.as_str(),
                 None => "application/octet-stream"
             };
 
             // Recuperer la cle de dechiffrage du fichier
-            let cle = get_cle_job_indexation(
-                middleware, job.fuuid.as_str(), certificat).await?;
+            let cle = get_cle_job_indexation(middleware, fuuid, certificat).await?;
 
             let mut reponse_job = ReponseJob::from(job);
             reponse_job.metadata = Some(metadata);
@@ -654,12 +680,12 @@ pub async fn get_prochaine_job<M,S>(middleware: &M, nom_collection: S, certifica
 
             Ok(reponse_job)
         },
-        None => Ok(ReponseJob::from("Aucun fichier a indexer"))
+        None => Ok(ReponseJob::from("Aucun fichier a traiter"))
     }
 }
 
-pub async fn trouver_prochaine_job_indexation<M,S>(middleware: &M, nom_collection: S, commande: &CommandeGetJob)
-    -> Result<Option<BackgroundJob>, Box<dyn Error>>
+pub async fn trouver_prochaine_job_traitement<M,S>(middleware: &M, nom_collection: S, commande: &CommandeGetJob)
+                                                   -> Result<Option<BackgroundJob>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send
 {
     let collection = middleware.get_collection(nom_collection.as_ref())?;
@@ -667,25 +693,25 @@ pub async fn trouver_prochaine_job_indexation<M,S>(middleware: &M, nom_collectio
     let job: Option<BackgroundJob> = {
         // Tenter de trouver la prochaine job disponible
         let mut filtre = doc! {
-            CHAMP_ETAT: VIDEO_CONVERSION_ETAT_PENDING,
+            CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_PENDING,
             CHAMP_FLAG_DB_RETRY: {"$lt": MEDIA_RETRY_LIMIT}
         };
         if let Some(instance_id) = commande.instance_id.as_ref() {
             filtre.insert("$or", vec![doc!{"instances": {"$exists": false}}, doc!{"instances": instance_id}]);
         }
-        //let hint = Some(Hint::Name("etat_jobs".into()));
+        let hint = Some(Hint::Name("etat_jobs_2".into()));
         let options = FindOneAndUpdateOptions::builder()
-            //.hint(hint)
+            .hint(hint)
             .return_document(ReturnDocument::Before)
             .build();
         let ops = doc! {
-            "$set": {CHAMP_ETAT: VIDEO_CONVERSION_ETAT_RUNNING},
+            "$set": {CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_RUNNING},
             "$inc": {CHAMP_FLAG_DB_RETRY: 1},
             "$currentDate": {CHAMP_MODIFICATION: true, CONST_CHAMP_DATE_MAJ: true}
         };
         match collection.find_one_and_update(filtre, ops, options).await? {
             Some(d) => {
-                debug!("trouver_prochaine_job_indexation (1) Charger job : {:?}", d);
+                debug!("trouver_prochaine_job_traitement (1) Charger job : {:?}", d);
                 Some(convertir_bson_deserializable(d)?)
             },
             None => None

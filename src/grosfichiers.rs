@@ -530,19 +530,54 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
     ).await?;
 
     // Index conversion video getJob
+    let options_images_jobs = IndexOptions {
+        nom_index: Some(format!("etat_jobs_2")),
+        unique: false
+    };
+    let champs_images_jobs = vec!(
+        ChampIndex {nom_champ: String::from("etat"), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_MODIFICATION), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_INSTANCES), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_IMAGES_JOBS,
+        champs_images_jobs,
+        Some(options_images_jobs)
+    ).await?;
+
+    // Index conversion video getJob
     let options_jobs_params = IndexOptions {
-        nom_index: Some(format!("etat_jobs")),
+        nom_index: Some(format!("etat_jobs_2")),
         unique: false
     };
     let champs_jobs_params = vec!(
         ChampIndex {nom_champ: String::from("etat"), direction: 1},
         ChampIndex {nom_champ: String::from(CHAMP_MODIFICATION), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_INSTANCES), direction: 1},
     );
     middleware.create_index(
         middleware,
         NOM_COLLECTION_VIDEO_JOBS,
         champs_jobs_params,
         Some(options_jobs_params)
+    ).await?;
+
+    // Index indexation contenu
+    let options_indexation_jobs = IndexOptions {
+        nom_index: Some(format!("etat_jobs_2")),
+        unique: false
+    };
+    let champs_indexation_jobs = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_ETAT_JOB), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_FLAG_DB_RETRY), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_INSTANCES), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_INDEXATION_JOBS,
+        champs_indexation_jobs,
+        Some(options_indexation_jobs)
     ).await?;
 
     Ok(())
