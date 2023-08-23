@@ -716,14 +716,25 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     let requete: ParametresGetPermission = m.message.get_msg().map_contenu()?;
     debug!("requete_get_cles_fichiers cle parsed : {:?}", requete);
 
-    let mut conditions: Vec<Document> = Vec::new();
+    let mut filtre = doc! {
+        "$or": {
+            CHAMP_FUUIDS_VERSIONS: {"$in": &requete.fuuids},
+            "metadata.ref_hachage_bytes": {"$in": &requete.fuuids},
+        }
+    };
     if let Some(tuuids) = requete.tuuids {
-        conditions.push(doc!{"tuuid": {"$in": tuuids}});
+        filtre.insert("tuuid".to_string(), doc!{"$in": tuuids});
     }
-    conditions.push(doc!{CHAMP_FUUIDS_VERSIONS: {"$in": &requete.fuuids}});
-    conditions.push(doc!{"metadata.ref_hachage_bytes": {"$in": &requete.fuuids}});
+    //let mut conditions: Vec<Document> = Vec::new();
+    // if conditions.len() > 0 {
+    //     filtre.insert("$or".to_string(), conditions);
+    // }
 
-    let mut filtre = doc! { "$or": conditions };
+    // let mut filtre = doc! {
+    //     CHAMP_FUUIDS_VERSIONS: {"$in": &requete.fuuids},
+    //     "metadata.ref_hachage_bytes": {"$in": &requete.fuuids},
+    //     "$or": conditions
+    // };
 
     if let Some(user_id) = m.get_user_id() {
         if Some(true) == requete.partage {
