@@ -716,34 +716,28 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     let requete: ParametresGetPermission = m.message.get_msg().map_contenu()?;
     debug!("requete_get_cles_fichiers cle parsed : {:?}", requete);
 
-    let mut filtre = doc! {
-        "$or": {
-            CHAMP_FUUIDS_VERSIONS: {"$in": &requete.fuuids},
-            "metadata.ref_hachage_bytes": {"$in": &requete.fuuids},
-        }
-    };
+    // Faire une requete pour confirmer que l'usager a acces aux fuuids
+    let mut filtre_and = vec![
+        doc!{"$or":[
+            {CHAMP_FUUIDS_VERSIONS: { "$in": &requete.fuuids }},
+            {"metadata.ref_hachage_bytes": { "$in": &requete.fuuids }},
+        ]}
+    ];
+
+    let mut filtre = doc! {};
+
     if let Some(tuuids) = requete.tuuids {
         filtre.insert("tuuid".to_string(), doc!{"$in": tuuids});
     }
-    //let mut conditions: Vec<Document> = Vec::new();
-    // if conditions.len() > 0 {
-    //     filtre.insert("$or".to_string(), conditions);
-    // }
-
-    // let mut filtre = doc! {
-    //     CHAMP_FUUIDS_VERSIONS: {"$in": &requete.fuuids},
-    //     "metadata.ref_hachage_bytes": {"$in": &requete.fuuids},
-    //     "$or": conditions
-    // };
 
     if let Some(user_id) = m.get_user_id() {
         if Some(true) == requete.partage {
             // Requete de cles sur partage - permettre de charger les tuuids de tous les partages
             let tuuids_partages = get_tuuids_partages_user(middleware, user_id.as_str()).await?;
-            filtre.insert("$or", vec![
+            filtre_and.push(doc!{"$or": [
                 doc!{CHAMP_PATH_CUUIDS: {"$in": &tuuids_partages}},
                 doc!{CHAMP_TUUID: {"$in": tuuids_partages}}
-            ]);
+            ]});
         } else {
            filtre.insert(CHAMP_USER_ID, user_id);
         }
@@ -757,6 +751,9 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
             None)?)
         )
     }
+
+    // Ajouter section $and au filtre suite au ajouts pour le partage
+    filtre.insert("$and", filtre_and);
 
     // Utiliser certificat du message client (requete) pour demande de rechiffrage
     let pem_rechiffrage: Vec<String> = match &m.message.certificat {
@@ -772,7 +769,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     let opts = FindOptions::builder().projection(projection).limit(1000).build();
     let collection = middleware.get_collection_typed::<ResultatDocsPermission>(
         NOM_COLLECTION_FICHIERS_REP)?;
-    let mut curseur = collection.find(filtre, Some(opts)).await?;
+    let mut curseur = collection.find(filtre.clone(), Some(opts)).await?;
 
     let mut hachage_bytes_demandes = HashSet::new();
     hachage_bytes_demandes.extend(requete.fuuids.into_iter());
@@ -796,6 +793,11 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
                 }
             }
         }
+    }
+
+    if hachage_bytes_demandes.len() > 0 {
+        warn!("requete_get_cles_fichiers Acces cles suivantes refuse pour user_id {:?} (partage: {:?}) : {:?}\nFiltre: {:?}",
+            m.get_user_id(), requete.partage, hachage_bytes_demandes, serde_json::to_string(&filtre));
     }
 
     let permission = RequeteDechiffrage {
