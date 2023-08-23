@@ -2525,12 +2525,11 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, gestionnaire: &Gestion
             Ok(inner) => inner,
             Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion metadata vers bson : {:?}", e))?
         };
-        set_ops.insert("version_courante.metadata", metadata_bson);
+        set_ops.insert("metadata", metadata_bson);
     }
 
     if let Some(mimetype) = transaction_mappee.mimetype {
         set_ops.insert("mimetype", &mimetype);
-        set_ops.insert("version_courante.mimetype", &mimetype);
     }
 
     // Modifier champ nom si present
