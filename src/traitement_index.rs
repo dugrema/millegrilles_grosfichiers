@@ -691,6 +691,7 @@ pub struct ParametresGetPermission {
 pub struct ParametresGetClesStream {
     pub user_id: Option<String>,
     pub fuuids: Vec<String>,
+    pub jwt: Option<String>,
 }
 
 // pub async fn traiter_index_manquant<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, limite: i64)

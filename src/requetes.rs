@@ -15,6 +15,7 @@ use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::jwt_handler::verify_jwt;
 use millegrilles_common_rust::messages_generiques::CommandeDechiffrerCle;
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, filtrer_doc_id, MongoDao};
@@ -831,7 +832,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
 
 async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
                                     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+    where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509
 {
     debug!("requete_get_cles_stream Message : {:?}", &m.message);
     let requete: ParametresGetClesStream = m.message.get_msg().map_contenu()?;
@@ -842,14 +843,39 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gest
         return Ok(Some(middleware.formatter_reponse(reponse, None)?));
     }
 
-    let user_id = requete.user_id;
+    let jwt_token = match requete.jwt {
+        Some(inner) => inner,
+        None => {
+            let reponse = json!({"ok": false, "err": true, "message": "jwt absent"});
+            return Ok(Some(middleware.formatter_reponse(reponse, None)?));
+        }
+    };
+
+    let resultat_jwt = verify_jwt(middleware, jwt_token.as_str()).await?;
+
+    let user_id = match resultat_jwt.user_id {
+        Some(inner) => inner,
+        None => {
+            let reponse = json!({"ok": false, "err": true, "message": "jwt invalide - user_id manquant"});
+            return Ok(Some(middleware.formatter_reponse(reponse, None)?));
+        }
+    };
+    let fuuid = match resultat_jwt.fuuid {
+        Some(inner) => inner,
+        None => {
+            let reponse = json!({"ok": false, "err": true, "message": "jwt invalide - subject (sub) manquant"});
+            return Ok(Some(middleware.formatter_reponse(reponse, None)?));
+        }
+    };
+
+    // let user_id = requete.user_id;
 
     // let mut hachage_bytes = Vec::new();
     // let mut hachage_bytes_demandes = HashSet::new();
     // hachage_bytes_demandes.extend(requete.fuuids.iter().map(|f| f.to_string()));
 
     let filtre = doc!{
-        "fuuids": { "$in": &requete.fuuids },
+        "fuuids": { "$in": vec![&fuuid] },
         "user_id": &user_id,
         "mimetype": {"$regex": "(video\\/|audio\\/)"},
     };
