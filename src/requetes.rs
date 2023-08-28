@@ -9,13 +9,14 @@ use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{Bson, doc, Document};
 use millegrilles_common_rust::bson::serde_helpers::deserialize_chrono_datetime_from_bson_datetime;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::chiffrage::FormatChiffrage;
 use millegrilles_common_rust::chrono::{Date, DateTime, Utc};
-use millegrilles_common_rust::common_messages::RequeteDechiffrage;
+use millegrilles_common_rust::common_messages::{InformationDechiffrage, ReponseDechiffrage, RequeteDechiffrage};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
-use millegrilles_common_rust::jwt_handler::verify_jwt;
+use millegrilles_common_rust::jwt_handler::{generer_jwt, verify_jwt};
 use millegrilles_common_rust::messages_generiques::CommandeDechiffrerCle;
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, filtrer_doc_id, MongoDao};
@@ -70,6 +71,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_PARTAGES_CONTACT => requete_partages_contact(middleware, message, gestionnaire).await,
             REQUETE_INFO_STATISTIQUES => requete_info_statistiques(middleware, message, gestionnaire).await,
             REQUETE_STRUCTURE_REPERTOIRE => requete_structure_repertoire(middleware, message, gestionnaire).await,
+            REQUETE_JWT_STREAMING => requete_creer_jwt_streaming(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (1): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -122,6 +124,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_PARTAGES_CONTACT => requete_partages_contact(middleware, message, gestionnaire).await,
             REQUETE_INFO_STATISTIQUES => requete_info_statistiques(middleware, message, gestionnaire).await,
             REQUETE_STRUCTURE_REPERTOIRE => requete_structure_repertoire(middleware, message, gestionnaire).await,
+            REQUETE_JWT_STREAMING => requete_creer_jwt_streaming(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -468,6 +471,13 @@ async fn requete_documents_par_fuuid<M>(middleware: &M, m: MessageValideAction, 
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
+#[derive(Serialize)]
+struct ReponseVerifierAccesFuuids {
+    fuuids_acces: Vec<String>,
+    acces_tous: bool,
+    user_id: String,
+}
+
 async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage,
@@ -513,8 +523,178 @@ async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValideAction
 
     let acces_tous = resultat.len() == requete.fuuids.len();
 
-    let reponse = json!({ "fuuids_acces": resultat , "acces_tous": acces_tous, "user_id": user_id });
+    // let reponse = json!({ "fuuids_acces": resultat , "acces_tous": acces_tous, "user_id": user_id });
+    let reponse = ReponseVerifierAccesFuuids {
+        fuuids_acces: resultat,
+        acces_tous,
+        user_id,
+    };
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+#[derive(Serialize)]
+struct ReponseCreerJwtStreaming {
+    ok: bool,
+    err: Option<String>,
+    jwt_token: Option<String>,
+}
+
+async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_verifier_acces_fuuids Message : {:?}", & m.message);
+    let requete: RequeteGenererJwtStreaming = m.message.get_msg().map_contenu()?;
+    debug!("requete_verifier_acces_fuuids cle parsed : {:?}", requete);
+
+    let user_id = match m.get_user_id() {
+        Some(u) => u,
+        None => return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User_id manquant"}), None)?))
+    };
+
+    let user_id = match requete.contact_id.as_ref() {
+        Some(contact_id) => {
+            // Verifier que le contact_id et les contact_user_id correspondent, extraire user_id partage
+            let filtre = doc! { CHAMP_CONTACT_ID: &contact_id, CHAMP_CONTACT_USER_ID: user_id };
+            let collection = middleware.get_collection_typed::<RowPartageContactOwned>(NOM_COLLECTION_PARTAGE_CONTACT)?;
+            let contact = match collection.find_one(filtre, None).await? {
+                Some(inner) => inner,
+                None => {
+                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "contact_id et user_id mismatch ou manquant"}), None)?))
+                }
+            };
+            // Ok, le contact est valide. Retourner user_id de l'usager qui a fait le partage.
+            contact.user_id
+        },
+        None => user_id.to_owned()
+    };
+
+    // Verifier si l'usager a acces aux fuuids demandes
+    let mut fuuids = Vec::new();
+    fuuids.push(requete.fuuid.as_str());
+    if let Some(fuuid) = requete.fuuid_ref.as_ref() {
+        fuuids.push(fuuid.as_str());
+    }
+    let resultat = verifier_acces_usager(middleware, &user_id, &fuuids).await?;
+    if resultat.len() != fuuids.len() {
+        warn!("requete_verifier_acces_fuuids Mismatch, l'usager n'a pas acces aux fuuids demandes");
+        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces aux fichiers est refuse"}), None)?))
+    }
+
+    // L'acces aux fuuids est OK. Charger l'information de dechiffrage.
+    let info_stream = get_information_fichier_stream(middleware, &user_id, &requete.fuuid, requete.fuuid_ref.as_ref()).await?;
+    let jwt_token = generer_jwt(middleware, &user_id, &requete.fuuid, info_stream.mimetype, info_stream.dechiffrage)?;
+
+    // let reponse = json!({ "fuuids_acces": resultat , "acces_tous": acces_tous, "user_id": user_id });
+    let reponse = ReponseCreerJwtStreaming {
+        ok: true,
+        err: None,
+        jwt_token: Some(jwt_token)
+    };
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+}
+
+struct InformationFichierStream {
+    mimetype: String,
+    dechiffrage: InformationDechiffrage,
+}
+
+async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuuid: S, fuuid_ref_in: Option<R>)
+    -> Result<InformationFichierStream, Box<dyn Error>>
+    where
+        M: GenerateurMessages + MongoDao,
+        U: AsRef<str>, S: AsRef<str>, R: AsRef<str>
+{
+    let user_id = user_id.as_ref();
+    let fuuid = fuuid.as_ref();
+    let fuuid_ref = match fuuid_ref_in.as_ref() { Some(inner) => Some(inner.as_ref()), None => None };
+
+    let filtre = doc! { CHAMP_USER_ID: user_id, CHAMP_FUUIDS: fuuid };
+    let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(
+        NOM_COLLECTION_VERSIONS)?;
+    let fichier = match collection.find_one(filtre, None).await? {
+        Some(inner) => inner,
+        None => Err(format!("requetes.get_information_fichier_stream Fuuid inconnu {} pour user_id {}", fuuid, user_id))?
+    };
+
+    let resultat = match fuuid_ref {
+        Some(fuuid_ref) => {
+            // On a un fuuid de reference - l'information de dechiffrage est dans
+            // la collection VERSIONS (deja charge).
+            if fuuid_ref != fichier.fuuid.as_str() {
+                Err(format!("requetes.get_information_fichier_stream Mismatch fuuid_ref {} et fichier trouve (db) {}", fuuid_ref, fichier.fuuid))?
+            }
+
+            // Trouver video correspondant au fuuid.
+            let video = match fichier.video {
+                Some(inner) => {
+                    let mut video_trouve: Vec<TransactionAssocierVideoVersionDetail> = inner.into_iter()
+                        .filter(|f| f.1.fuuid_video.as_str() == fuuid)
+                        .map(|f| f.1)
+                        .collect();
+                    match video_trouve.pop() {
+                        Some(inner) => inner,
+                        None => Err(format!("requetes.get_information_fichier_stream Aucun video avec fuuid {} pour fuuid_ref {}", fuuid, fuuid_ref))?
+                    }
+                },
+                None => Err(format!("requetes.get_information_fichier_stream Aucuns videos pour fuuid_ref {}", fuuid_ref))?
+            };
+
+            let format = match video.format.as_ref() {
+                Some(inner) => FormatChiffrage::try_from(inner.as_str())?,
+                None => Err(format!("requetes.get_information_fichier_stream Format chiffrage video manquant pour fuuid {}", fuuid))?
+            };
+
+            let info_dechiffrage = InformationDechiffrage {
+                format,
+                ref_hachage_bytes: Some(fuuid_ref.to_string()),
+                header: video.header,
+                tag: None,
+            };
+
+            InformationFichierStream {
+                mimetype: video.mimetype,
+                dechiffrage: info_dechiffrage,
+            }
+        },
+        None => {
+            // On n'a pas de fuuid de reference - faire requete vers le maitre des cles.
+            let requete = RequeteDechiffrage {
+                domaine: DOMAINE_NOM.to_string(),
+                liste_hachage_bytes: vec![fuuid.to_string()],
+                certificat_rechiffrage: None,
+            };
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE)
+                .exchanges(vec![Securite::L4Secure])
+                .build();
+
+            debug!("Transmettre requete permission dechiffrage cle : {:?}", requete);
+            let reponse = middleware.transmettre_requete(routage, &requete).await?;
+            let info_dechiffrage = if let TypeMessage::Valide(reponse) = reponse {
+                debug!("Reponse dechiffrage : {:?}", reponse);
+                let mut reponse_dechiffrage: ReponseDechiffrage = reponse.message.get_msg().map_contenu()?;
+                let cle = match reponse_dechiffrage.cles.remove(fuuid) {
+                    Some(inner) => inner,
+                    None => Err(format!("requetes.get_information_fichier_stream Cle fuuid {} manquante", fuuid))?
+                };
+                InformationDechiffrage {
+                    format: FormatChiffrage::try_from(cle.format.as_str())?,
+                    ref_hachage_bytes: None,
+                    header: cle.header,
+                    tag: cle.tag,
+                }
+            } else {
+                Err(format!("Erreur requete information dechiffrage {}, reponse invalide", fuuid))?
+            };
+
+            InformationFichierStream {
+                mimetype: fichier.mimetype,
+                dechiffrage: info_dechiffrage,
+            }
+        }
+    };
+
+    Ok(resultat)
 }
 
 async fn requete_contenu_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -1199,6 +1379,13 @@ struct RequeteDocumentsParFuuids {
 struct RequeteVerifierAccesFuuids {
     user_id: Option<String>,
     fuuids: Vec<String>,
+    contact_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteGenererJwtStreaming {
+    fuuid: String,
+    fuuid_ref: Option<String>,
     contact_id: Option<String>,
 }
 

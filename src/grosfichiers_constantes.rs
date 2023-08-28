@@ -45,6 +45,7 @@ pub const REQUETE_PARTAGES_USAGER: &str = "getPartagesUsager";
 pub const REQUETE_PARTAGES_CONTACT: &str = "getPartagesContact";
 pub const REQUETE_INFO_STATISTIQUES: &str = "getInfoStatistiques";
 pub const REQUETE_STRUCTURE_REPERTOIRE: &str = "getStructureRepertoire";
+pub const REQUETE_JWT_STREAMING: &str = "getJwtStreaming";
 
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
