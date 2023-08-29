@@ -1164,40 +1164,23 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
             None => { break; }  // Termine
         };
 
+        let path_cuuids = {
+            match get_path_cuuid(middleware, &tuuid).await? {
+                Some(inner) => Some(inner),
+                None => Some(vec![tuuid.clone()])
+            }
+        };
+
         let filtre = doc! { format!("{}.0", CHAMP_PATH_CUUIDS): &tuuid };
         let mut curseur = collection_typed.find(filtre, None).await?;
-        if curseur.advance().await? {
+        while curseur.advance().await? {
             let row = curseur.deserialize_current()?;
             let type_node = TypeNode::try_from(row.type_node)?;
-            let path_cuuids = match row.path_cuuids {
-                Some(inner) => {
-                    match inner.get(0) {
-                        Some(cuuid_parent) => {
-                            if *cuuid_parent == row.tuuid {
-                                Err(format!("transactions.recalculer_path_cuuids Cycle dans un path cuuid : {}", cuuid))?
-                            }
-                            // match get_path_cuuid(middleware, cuuid_parent).await? {
-                            //     Some(mut inner) => {
-                            //         inner.insert(0, row.tuuid.to_owned());
-                            //         Some(inner)
-                            //     },
-                            //     None => Some(vec![cuuid_parent.to_string(), row.tuuid.to_owned()])
-                            // }
-                            match get_path_cuuid(middleware, cuuid_parent).await? {
-                                Some(inner) => Some(inner),
-                                None => Some(vec![cuuid_parent.to_string()])
-                            }
-                        },
-                        None => None
-                    }
-                },
-                None => None
-            };
 
             // Mettre a jour path_cuuids
             let filtre = doc! { CHAMP_TUUID: row.tuuid };
             let ops = doc! {
-                "$set": { CHAMP_PATH_CUUIDS: path_cuuids },
+                "$set": { CHAMP_PATH_CUUIDS: &path_cuuids },
                 "$currentDate": { CHAMP_MODIFICATION: true }
             };
             collection.update_one(filtre, ops, None).await?;
@@ -1212,27 +1195,6 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
                 }
             }
         }
-
-        // recalculer_cuuids_fichiers(middleware, vec![&tuuid], None::<Vec<&str>>).await?;
-
-        // let path_cuuids = get_path_cuuid(middleware, &tuuid).await?;
-        //
-        // let filtre = doc! {CHAMP_TUUID: &tuuid, "type_node": type_node_repertoire};
-        // let mut curseur = collection.find(filtre, None).await?;
-        //
-        // while let Some(r) = curseur.next().await {
-        //     let repertoire: FichierDetail = convertir_bson_deserializable(r?)?;
-        //
-        //     // Ajouter le nouveau cuuid a tous les fichiers du sous-repertoire
-        //     let filtre_ajout_cuuid = doc! { CHAMP_TUUID: &repertoire.tuuid };
-        //     let ops_ajout_cuuid = doc! {
-        //         "set": { CHAMP_PATH_CUUIDS: path_cuuids.as_ref() },
-        //         "$currentDate": { CHAMP_MODIFICATION: true }
-        //     };
-        //     collection.update_one(filtre_ajout_cuuid, ops_ajout_cuuid, None).await?;
-        //
-        //     tuuids_remaining.push(repertoire.tuuid);
-        // }
     }
 
     Ok(())
@@ -1281,18 +1243,6 @@ async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, transact
         };
         debug!("grosfichiers.transaction_deplacer_fichiers_collection Resultat transaction update : {:?}", resultat);
     }
-    // { // Retirer de l'origine
-    //     let pull_from_array = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid_origine};
-    //     let ops = doc! {
-    //         "$pull": &pull_from_array,
-    //         "$currentDate": {CHAMP_MODIFICATION: true}
-    //     };
-    //     let resultat = match collection.update_many(filtre, ops, None).await {
-    //         Ok(r) => r,
-    //         Err(e) => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Erreur update_one sur transaction : {:?}", e))?
-    //     };
-    //     debug!("grosfichiers.transaction_deplacer_fichiers_collection Resultat transaction update : {:?}", resultat);
-    // }
 
     // Recalculer les paths des sous-repertoires et fichiers
     debug!("transaction_deplacer_fichiers_collection Recalculer path fuuids sous {}", transaction_collection.cuuid_destination);
@@ -1581,87 +1531,6 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, transaction: T) -
         Ok(inner) => inner,
         Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur supprimer_tuuids : {:?}", e))?
     };
-
-    // // Determiner tous les fichiers a supprimer - requis pour fichiersVersions
-    // let fuuids_a_supprimer= {
-    //     let mut fuuids_a_supprimer = HashSet::new();
-    //     let filtre = doc! {
-    //         CHAMP_USER_ID: &user_id,
-    //         CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
-    //         CHAMP_SUPPRIME: false,
-    //         "$or": [
-    //             { CHAMP_TUUID: {"$in": &transaction_collection.tuuids} },
-    //             { CHAMP_PATH_CUUIDS: {"$in": &transaction_collection.tuuids} },
-    //         ]
-    //     };
-    //     let collection_fichierrep = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
-    //         NOM_COLLECTION_FICHIERS_REP)?;
-    //     let mut curseur = match collection_fichierrep.find(filtre, None).await {
-    //         Ok(inner) => inner,
-    //         Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur find fuuids_a_supprimer : {:?}", e))?
-    //     };
-    //     loop {
-    //     // while curseur.advance().await? {
-    //         match curseur.advance().await {
-    //             Ok(inner) => {
-    //                 if ! inner { break; } // Done
-    //             },
-    //             Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur curseur.advance : {:?}", e))?
-    //         }
-    //         let row = match curseur.deserialize_current() {
-    //             Ok(inner) => inner,
-    //             Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur deserialize_current : {:?}", e))?
-    //         };
-    //         if let Some(fuuids) = row.fuuids_versions {
-    //             if let Some(fuuid) = fuuids.first() {
-    //                 fuuids_a_supprimer.insert(fuuid.to_string());
-    //             }
-    //         }
-    //     }
-    //     fuuids_a_supprimer
-    // };
-    //
-    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    //
-    // // Marquer les collections, repertoires et fichiers supprimes directement.
-    // {
-    //     let filtre = doc! {
-    //         CHAMP_TUUID: {"$in": &transaction_collection.tuuids},
-    //         CHAMP_USER_ID: &user_id,
-    //     };
-    //     debug!("grosfichiers.transaction_supprimer_documents Filtre marquer tuuids supprimes : {:?}", filtre);
-    //     let ops = doc! {
-    //         "$set": { CHAMP_SUPPRIME: true },
-    //         "$currentDate": { CHAMP_MODIFICATION: true },
-    //     };
-    //     if let Err(e) = collection.update_many(filtre, ops, None).await {
-    //         Err(format!("grosfichiers.transaction_supprimer_documents Erreur supprimer fichiers : {:?}", e))?
-    //     }
-    // }
-    //
-    // // Marquer les sous-repertoires et fichiers supprimes indirectement (via arborescence)
-    // {
-    //     let filtre = doc! {
-    //         CHAMP_PATH_CUUIDS: {"$in": &transaction_collection.tuuids},
-    //         CHAMP_USER_ID: &user_id,
-    //         CHAMP_SUPPRIME: false,
-    //     };
-    //     debug!("grosfichiers.transaction_supprimer_documents Filtre marquer tuuids supprimes : {:?}", filtre);
-    //     let ops = doc! {
-    //         "$set": { CHAMP_SUPPRIME: true, CHAMP_SUPPRIME_INDIRECT: true },
-    //         "$currentDate": { CHAMP_MODIFICATION: true },
-    //     };
-    //     if let Err(e) = collection.update_many(filtre, ops, None).await {
-    //         Err(format!("grosfichiers.transaction_supprimer_documents Erreur supprimer fichiers : {:?}", e))?
-    //     }
-    // }
-    //
-    // // Parcourir les elements pour recuperer les tuuids qui viennent d'etre supprimes (indirect)
-    // let tuuids: Vec<&str> = transaction_collection.tuuids.iter().map(|c| c.as_str()).collect();
-    // let tuuids_retires_par_cuuid = match find_tuuids_retires(middleware, user_id, tuuids).await {
-    //     Ok(inner) => inner,
-    //     Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur find_tuuids_retires : {:?}", e))?
-    // };
 
     debug!("transaction_supprimer_documents Emettre messages pour tuuids retires : {:?}", tuuids_retires_par_cuuid);
 
