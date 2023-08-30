@@ -158,7 +158,7 @@ pub const CHAMP_INSTANCES: &str = "instances";
 
 pub const ERREUR_MEDIA_TOOMANYRETRIES: i32 = 1;
 
-pub const MEDIA_RETRY_LIMIT: i32 = 2;
+pub const MEDIA_RETRY_LIMIT: i32 = 5;
 pub const MEDIA_IMAGE_BACTH_DEFAULT: i64 = 50;
 pub const LIMITE_INDEXATION_BATCH: i64 = 1000;
 

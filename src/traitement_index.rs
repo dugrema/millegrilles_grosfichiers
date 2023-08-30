@@ -29,7 +29,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
-use crate::traitement_jobs::{BackgroundJob, CommandeGetJob, get_prochaine_job, JobHandler};
+use crate::traitement_jobs::{BackgroundJob, CommandeGetJob, get_prochaine_job, JobHandler, ReponseJob};
 
 const EVENEMENT_INDEXATION_DISPONIBLE: &str = "jobIndexationDisponible";
 
@@ -564,134 +564,7 @@ pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValideActi
 
     debug!("commande_indexation_get_job Prochaine job : {:?}", reponse_prochaine_job);
     Ok(Some(middleware.formatter_reponse(reponse_prochaine_job, None)?))
-
-    // let prochaine_job = trouver_prochaine_job_indexation(middleware).await?;
-    //
-    // debug!("commande_video_get_job Prochaine job : {:?}", prochaine_job);
-    //
-    // match prochaine_job {
-    //     Some(job) => {
-    //
-    //         // Recuperer les metadonnees
-    //         let fichier_detail: FichierDetail = {
-    //             let mut filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: &job.tuuid };
-    //             let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    //             if let Some(inner) = collection.find_one(filtre, None).await? {
-    //                 convertir_bson_deserializable(inner)?
-    //             } else {
-    //                 Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document inexistant user_id:{} tuuid:{}", job.user_id, job.tuuid))?
-    //             }
-    //         };
-    //
-    //         let metadata = match fichier_detail.version_courante {
-    //             Some(inner) => match inner.metadata {
-    //                 Some(inner) => inner,
-    //                 None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans metadata (1) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
-    //             },
-    //             None => Err(format!("commandes.commande_indexation_get_job Erreur indexation - job pour document sans metadata (2) user_id:{} tuuid:{}", job.user_id, job.tuuid))?
-    //         };
-    //
-    //         let mimetype = match fichier_detail.mimetype.as_ref() {
-    //             Some(inner) => inner.as_str(),
-    //             None => "application/octet-stream"
-    //         };
-    //
-    //         // Recuperer la cle de dechiffrage du fichier
-    //         let cle = get_cle_job_indexation(
-    //             middleware, job.fuuid.as_str(), certificat.as_ref()).await?;
-    //
-    //         let reponse_job = ReponseJobIndexation {
-    //             ok: true,
-    //             tuuid: job.tuuid,
-    //             fuuid: job.fuuid,
-    //             user_id: job.user_id,
-    //             mimetype: mimetype.to_string(),
-    //             metadata,
-    //             cle,
-    //         };
-    //         debug!("Reponse job : {:?}", reponse_job);
-    //
-    //         Ok(Some(middleware.formatter_reponse(reponse_job, None)?))
-    //     },
-    //     None => Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Aucun fichier a indexer"}), None)?))
-    // }
 }
-
-// pub async fn trouver_prochaine_job_indexation<M>(middleware: &M)
-//     -> Result<Option<JobIndexation>, Box<dyn Error>>
-//     where M: GenerateurMessages + MongoDao + ValidateurX509
-// {
-//     let collection = middleware.get_collection(NOM_COLLECTION_INDEXATION_JOBS)?;
-//
-//     let job: Option<JobIndexation> = {
-//         // Tenter de trouver la prochaine job disponible
-//         let filtre = doc! {CHAMP_FLAG_INDEX_ETAT: VIDEO_CONVERSION_ETAT_PENDING};
-//         //let hint = Some(Hint::Name("etat_jobs".into()));
-//         let options = FindOneAndUpdateOptions::builder()
-//             //.hint(hint)
-//             .return_document(ReturnDocument::Before)
-//             .build();
-//         let ops = doc! {
-//             "$set": {CHAMP_FLAG_INDEX_ETAT: VIDEO_CONVERSION_ETAT_RUNNING},
-//             "$inc": {CHAMP_FLAG_INDEX_RETRY: 1},
-//             "$currentDate": {CHAMP_MODIFICATION: true, CHAMP_INDEX_START: true}
-//         };
-//         match collection.find_one_and_update(filtre, ops, options).await? {
-//             Some(d) => {
-//                 debug!("trouver_prochaine_job_indexation (1) Charger job : {:?}", d);
-//                 Some(convertir_bson_deserializable(d)?)
-//             },
-//             None => None
-//         }
-//     };
-//
-//     Ok(job)
-// }
-
-// pub async fn get_cle_job_indexation<M,S>(middleware: &M, fuuid: S, certificat: &EnveloppeCertificat)
-//     -> Result<InformationCle, Box<dyn Error>>
-//     where
-//         M: GenerateurMessages + MongoDao + ValidateurX509,
-//         S: AsRef<str>
-// {
-//     let fuuid = fuuid.as_ref();
-//
-//     let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE)
-//         .exchanges(vec![Securite::L4Secure])
-//         .build();
-//
-//     // Utiliser certificat du message client (requete) pour demande de rechiffrage
-//     let pem_rechiffrage: Vec<String> = {
-//         let fp_certs = certificat.get_pem_vec();
-//         fp_certs.into_iter().map(|cert| cert.pem).collect()
-//     };
-//
-//     let permission = RequeteDechiffrage {
-//         domaine: DOMAINE_NOM.to_string(),
-//         liste_hachage_bytes: vec![fuuid.to_string()],
-//         certificat_rechiffrage: Some(pem_rechiffrage),
-//     };
-//
-//     debug!("get_cle_job_indexation Transmettre requete permission dechiffrage cle : {:?}", permission);
-//     let cle = if let TypeMessage::Valide(reponse) = middleware.transmettre_requete(routage, &permission).await? {
-//         let reponse: ReponseDechiffrageCles = reponse.message.parsed.map_contenu()?;
-//         if reponse.acces.as_str() != "1.permis" {
-//             Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : acces refuse ({}) a cle {}", reponse.acces, fuuid))?
-//         }
-//
-//         match reponse.cles {
-//             Some(mut inner) => match inner.remove(fuuid) {
-//                 Some(inner) => inner,
-//                 None => Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : cle non recue pour {}", fuuid))?
-//             },
-//             None => Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : cles vides pour {}", fuuid))?
-//         }
-//     } else {
-//         Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : mauvais type message recu"))?
-//     };
-//
-//     Ok(cle)
-// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ParametresRecherche {

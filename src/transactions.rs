@@ -596,105 +596,16 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         };
     }
 
-    // // Inserer document de version
-    // {
-    //     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    //     let mut doc_version = doc_bson_transaction.clone();
-    //     doc_version.insert(CHAMP_TUUID, &tuuid);
-    //     doc_version.insert(CHAMP_USER_ID, &user_id);
-    //     doc_version.insert(CHAMP_FUUIDS, vec![&fuuid]);
-    //     doc_version.insert(CHAMP_FUUIDS_RECLAMES, vec![&fuuid]);
-    //
-    //     // Information optionnelle pour accelerer indexation/traitement media
-    //     if mimetype.starts_with("image") {
-    //         flag_media = true;
-    //         doc_version.insert(CHAMP_FLAG_MEDIA, "image");
-    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
-    //     } else if mimetype.starts_with("video") {
-    //         flag_media = true;
-    //         doc_version.insert(CHAMP_FLAG_MEDIA, "video");
-    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
-    //         doc_version.insert(CHAMP_FLAG_VIDEO_TRAITE, false);
-    //     } else if mimetype =="application/pdf" {
-    //         flag_media = true;
-    //         doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
-    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
-    //     }
-    //     doc_version.insert(CHAMP_FLAG_INDEX, false);
-    //
-    //     match collection.insert_one(doc_version, None).await {
-    //         Ok(_) => (),
-    //         Err(e) => {
-    //             flag_duplication = verifier_erreur_duplication_mongo(&*e.kind);
-    //             if(flag_duplication) {
-    //                 // Ok, on va traiter la version meme si elle est deja conservee (idempotent)
-    //                 info!("transaction_nouvelle_version Recu transaction deja presente dans versionsFichiers (fuuid: {}), on traite sans inserer", fuuid);
-    //                 ()
-    //             } else {
-    //                 Err(format!("transaction_nouvelle_version Erreur insertion nouvelle version {} : {:?}", fuuid, e))?
-    //             }
-    //         }
-    //     }
-    // }
-    //
-    // // Retirer champs cles - ils sont inutiles dans la version
-    // doc_bson_transaction.remove(CHAMP_TUUID);
-    // doc_bson_transaction.remove(CHAMP_FUUID);
-    //
-    // let filtre = doc! {CHAMP_TUUID: &tuuid};
-    // let mut add_to_set = doc!{
-    //     CHAMP_FUUIDS: &fuuid,
-    //     CHAMP_FUUIDS_RECLAMES: &fuuid,
-    // };
-    // // Ajouter collection au besoin
-    // if let Some(c) = cuuid.as_ref() {
-    //     add_to_set.insert(CHAMP_CUUIDS, c);
-    // }
-    //
-    // let type_node: &str = TypeNode::Fichier.into();
-    //
-    // let ops = doc! {
-    //     "$set": {
-    //         "version_courante": doc_bson_transaction,
-    //         CHAMP_FUUID_V_COURANTE: &fuuid,
-    //         CHAMP_MIMETYPE: &mimetype,
-    //         CHAMP_SUPPRIME: false,
-    //     },
-    //     "$addToSet": add_to_set,
-    //     "$setOnInsert": {
-    //         // "nom": &nom_fichier,
-    //         "tuuid": &tuuid,
-    //         CHAMP_CREATION: Utc::now(),
-    //         CHAMP_USER_ID: &user_id,
-    //         CHAMP_TYPE_NODE: type_node,
-    //     },
-    //     "$currentDate": {CHAMP_MODIFICATION: true}
-    // };
-    // let opts = UpdateOptions::builder().upsert(true).build();
-    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    // debug!("transaction_nouvelle_version nouveau fichier update ops : {:?}", ops);
-    // let resultat = match collection.update_one(filtre, ops, opts).await {
-    //     Ok(r) => r,
-    //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur update_one sur transcation : {:?}", e))?
-    // };
-    // debug!("transaction_nouvelle_version nouveau fichier Resultat transaction update : {:?}", resultat);
-    //
-    // if let Some(cuuid) = cuuid.as_ref() {
-    //     if let Err(e) = recalculer_cuuids_fichiers(middleware, vec![cuuid], Some(vec![&tuuid])).await {
-    //         Err(format!("grosfichiers.transaction_nouvelle_version Erreur recalculer_cuuids_fichiers : {:?}", e))?
-    //     }
-    // }
-
     if flag_duplication == false {
         // On emet les messages de traitement uniquement si la transaction est nouvelle
         // Conserver information pour indexer le fichier
-        let mut parametres = HashMap::new();
-        parametres.insert("mimetype".to_string(), Bson::String(mimetype.clone()));
-        if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
-            middleware, &fuuid, &user_id, None,
-            None, Some(parametres), false).await {
-            error!("transaction_nouvelle_version Erreur ajout_job_indexation : {:?}", e);
-        }
+        // let mut parametres = HashMap::new();
+        // parametres.insert("mimetype".to_string(), Bson::String(mimetype.clone()));
+        // if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
+        //     middleware, &fuuid, &user_id, None,
+        //     None, Some(parametres), false).await {
+        //     error!("transaction_nouvelle_version Erreur ajout_job_indexation : {:?}", e);
+        // }
         // if let Err(e) = ajout_job_indexation(middleware, &tuuid, &fuuid, &user_id, &mimetype).await {
         //     error!("transaction_nouvelle_version Erreur ajout_job_indexation : {:?}", e);
         // }

@@ -715,11 +715,19 @@ pub async fn trouver_prochaine_job_traitement<M,S>(middleware: &M, nom_collectio
         // Tenter de trouver la prochaine job disponible
         let mut filtre = doc! {
             CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_PENDING,
-            CHAMP_FLAG_DB_RETRY: {"$lt": MEDIA_RETRY_LIMIT}
+            CHAMP_FLAG_DB_RETRY: {"$lt": MEDIA_RETRY_LIMIT},
         };
-        if let Some(instance_id) = commande.instance_id.as_ref() {
-            filtre.insert("$or", vec![doc!{"instances": {"$exists": false}}, doc!{"instances": instance_id}]);
+        match commande.instance_id.as_ref() {
+            Some(instance_id) => {
+                filtre.insert("$or", vec![doc!{"instances": {"$exists": false}}, doc!{"instances": instance_id}]);
+            },
+            None => {
+                filtre.insert("instances.0", doc! {"$exists": true} );
+            }
         }
+        // if let Some(instance_id) = commande.instance_id.as_ref() {
+        //     filtre.insert("$or", vec![doc!{"instances": {"$exists": false}}, doc!{"instances": instance_id}]);
+        // }
         let hint = Some(Hint::Name("etat_jobs_2".into()));
         let options = FindOneAndUpdateOptions::builder()
             .hint(hint)
@@ -783,6 +791,8 @@ pub async fn get_cle_job_indexation<M,S>(middleware: &M, fuuid: S, certificat: &
     } else {
         Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : mauvais type message recu"))?
     };
+
+    debug!("get_cle_job_indexation Cle recue pour {}, format dechiffrage  {}", cle.hachage_bytes, cle.format);
 
     Ok(cle)
 }

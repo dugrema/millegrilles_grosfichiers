@@ -1135,7 +1135,6 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAc
         middleware, commande.fuuid, Some(commande.user_id), None, true).await {
         error!("commande_confirmer_fichier_indexe Erreur traitement flag : {:?}", e);
     }
-    // set_flag_indexe(middleware, &commande.fuuid, &commande.user_id).await?;
 
     Ok(None)
 }
