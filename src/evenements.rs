@@ -89,7 +89,7 @@ async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValideAction
     };
 
     let mut ops = doc! {
-        "$currentDate": {CHAMP_MODIFICATION: true}
+        "$currentDate": { CHAMP_MODIFICATION: true, CHAMP_DATE_MAJ: true }
     };
     match evenement.pct_progres {
         Some(p) => {

@@ -154,6 +154,7 @@ pub const CHAMP_PATH_CUUIDS: &str = "path_cuuids";
 pub const CHAMP_TAILLE: &str = "taille";
 pub const CHAMP_ETAT_JOB: &str = "etat";
 pub const CHAMP_INSTANCES: &str = "instances";
+pub const CHAMP_DATE_MAJ: &str = "date_maj";
 
 pub const ERREUR_MEDIA_TOOMANYRETRIES: i32 = 1;
 
