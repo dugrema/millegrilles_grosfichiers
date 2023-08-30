@@ -530,9 +530,9 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         Some(options_fuuids_params)
     ).await?;
 
-    // Index conversion video getJob
+    // Index conversion images getJob
     let options_images_jobs = IndexOptions {
-        nom_index: Some(format!("etat_jobs_2")),
+        nom_index: Some(NOM_INDEX_ETAT_JOBS.to_string()),
         unique: false
     };
     let champs_images_jobs = vec!(
@@ -547,9 +547,38 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         Some(options_images_jobs)
     ).await?;
 
+    let options_images_user_id_tuuids = IndexOptions {
+        nom_index: Some(NOM_INDEX_USER_ID_TUUIDS.to_string()),
+        unique: false
+    };
+    let champs_images_user_id_tuuids = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_USER_ID), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_IMAGES_JOBS,
+        champs_images_user_id_tuuids,
+        Some(options_images_user_id_tuuids)
+    ).await?;
+
+    let options_images_retry = IndexOptions {
+        nom_index: Some(NOM_INDEX_RETRY.to_string()),
+        unique: false
+    };
+    let champs_images_retry = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_FLAG_DB_RETRY), direction: -1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_IMAGES_JOBS,
+        champs_images_retry,
+        Some(options_images_retry)
+    ).await?;
+
     // Index conversion video getJob
     let options_jobs_params = IndexOptions {
-        nom_index: Some(format!("etat_jobs_2")),
+        nom_index: Some(NOM_INDEX_ETAT_JOBS.to_string()),
         unique: false
     };
     let champs_jobs_params = vec!(
@@ -564,9 +593,38 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         Some(options_jobs_params)
     ).await?;
 
+    let options_video_user_id_tuuids = IndexOptions {
+        nom_index: Some(NOM_INDEX_USER_ID_TUUIDS.to_string()),
+        unique: false
+    };
+    let champs_video_user_id_tuuids = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_USER_ID), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_VIDEO_JOBS,
+        champs_video_user_id_tuuids,
+        Some(options_video_user_id_tuuids)
+    ).await?;
+
+    let options_video_retry = IndexOptions {
+        nom_index: Some(NOM_INDEX_RETRY.to_string()),
+        unique: false
+    };
+    let champs_video_retry = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_FLAG_DB_RETRY), direction: -1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_VIDEO_JOBS,
+        champs_video_retry,
+        Some(options_video_retry)
+    ).await?;
+
     // Index indexation contenu
     let options_indexation_jobs = IndexOptions {
-        nom_index: Some(format!("etat_jobs_2")),
+        nom_index: Some(NOM_INDEX_ETAT_JOBS.to_string()),
         unique: false
     };
     let champs_indexation_jobs = vec!(
@@ -579,6 +637,35 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         NOM_COLLECTION_INDEXATION_JOBS,
         champs_indexation_jobs,
         Some(options_indexation_jobs)
+    ).await?;
+
+    let options_indexation_user_id_tuuids = IndexOptions {
+        nom_index: Some(NOM_INDEX_USER_ID_TUUIDS.to_string()),
+        unique: false
+    };
+    let champs_indexation_user_id_tuuids = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_USER_ID), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_INDEXATION_JOBS,
+        champs_indexation_user_id_tuuids,
+        Some(options_indexation_user_id_tuuids)
+    ).await?;
+
+    let options_indexation_retry = IndexOptions {
+        nom_index: Some(NOM_INDEX_RETRY.to_string()),
+        unique: false
+    };
+    let champs_indexation_retry = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_FLAG_DB_RETRY), direction: -1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_INDEXATION_JOBS,
+        champs_indexation_retry,
+        Some(options_indexation_retry)
     ).await?;
 
     Ok(())
@@ -614,8 +701,8 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
     //     warn!("Erreur traitement indexation batch : {:?}", e);
     // }
 
-    // Executer a toutes les 2 minutes
-    if minutes % 1 == 0 {
+    // Executer a intervalle regulier
+    if minutes % 5 == 2 {
         debug!("Generer index et media manquants");
         // if let Err(e) = traiter_media_batch(middleware, MEDIA_IMAGE_BACTH_DEFAULT, false, None, None).await {
         //     warn!("Erreur traitement media batch : {:?}", e);

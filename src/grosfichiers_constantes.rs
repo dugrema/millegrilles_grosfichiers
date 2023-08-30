@@ -18,6 +18,10 @@ pub const NOM_COLLECTION_INDEXATION_JOBS: &str = "GrosFichiers/jobs/indexation";
 pub const NOM_COLLECTION_PARTAGE_CONTACT: &str = "GrosFichiers/partage/contacts";
 pub const NOM_COLLECTION_PARTAGE_COLLECTIONS: &str = "GrosFichiers/partage/collections";
 
+pub const NOM_INDEX_ETAT_JOBS: &str = "etat_jobs_2";
+pub const NOM_INDEX_USER_ID_TUUIDS: &str = "user_id_tuuids";
+pub const NOM_INDEX_RETRY: &str = "retry";
+
 pub const DOMAINE_FICHIERS_NOM: &str = "fichiers";
 pub const DOMAINE_MEDIA_NOM: &str = "media";
 
@@ -443,6 +447,7 @@ pub struct TransactionSupprimerVideo {
 pub struct TransactionSupprimerJobImage {
     pub fuuid: String,
     pub user_id: String,
+    pub err: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -450,6 +455,7 @@ pub struct TransactionSupprimerJobVideo {
     pub fuuid: String,
     pub cle_conversion: String,
     pub user_id: String,
+    pub err: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -624,4 +630,48 @@ pub struct NodeFichierRepVersionCouranteOwned {
     pub path_cuuids: Option<Vec<String>>,
 
     pub versions: Option<Vec<NodeVersionCouranteInlineOwned>>
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeFichierVersionBorrowed<'a> {
+    #[serde(borrow)]
+    pub fuuid: &'a str,
+    pub tuuid: &'a str,
+    pub user_id: &'a str,
+    pub mimetype: &'a str,
+    pub metadata: DataChiffreBorrow<'a>,
+    pub taille: u64,
+
+    pub fuuids: Vec<&'a str>,
+    pub fuuids_reclames: Vec<&'a str>,
+
+    pub supprime: bool,
+    pub visites: HashMap<&'a str, DateEpochSeconds>,
+
+    // Champs optionnels media
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub duration: Option<f32>,
+    #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
+    pub video_codec: Option<&'a str>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub anime: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub images: Option<HashMap<&'a str, ImageConversion>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub video: Option<HashMap<&'a str, TransactionAssocierVideoVersionDetail>>,
+
+    #[serde(skip_serializing_if="Option::is_none")]
+    flag_media: Option<&'a str>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_media_retry: Option<i32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_media_traite: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_video_traite: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_index: Option<bool>,
 }

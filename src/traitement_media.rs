@@ -10,9 +10,10 @@ use millegrilles_common_rust::bson::{Bson, doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
-use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
+use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable};
 use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint};
@@ -45,6 +46,36 @@ impl JobHandler for ImageJobHandler {
     fn get_nom_flag(&self) -> &str { CHAMP_FLAG_MEDIA_TRAITE }
 
     fn get_action_evenement(&self) -> &str { EVENEMENT_IMAGE_DISPONIBLE }
+
+    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, champs_cles: HashMap<String, String>, erreur: S)
+        -> Result<(), Box<dyn Error>>
+        where
+            M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage,
+            G: GestionnaireDomaine,
+            S: ToString + Send
+    {
+        let erreur = erreur.to_string();
+
+        let fuuid = match champs_cles.get(CHAMP_FUUID) {
+            Some(inner) => inner,
+            None => Err(format!("ImageJobHandler Erreur suppression job - fuuid manquant"))?
+        };
+        let user_id = match champs_cles.get(CHAMP_USER_ID) {
+            Some(inner) => inner,
+            None => Err(format!("ImageJobHandler Erreur suppression job - user_id manquant"))?
+        };
+        let transaction = TransactionSupprimerJobImage {
+            fuuid: fuuid.to_owned(),
+            user_id: user_id.to_owned(),
+            err: Some(erreur),
+        };
+
+        sauvegarder_traiter_transaction_serializable(
+            middleware, &transaction, gestionnaire_domaine,
+            DOMAINE_NOM, TRANSACTION_IMAGE_SUPPRIMER_JOB).await?;
+
+        Ok(())
+    }
 
     async fn sauvegarder_job<M, S, U>(
         &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,
@@ -98,6 +129,41 @@ impl JobHandler for VideoJobHandler {
     fn get_nom_flag(&self) -> &str { CHAMP_FLAG_VIDEO_TRAITE }
 
     fn get_action_evenement(&self) -> &str { EVENEMENT_VIDEO_DISPONIBLE }
+
+    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, champs_cles: HashMap<String, String>, erreur: S)
+        -> Result<(), Box<dyn Error>>
+        where
+            M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage,
+            G: GestionnaireDomaine,
+            S: ToString + Send
+    {
+        let erreur = erreur.to_string();
+
+        let fuuid = match champs_cles.get(CHAMP_FUUID) {
+            Some(inner) => inner,
+            None => Err(format!("VideoJobHandler Erreur suppression job - fuuid manquant"))?
+        };
+        let cle_conversion = match champs_cles.get("cle_conversion") {
+            Some(inner) => inner,
+            None => Err(format!("VideoJobHandler Erreur suppression job - cle_conversion manquant"))?
+        };
+        let user_id = match champs_cles.get(CHAMP_USER_ID) {
+            Some(inner) => inner,
+            None => Err(format!("VideoJobHandler Erreur suppression job - user_id manquant"))?
+        };
+        let transaction = TransactionSupprimerJobVideo {
+            fuuid: fuuid.to_owned(),
+            cle_conversion: cle_conversion.to_owned(),
+            user_id: user_id.to_owned(),
+            err: Some(erreur),
+        };
+
+        sauvegarder_traiter_transaction_serializable(
+            middleware, &transaction, gestionnaire_domaine,
+            DOMAINE_NOM, TRANSACTION_VIDEO_SUPPRIMER_JOB).await?;
+
+        Ok(())
+    }
 
     async fn sauvegarder_job<M, S, U>(
         &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,

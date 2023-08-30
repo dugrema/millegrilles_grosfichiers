@@ -14,6 +14,7 @@ use millegrilles_common_rust::chiffrage_cle::{InformationCle, ReponseDechiffrage
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::common_messages::RequeteDechiffrage;
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
@@ -24,6 +25,7 @@ use millegrilles_common_rust::reqwest::Url;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::{Map, Value};
 use millegrilles_common_rust::tokio_stream::StreamExt;
+use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
@@ -44,6 +46,28 @@ impl JobHandler for IndexationJobHandler {
 
     fn get_action_evenement(&self) -> &str { EVENEMENT_INDEXATION_DISPONIBLE }
 
+    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, champs_cles: HashMap<String, String>, erreur: S)
+        -> Result<(), Box<dyn Error>>
+        where
+            M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage,
+            G: GestionnaireDomaine,
+            S: ToString + Send
+    {
+        let erreur = erreur.to_string();
+
+        let fuuid = match champs_cles.get(CHAMP_FUUID) {
+            Some(inner) => inner,
+            None => Err(format!("ImageJobHandler Erreur suppression job - fuuid manquant"))?
+        };
+        let user_id = match champs_cles.get(CHAMP_USER_ID) {
+            Some(inner) => inner,
+            None => Err(format!("ImageJobHandler Erreur suppression job - user_id manquant"))?
+        };
+
+        self.set_flag(middleware, fuuid, Some(user_id), None, true).await?;
+
+        Ok(())
+    }
 }
 
 // /// Set le flag indexe a true pour le fuuid (version)

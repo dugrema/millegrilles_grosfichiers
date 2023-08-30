@@ -4,20 +4,22 @@ use std::time::Duration as std_Duration;
 use log::{debug, error, warn};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{Bson, DateTime, doc};
-use millegrilles_common_rust::certificats::EnveloppeCertificat;
+use millegrilles_common_rust::certificats::{EnveloppeCertificat, ValidateurX509};
 use millegrilles_common_rust::chiffrage_cle::{InformationCle, ReponseDechiffrageCles};
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::common_messages::RequeteDechiffrage;
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
-use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{DeleteOptions, FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::serde_json::{json, Value};
 use millegrilles_common_rust::tokio::time::sleep;
 use millegrilles_common_rust::tokio_stream::StreamExt;
+use millegrilles_common_rust::verificateur::VerificateurMessage;
 use serde::{Deserialize, Serialize};
 
 use crate::grosfichiers_constantes::*;
@@ -41,6 +43,14 @@ pub trait JobHandler: Clone + Sized + Sync {
 
     /// Retourne l'action a utiliser dans le routage de l'evenement trigger.
     fn get_action_evenement(&self) -> &str;
+
+    /// Marque une job comme terminee avec erreur irrecuperable.
+    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, champs_cles: HashMap<String, String>, erreur: S)
+        -> Result<(), Box<dyn Error>>
+        where
+            M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage,
+            G: GestionnaireDomaine,
+            S: ToString + Send;
 
     /// Emettre un evenement de job disponible.
     /// 1 evenement emis pour chaque instance avec au moins 1 job de disponible.
@@ -125,7 +135,6 @@ pub trait JobHandler: Clone + Sized + Sync {
             None => CONST_LIMITE_BATCH
         };
 
-        // Note : retirer jobs avec trop de retires fait au travers de ajouts_jobs_manquantes
         if let Err(e) = entretien_jobs(middleware, self, limite_batch).await {
             error!("traitement_jobs.JobHandler.entretien {} Erreur sur ajouter_jobs_manquantes : {:?}", self.get_nom_flag(), e);
         }
@@ -252,8 +261,8 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
 {
     debug!("entretien_jobs Debut");
 
-    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    let collection_jobs = middleware.get_collection(job_handler.get_nom_collection())?;
+    let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(
+        job_handler.get_nom_collection())?;
     let champ_flag_index = job_handler.get_nom_flag();
 
     // Reset jobs indexation avec start_date expire pour les reprendre immediatement
@@ -268,16 +277,23 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
             "$unset": { CONST_CHAMP_DATE_MAJ: true },
             "$currentDate": { CHAMP_MODIFICATION: true },
         };
-        collection_jobs.update_many(filtre_start_expire, ops_expire, None).await?;
+        let options = UpdateOptions::builder().hint(Hint::Name("etat_jobs_2".to_string())).build();
+        collection_jobs.update_many(filtre_start_expire, ops_expire, options).await?;
     }
+
+    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(
+        NOM_COLLECTION_VERSIONS)?;
 
     let mut curseur = {
         let opts = FindOptions::builder()
             // .hint(Hint::Name(String::from("flag_media_traite")))
             .sort(doc! {champ_flag_index: 1, CHAMP_CREATION: 1})
             .projection(doc!{
-                CHAMP_TUUID: true, CHAMP_FUUID: true, CHAMP_MIMETYPE: true, CHAMP_USER_ID: true,
-                "visites": true,
+                CHAMP_FUUID: true, CHAMP_TUUID: true, CHAMP_USER_ID: true, CHAMP_MIMETYPE: true, "visites": true,
+
+                // Information requise a cause du format NodeFichierVersionBorrowed
+                CHAMP_METADATA: true, CHAMP_TAILLE: true, CHAMP_FUUIDS: true, CHAMP_FUUIDS_RECLAMES: true,
+                CHAMP_SUPPRIME: true,
             })
             .limit(limite_batch)
             .build();
@@ -286,29 +302,25 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
         collection_versions.find(filtre, Some(opts)).await?
     };
 
-    while let Some(d) = curseur.next().await {
-        let doc_version = d?;
-        let version_mappee: RowVersionsIds = match convertir_bson_deserializable(doc_version) {
+    while curseur.advance().await? {
+        let version_mappee = match curseur.deserialize_current() {
             Ok(inner) => inner,
             Err(e) => {
                 warn!("traiter_indexation_batch Erreur mapping document : {:?} - SKIP", e);
                 continue;
             }
         };
-
         debug!("traiter_indexation_batch Ajouter job (si applicable) pour {:?}", version_mappee);
 
-        let tuuid_ref = version_mappee.tuuid.as_str();
-        let fuuid_ref = version_mappee.fuuid.as_str();
-        let user_id = version_mappee.user_id.as_str();
-        let mimetype_ref = version_mappee.mimetype.as_str();
+        let tuuid_ref = version_mappee.tuuid;
+        let fuuid_ref = version_mappee.fuuid;
+        let user_id = version_mappee.user_id;
+        let mimetype_ref = version_mappee.mimetype;
 
-        let filtre_job = doc!{CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref};
+        let filtre_job = doc!{ CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref };
 
-        let job_existante: Option<BackgroundJob> = match collection_jobs.find_one(filtre_job.clone(), None).await? {
-            Some(inner) => Some(convertir_bson_deserializable(inner)?),
-            None => None
-        };
+        let options = FindOneOptions::builder().hint(Hint::Name(NOM_INDEX_USER_ID_TUUIDS.to_string())).build();
+        let job_existante = collection_jobs.find_one(filtre_job.clone(), options).await?;
 
         if let Some(job) = job_existante {
             if let Some(retry) = job.retry {
@@ -330,27 +342,43 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
         }
 
         // Creer ou mettre a jour la job
-        if let Some(visites) = version_mappee.visites {
-            for instance in visites.into_keys() {
-                let mut champs_cles = HashMap::new();
-                champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
-                champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
-                job_handler.sauvegarder_job(
-                    middleware, fuuid_ref, user_id,
-                    Some(instance), Some(champs_cles), None,
-                    false).await?;
-            }
+        for instance in version_mappee.visites.into_keys() {
+            let mut champs_cles = HashMap::new();
+            champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
+            champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
+            job_handler.sauvegarder_job(
+                middleware, fuuid_ref, user_id,
+                Some(instance.to_string()), Some(champs_cles), None,
+                false).await?;
         }
     }
 
     // Cleanup des jobs avec retry excessifs. Ces jobs sont orphelines (e.g. la correspondante dans
     // versions est deja traitee).
     {
-        let filtre = doc! { CHAMP_FLAG_DB_RETRY: {"$gte": CONST_MAX_RETRY} };
-        let resultat = collection_jobs.delete_many(filtre, None).await?;
-        if resultat.deleted_count > 0 {
-            warn!("entretien_jobs Suppression de {} jobs avec retry >= {}", resultat.deleted_count, CONST_MAX_RETRY)
+        let filtre = doc! {
+            CHAMP_ETAT_JOB: {"$in": [
+                VIDEO_CONVERSION_ETAT_PENDING,
+                VIDEO_CONVERSION_ETAT_ERROR,
+                VIDEO_CONVERSION_ETAT_ERROR_TOOMANYRETRIES,
+            ]},
+            CHAMP_FLAG_DB_RETRY: {"$gte": CONST_MAX_RETRY}
+        };
+        let options = FindOptions::builder().hint(Hint::Name(NOM_INDEX_ETAT_JOBS.to_string())).build();
+        let mut curseur = collection_jobs.find(filtre, options).await?;
+        while curseur.advance().await? {
+            let row = curseur.deserialize_current()?;
+            warn!("traiter_indexation_batch Job sur fuuid {} (user_id {}) expiree, on met le flag termine pour annuler la job.", row.fuuid, row.user_id);
+
+            // Fabriquer transaction pour annuler la job et marquer le traitement complete
+
+
         }
+
+        // let resultat = collection_jobs.delete_many(filtre, None).await?;
+        // if resultat.deleted_count > 0 {
+        //     warn!("entretien_jobs Suppression de {} jobs avec retry >= {}", resultat.deleted_count, CONST_MAX_RETRY)
+        // }
     }
 
     Ok(())
