@@ -710,9 +710,9 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
         // if let Err(e) = entretien_video_jobs(middleware).await {
         //     warn!("Erreur traitement media entretien_video_jobs : {:?}", e);
         // }
-        gestionnaire.image_job_handler.entretien(middleware, None).await;
-        gestionnaire.video_job_handler.entretien(middleware, None).await;
-        gestionnaire.indexation_job_handler.entretien(middleware, None).await;
+        gestionnaire.image_job_handler.entretien(middleware, gestionnaire, None).await;
+        gestionnaire.video_job_handler.entretien(middleware, gestionnaire, None).await;
+        gestionnaire.indexation_job_handler.entretien(middleware, gestionnaire, None).await;
     }
 
     Ok(())

@@ -950,7 +950,7 @@ pub struct ReponsePreuvePossessionCles {
 
 async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
     debug!("commande_reindexer Consommer commande : {:?}", & m.message);
     let commande: CommandeIndexerContenu = m.message.get_msg().map_contenu()?;
@@ -963,7 +963,7 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionna
         false => Err(format!("commandes.commande_reindexer: Commande autorisation invalide pour message {:?}", m.correlation_id)),
     }?;
 
-    reset_flag_indexe(middleware, &gestionnaire.indexation_job_handler).await?;
+    reset_flag_indexe(middleware, gestionnaire, &gestionnaire.indexation_job_handler).await?;
 
     let reponse = ReponseCommandeReindexer {ok: true, tuuids: None};
     Ok(Some(middleware.formatter_reponse(reponse, None)?))

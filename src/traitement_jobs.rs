@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration as std_Duration;
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{Bson, DateTime, doc};
 use millegrilles_common_rust::certificats::{EnveloppeCertificat, ValidateurX509};
@@ -45,7 +45,7 @@ pub trait JobHandler: Clone + Sized + Sync {
     fn get_action_evenement(&self) -> &str;
 
     /// Marque une job comme terminee avec erreur irrecuperable.
-    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, champs_cles: HashMap<String, String>, erreur: S)
+    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, job: BackgroundJob, erreur: S)
         -> Result<(), Box<dyn Error>>
         where
             M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage,
@@ -55,7 +55,7 @@ pub trait JobHandler: Clone + Sized + Sync {
     /// Emettre un evenement de job disponible.
     /// 1 evenement emis pour chaque instance avec au moins 1 job de disponible.
     async fn emettre_evenements_job<M>(&self, middleware: &M)
-        where M: GenerateurMessages + MongoDao
+        where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
     {
         let visites = match trouver_jobs_instances(middleware, self).await {
             Ok(visites) => match visites {
@@ -125,8 +125,10 @@ pub trait JobHandler: Clone + Sized + Sync {
     }
 
     /// Doit etre invoque regulierement pour generer nouvelles jobs, expirer vieilles, etc.
-    async fn entretien<M>(&self, middleware: &M, limite_batch: Option<i64>)
-        where M: GenerateurMessages + MongoDao
+    async fn entretien<M,G>(&self, middleware: &M, gestionnaire: &G, limite_batch: Option<i64>)
+        where
+            M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage,
+            G: GestionnaireDomaine
     {
         debug!("entretien Cycle entretien JobHandler {}", self.get_nom_flag());
 
@@ -135,7 +137,7 @@ pub trait JobHandler: Clone + Sized + Sync {
             None => CONST_LIMITE_BATCH
         };
 
-        if let Err(e) = entretien_jobs(middleware, self, limite_batch).await {
+        if let Err(e) = entretien_jobs(middleware, gestionnaire, self, limite_batch).await {
             error!("traitement_jobs.JobHandler.entretien {} Erreur sur ajouter_jobs_manquantes : {:?}", self.get_nom_flag(), e);
         }
 
@@ -256,8 +258,11 @@ struct RowVersionsIds {
     visites: Option<HashMap<String, i64>>,
 }
 
-async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64) -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao, J: JobHandler
+async fn entretien_jobs<J,G,M>(middleware: &M, gestionnaire: &G, job_handler: &J, limite_batch: i64) -> Result<(), Box<dyn Error>>
+    where
+        M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage,
+        G: GestionnaireDomaine,
+        J: JobHandler
 {
     debug!("entretien_jobs Debut");
 
@@ -270,7 +275,7 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
         let filtre_start_expire = doc! {
             CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_RUNNING,
             CONST_CHAMP_DATE_MAJ: { "$lte": Utc::now() - Duration::seconds(CONST_EXPIRATION_SECS) },
-            // CONST_CHAMP_RETRY: { "$lt": CONST_MAX_RETRY },
+            CONST_CHAMP_RETRY: { "$lt": CONST_MAX_RETRY },
         };
         let ops_expire = doc! {
             "$set": { CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_PENDING },
@@ -322,34 +327,37 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
         let options = FindOneOptions::builder().hint(Hint::Name(NOM_INDEX_USER_ID_TUUIDS.to_string())).build();
         let job_existante = collection_jobs.find_one(filtre_job.clone(), options).await?;
 
-        if let Some(job) = job_existante {
-            if let Some(retry) = job.retry {
-                if retry > CONST_MAX_RETRY {
-                    warn!("traiter_indexation_batch Expirer indexation sur document user_id {} tuuid {} : {} retries",
-                        user_id, tuuid_ref, retry);
-                    let ops = doc! {
-                        "$set": {
-                            champ_flag_index: true,
-                            format!("{}_erreur", champ_flag_index): ERREUR_MEDIA_TOOMANYRETRIES,
-                        }
-                    };
-                    let filtre_version = doc! {CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref};
-                    collection_versions.update_one(filtre_version, ops, None).await?;
-                    collection_jobs.delete_one(filtre_job, None).await?;
-                    continue;
-                }
-            }
-        }
+        // if let Some(job) = job_existante {
+        //     if let Some(retry) = job.retry {
+        //         if retry > CONST_MAX_RETRY {
+        //             warn!("traiter_indexation_batch Expirer indexation sur document user_id {} tuuid {} : {} retries",
+        //                 user_id, tuuid_ref, retry);
+        //             let ops = doc! {
+        //                 "$set": {
+        //                     champ_flag_index: true,
+        //                     format!("{}_erreur", champ_flag_index): ERREUR_MEDIA_TOOMANYRETRIES,
+        //                 }
+        //             };
+        //             let filtre_version = doc! {CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref};
+        //             collection_versions.update_one(filtre_version, ops, None).await?;
+        //             collection_jobs.delete_one(filtre_job, None).await?;
+        //             continue;
+        //         }
+        //     }
+        // }
 
         // Creer ou mettre a jour la job
         for instance in version_mappee.visites.into_keys() {
             let mut champs_cles = HashMap::new();
             champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
             champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
-            job_handler.sauvegarder_job(
+            if let Err(e) = job_handler.sauvegarder_job(
                 middleware, fuuid_ref, user_id,
                 Some(instance.to_string()), Some(champs_cles), None,
-                false).await?;
+                false).await
+            {
+                info!("entretien_jobs Erreur creation job : {:?}", e)
+            }
         }
     }
 
@@ -357,8 +365,11 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
     // versions est deja traitee).
     {
         let filtre = doc! {
+            // Inclue etat pour utiliser index etat_jobs_2
             CHAMP_ETAT_JOB: {"$in": [
                 VIDEO_CONVERSION_ETAT_PENDING,
+                // VIDEO_CONVERSION_ETAT_RUNNING,
+                // VIDEO_CONVERSION_ETAT_PERSISTING,
                 VIDEO_CONVERSION_ETAT_ERROR,
                 VIDEO_CONVERSION_ETAT_ERROR_TOOMANYRETRIES,
             ]},
@@ -367,18 +378,14 @@ async fn entretien_jobs<J,M>(middleware: &M, job_handler: &J, limite_batch: i64)
         let options = FindOptions::builder().hint(Hint::Name(NOM_INDEX_ETAT_JOBS.to_string())).build();
         let mut curseur = collection_jobs.find(filtre, options).await?;
         while curseur.advance().await? {
-            let row = curseur.deserialize_current()?;
-            warn!("traiter_indexation_batch Job sur fuuid {} (user_id {}) expiree, on met le flag termine pour annuler la job.", row.fuuid, row.user_id);
+            let job = curseur.deserialize_current()?;
+            warn!("traiter_indexation_batch Job sur fuuid {} (user_id {}) expiree, on met le flag termine pour annuler la job.", job.fuuid, job.user_id);
 
             // Fabriquer transaction pour annuler la job et marquer le traitement complete
-
-
+            if let Err(e) = job_handler.marquer_job_erreur(middleware, gestionnaire, job, "Too many retries").await {
+                error!("traiter_indexation_batch Erreur marquer job supprimee : {:?}", e);
+            }
         }
-
-        // let resultat = collection_jobs.delete_many(filtre, None).await?;
-        // if resultat.deleted_count > 0 {
-        //     warn!("entretien_jobs Suppression de {} jobs avec retry >= {}", resultat.deleted_count, CONST_MAX_RETRY)
-        // }
     }
 
     Ok(())
@@ -430,7 +437,6 @@ pub async fn sauvegarder_job<M,J,S,U>(
         }
     }
 
-
     let instances = match instance {
         Some(inner) => vec![inner],
         None => {
@@ -467,12 +473,24 @@ pub async fn sauvegarder_job<M,J,S,U>(
         }
     };
 
-    let options = UpdateOptions::builder()
+    let options = FindOneAndUpdateOptions::builder()
         .upsert(true)
         .build();
 
-    let collection_jobs = middleware.get_collection(job_handler.get_nom_collection())?;
-    collection_jobs.update_one(filtre, ops_job, options).await?;
+    let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(job_handler.get_nom_collection())?;
+    if let Some(job) = collection_jobs.find_one_and_update(filtre.clone(), ops_job, options).await? {
+        if let Some(retries) = job.retry {
+            if retries >= CONST_MAX_RETRY {
+                warn!("sauvegarder_job Job excede max retries, on la desactive");
+                let ops = doc! {
+                    "$set": { CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_ERROR_TOOMANYRETRIES },
+                    "$currentDate": { CHAMP_MODIFICATION: true },
+                };
+                collection_jobs.update_one(filtre, ops, None).await?;
+                Err(format!("sauvegarder_job Job existante avec trop de retries"))?
+            }
+        }
+    }
 
     Ok(Some(instances))
 }
@@ -722,7 +740,7 @@ pub async fn trouver_prochaine_job_traitement<M,S>(middleware: &M, nom_collectio
         // Tenter de trouver la prochaine job disponible
         let mut filtre = doc! {
             CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_PENDING,
-            CHAMP_FLAG_DB_RETRY: {"$lt": MEDIA_RETRY_LIMIT}
+            // CHAMP_FLAG_DB_RETRY: {"$lt": MEDIA_RETRY_LIMIT}
         };
         if let Some(instance_id) = commande.instance_id.as_ref() {
             filtre.insert("$or", vec![doc!{"instances": {"$exists": false}}, doc!{"instances": instance_id}]);

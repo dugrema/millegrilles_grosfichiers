@@ -25,7 +25,7 @@ use crate::grosfichiers::GestionnaireGrosFichiers;
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::mapper_fichier_db;
-use crate::traitement_jobs::{JobHandler, sauvegarder_job};
+use crate::traitement_jobs::{BackgroundJob, JobHandler, sauvegarder_job};
 
 const EVENEMENT_IMAGE_DISPONIBLE: &str = "jobImageDisponible";
 const EVENEMENT_VIDEO_DISPONIBLE: &str = "jobVideoDisponible";
@@ -47,7 +47,7 @@ impl JobHandler for ImageJobHandler {
 
     fn get_action_evenement(&self) -> &str { EVENEMENT_IMAGE_DISPONIBLE }
 
-    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, champs_cles: HashMap<String, String>, erreur: S)
+    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, job: BackgroundJob, erreur: S)
         -> Result<(), Box<dyn Error>>
         where
             M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage,
@@ -56,17 +56,12 @@ impl JobHandler for ImageJobHandler {
     {
         let erreur = erreur.to_string();
 
-        let fuuid = match champs_cles.get(CHAMP_FUUID) {
-            Some(inner) => inner,
-            None => Err(format!("ImageJobHandler Erreur suppression job - fuuid manquant"))?
-        };
-        let user_id = match champs_cles.get(CHAMP_USER_ID) {
-            Some(inner) => inner,
-            None => Err(format!("ImageJobHandler Erreur suppression job - user_id manquant"))?
-        };
+        let fuuid = job.fuuid;
+        let user_id = job.user_id;
+
         let transaction = TransactionSupprimerJobImage {
-            fuuid: fuuid.to_owned(),
-            user_id: user_id.to_owned(),
+            fuuid,
+            user_id,
             err: Some(erreur),
         };
 
@@ -130,7 +125,7 @@ impl JobHandler for VideoJobHandler {
 
     fn get_action_evenement(&self) -> &str { EVENEMENT_VIDEO_DISPONIBLE }
 
-    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, champs_cles: HashMap<String, String>, erreur: S)
+    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, job: BackgroundJob, erreur: S)
         -> Result<(), Box<dyn Error>>
         where
             M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage,
@@ -139,22 +134,20 @@ impl JobHandler for VideoJobHandler {
     {
         let erreur = erreur.to_string();
 
-        let fuuid = match champs_cles.get(CHAMP_FUUID) {
-            Some(inner) => inner,
-            None => Err(format!("VideoJobHandler Erreur suppression job - fuuid manquant"))?
-        };
+        let fuuid = job.fuuid;
+        let user_id = job.user_id;
+        let champs_cles = job.champs_optionnels;
         let cle_conversion = match champs_cles.get("cle_conversion") {
-            Some(inner) => inner,
+            Some(inner) => match inner.as_str() {
+                Some(inner) => inner.to_owned(),
+                None => Err(format!("VideoJobHandler Erreur suppression job - cle_conversion mauvais format (!str)"))?
+            },
             None => Err(format!("VideoJobHandler Erreur suppression job - cle_conversion manquant"))?
         };
-        let user_id = match champs_cles.get(CHAMP_USER_ID) {
-            Some(inner) => inner,
-            None => Err(format!("VideoJobHandler Erreur suppression job - user_id manquant"))?
-        };
         let transaction = TransactionSupprimerJobVideo {
-            fuuid: fuuid.to_owned(),
-            cle_conversion: cle_conversion.to_owned(),
-            user_id: user_id.to_owned(),
+            fuuid,
+            cle_conversion,
+            user_id,
             err: Some(erreur),
         };
 

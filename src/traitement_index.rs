@@ -29,7 +29,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
-use crate::traitement_jobs::{CommandeGetJob, get_prochaine_job, JobHandler};
+use crate::traitement_jobs::{BackgroundJob, CommandeGetJob, get_prochaine_job, JobHandler};
 
 const EVENEMENT_INDEXATION_DISPONIBLE: &str = "jobIndexationDisponible";
 
@@ -46,7 +46,7 @@ impl JobHandler for IndexationJobHandler {
 
     fn get_action_evenement(&self) -> &str { EVENEMENT_INDEXATION_DISPONIBLE }
 
-    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, champs_cles: HashMap<String, String>, erreur: S)
+    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, job: BackgroundJob, erreur: S)
         -> Result<(), Box<dyn Error>>
         where
             M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage,
@@ -55,14 +55,8 @@ impl JobHandler for IndexationJobHandler {
     {
         let erreur = erreur.to_string();
 
-        let fuuid = match champs_cles.get(CHAMP_FUUID) {
-            Some(inner) => inner,
-            None => Err(format!("ImageJobHandler Erreur suppression job - fuuid manquant"))?
-        };
-        let user_id = match champs_cles.get(CHAMP_USER_ID) {
-            Some(inner) => inner,
-            None => Err(format!("ImageJobHandler Erreur suppression job - user_id manquant"))?
-        };
+        let fuuid = job.fuuid;
+        let user_id = job.user_id;
 
         self.set_flag(middleware, fuuid, Some(user_id), None, true).await?;
 
@@ -99,8 +93,10 @@ impl JobHandler for IndexationJobHandler {
 //     Ok(())
 // }
 
-pub async fn reset_flag_indexe<M>(middleware: &M, job_handler: &IndexationJobHandler) -> Result<(), Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao
+pub async fn reset_flag_indexe<M,G>(middleware: &M, gestionnaire: &G, job_handler: &IndexationJobHandler) -> Result<(), Box<dyn Error>>
+    where
+        M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage,
+        G: GestionnaireDomaine
 {
     debug!("reset_flag_indexe Reset flags pour tous les fichiers");
 
@@ -119,7 +115,7 @@ pub async fn reset_flag_indexe<M>(middleware: &M, job_handler: &IndexationJobHan
 
     // Commencer a creer les jobs d'indexation
     // traiter_indexation_batch(middleware, LIMITE_INDEXATION_BATCH).await?;
-    job_handler.entretien(middleware, Some(LIMITE_INDEXATION_BATCH)).await;
+    job_handler.entretien(middleware, gestionnaire, Some(LIMITE_INDEXATION_BATCH)).await;
 
     // Emettre un evenement pour indiquer que de nouvelles jobs sont disponibles
     let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_REINDEXER_CONSIGNATION)
