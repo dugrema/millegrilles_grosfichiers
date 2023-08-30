@@ -30,7 +30,7 @@ use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenemen
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{mapper_fichier_db, verifier_acces_usager};
 use crate::traitement_index::{commande_indexation_get_job, reset_flag_indexe};
-use crate::traitement_jobs::{CommandeGetJob, JobHandler, ParametresConfirmerJob};
+use crate::traitement_jobs::{CommandeGetJob, JobHandler, ParametresConfirmerJob, ReponseJob};
 use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_video};
 use crate::transactions::*;
 
