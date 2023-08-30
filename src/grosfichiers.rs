@@ -562,20 +562,6 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         Some(options_images_user_id_tuuids)
     ).await?;
 
-    let options_images_retry = IndexOptions {
-        nom_index: Some(NOM_INDEX_RETRY.to_string()),
-        unique: false
-    };
-    let champs_images_retry = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_FLAG_DB_RETRY), direction: -1},
-    );
-    middleware.create_index(
-        middleware,
-        NOM_COLLECTION_IMAGES_JOBS,
-        champs_images_retry,
-        Some(options_images_retry)
-    ).await?;
-
     // Index conversion video getJob
     let options_jobs_params = IndexOptions {
         nom_index: Some(NOM_INDEX_ETAT_JOBS.to_string()),
@@ -608,20 +594,6 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         Some(options_video_user_id_tuuids)
     ).await?;
 
-    let options_video_retry = IndexOptions {
-        nom_index: Some(NOM_INDEX_RETRY.to_string()),
-        unique: false
-    };
-    let champs_video_retry = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_FLAG_DB_RETRY), direction: -1},
-    );
-    middleware.create_index(
-        middleware,
-        NOM_COLLECTION_VIDEO_JOBS,
-        champs_video_retry,
-        Some(options_video_retry)
-    ).await?;
-
     // Index indexation contenu
     let options_indexation_jobs = IndexOptions {
         nom_index: Some(NOM_INDEX_ETAT_JOBS.to_string()),
@@ -652,20 +624,6 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
         NOM_COLLECTION_INDEXATION_JOBS,
         champs_indexation_user_id_tuuids,
         Some(options_indexation_user_id_tuuids)
-    ).await?;
-
-    let options_indexation_retry = IndexOptions {
-        nom_index: Some(NOM_INDEX_RETRY.to_string()),
-        unique: false
-    };
-    let champs_indexation_retry = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_FLAG_DB_RETRY), direction: -1},
-    );
-    middleware.create_index(
-        middleware,
-        NOM_COLLECTION_INDEXATION_JOBS,
-        champs_indexation_retry,
-        Some(options_indexation_retry)
     ).await?;
 
     Ok(())

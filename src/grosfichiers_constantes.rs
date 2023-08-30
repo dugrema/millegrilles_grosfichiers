@@ -20,7 +20,6 @@ pub const NOM_COLLECTION_PARTAGE_COLLECTIONS: &str = "GrosFichiers/partage/colle
 
 pub const NOM_INDEX_ETAT_JOBS: &str = "etat_jobs_2";
 pub const NOM_INDEX_USER_ID_TUUIDS: &str = "user_id_tuuids";
-pub const NOM_INDEX_RETRY: &str = "retry";
 
 pub const DOMAINE_FICHIERS_NOM: &str = "fichiers";
 pub const DOMAINE_MEDIA_NOM: &str = "media";
