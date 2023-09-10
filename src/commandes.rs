@@ -79,6 +79,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         TRANSACTION_COPIER_FICHIER_TIERS => commande_copier_fichier_tiers(middleware, m, gestionnaire).await,
         // TRANSACTION_FAVORIS_CREERPATH => commande_favoris_creerpath(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_VIDEO => commande_supprimer_video(middleware, m, gestionnaire).await,
+        TRANSACTION_SUPPRIMER_ORPHELINS => commande_supprimer_orphelins(middleware, m, gestionnaire).await,
 
         // Sync
         COMMANDE_RECLAMER_FUUIDS => evenement_fichiers_syncpret(middleware, m).await,
@@ -1752,14 +1753,102 @@ async fn commande_supprimer_partage_usager<M>(middleware: &M, mut m: MessageVali
     debug!("commande_supprimer_partage_usager Consommer commande : {:?}", & m.message);
     let commande: TransactionSupprimerPartageUsager = m.message.get_msg().map_contenu()?;
 
+    if ! m.message.verifier_exchanges(vec![Securite::L2Prive]) ||
+        !m.message.verifier_roles(vec![RolesCertificats::Fichiers]) {
+        debug!("commande_supprimer_partage_usager Mauvais certificat (securite doit etre L2Prive, role fichiers)");
+        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Mauvais certificat (securite doit etre L2Prive, role fichiers)"}), None)?))
+    }
+
     let user_id = match m.get_user_id() {
         Some(inner) => inner,
         None => {
             debug!("commande_partager_collections user_id absent, SKIP");
-            ;
             return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
         }
     };
 
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
+
+async fn commande_supprimer_orphelins<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("commande_supprimer_partage_usager Consommer commande : {:?}", & m.message);
+    let commande: TransactionSupprimerOrphelins = m.message.get_msg().map_contenu()?;
+
+    let resultat = trouver_orphelins_supprimer(middleware, &commande).await?;
+    debug!("commande_supprimer_partage_usager Versions supprimees : {:?}, fuuids a conserver : {:?}",
+        resultat.versions_supprimees, resultat.fuuids_a_conserver);
+
+    let mut fuuids_supprimes = 0;
+    for (fuuid, supprime) in &resultat.versions_supprimees {
+        if *supprime { fuuids_supprimes += 1; };
+    }
+
+    // Determiner si on repond immediatement ou si on procede vers la transaction
+    if fuuids_supprimes > 0 {
+        // On execute la transaction pour supprimer les fichiers dans la base de donnes
+        debug!("commande_supprimer_partage_usager Au moins une version supprimer (count: {}), executer la transaction", fuuids_supprimes);
+        sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?;
+    }
+
+    let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };
+    Ok(Some(middleware.formatter_reponse(reponse, None)?))
+}
+
+// async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &TransactionSupprimerOrphelins)
+//     -> Result<ResultatVerifierOrphelins, Box<dyn Error>>
+//     where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+// {
+//     let mut versions_supprimees = HashMap::new();
+//     let mut fuuids_a_conserver = Vec::new();
+//
+//     let fuuids_commande = {
+//         let mut set_fuuids = HashSet::new();
+//         for fuuid in &commande.fuuids { set_fuuids.insert(fuuid.as_str()); }
+//         set_fuuids
+//     };
+//
+//     // S'assurer qu'au moins un fuuid peut etre supprime.
+//     // Extraire les fuuids qui doivent etre conserves
+//     let filtre = doc! {
+//         CHAMP_FUUIDS: {"$in": &commande.fuuids},
+//     };
+//     let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(
+//         NOM_COLLECTION_VERSIONS)?;
+//     debug!("commande_supprimer_partage_usager Filtre requete orphelins : {:?}", filtre);
+//     let mut curseur = collection.find(filtre, None).await?;
+//     while curseur.advance().await? {
+//         let doc_mappe = curseur.deserialize_current()?;
+//         let fuuids_version = &doc_mappe.fuuids;
+//         let fuuid_fichier = doc_mappe.fuuid;
+//         let supprime = doc_mappe.supprime;
+//
+//         if supprime {
+//             // Verifier si l'original est l'orphelin a supprimer
+//             if fuuids_commande.contains(fuuid_fichier) {
+//                 if !versions_supprimees.contains_key(fuuid_fichier) {
+//                     // S'assurer de ne pas faire d'override si le fuuid est deja present avec false
+//                     versions_supprimees.insert(fuuid_fichier.to_string(), true);
+//                 }
+//             }
+//         } else {
+//             if fuuids_commande.contains(fuuid_fichier) {
+//                 // Override, s'assurer de ne pas supprimer le fichier si au moins 1 usager le conserve
+//                 versions_supprimees.insert(fuuid_fichier.to_string(), false);
+//             }
+//
+//             // Pas supprime localement, ajouter tous les fuuids qui sont identifies comme orphelins
+//             for fuuid in fuuids_version {
+//                 if fuuids_commande.contains(*fuuid) {
+//                     fuuids_a_conserver.push(fuuid.to_string());
+//                 }
+//             }
+//         }
+//     }
+//
+//     debug!("commande_supprimer_partage_usager Versions supprimees : {:?}, fuuids a conserver : {:?}", versions_supprimees, fuuids_a_conserver);
+//     let resultat = ResultatVerifierOrphelins { versions_supprimees, fuuids_a_conserver };
+//     Ok(resultat)
+// }

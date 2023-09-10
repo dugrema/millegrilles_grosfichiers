@@ -60,7 +60,8 @@ where
         TRANSACTION_ASSOCIER_CONVERSIONS |
         TRANSACTION_ASSOCIER_VIDEO |
         TRANSACTION_IMAGE_SUPPRIMER_JOB |
-        TRANSACTION_VIDEO_SUPPRIMER_JOB => {
+        TRANSACTION_VIDEO_SUPPRIMER_JOB |
+        TRANSACTION_SUPPRIMER_ORPHELINS => {
             match m.verifier_exchanges(vec![Securite::L4Secure]) {
                 true => Ok(()),
                 false => Err(format!("transactions.consommer_transaction: pas 4.secure"))
@@ -107,6 +108,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_SUPPRIMER_CONTACTS => transaction_supprimer_contacts(middleware, gestionnaire, transaction).await,
         TRANSACTION_PARTAGER_COLLECTIONS => transaction_partager_collections(middleware, gestionnaire, transaction).await,
         TRANSACTION_SUPPRIMER_PARTAGE_USAGER => transaction_supprimer_partage_usager(middleware, gestionnaire, transaction).await,
+        TRANSACTION_SUPPRIMER_ORPHELINS => transaction_supprimer_orphelins(middleware, gestionnaire, transaction).await,
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), action)),
     }
 }
@@ -3187,4 +3189,129 @@ async fn transaction_supprimer_partage_usager<M, T>(middleware: &M, gestionnaire
     }
 
     middleware.reponse_ok()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionSupprimerOrphelins {
+    pub fuuids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReponseSupprimerOrphelins {
+    pub ok: bool,
+    pub err: Option<String>,
+    pub fuuids_a_conserver: Vec<String>,
+}
+
+pub struct ResultatVerifierOrphelins {
+    pub versions_supprimees: HashMap<String, bool>,
+    pub fuuids_a_conserver: Vec<String>
+}
+
+pub async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &TransactionSupprimerOrphelins)
+    -> Result<ResultatVerifierOrphelins, Box<dyn Error>>
+    where M: MongoDao
+{
+    let mut versions_supprimees = HashMap::new();
+    let mut fuuids_a_conserver = Vec::new();
+
+    let fuuids_commande = {
+        let mut set_fuuids = HashSet::new();
+        for fuuid in &commande.fuuids { set_fuuids.insert(fuuid.as_str()); }
+        set_fuuids
+    };
+
+    // S'assurer qu'au moins un fuuid peut etre supprime.
+    // Extraire les fuuids qui doivent etre conserves
+    let filtre = doc! {
+        CHAMP_FUUIDS: {"$in": &commande.fuuids},
+    };
+    let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(
+        NOM_COLLECTION_VERSIONS)?;
+    debug!("commande_supprimer_partage_usager Filtre requete orphelins : {:?}", filtre);
+    let mut curseur = collection.find(filtre, None).await?;
+    while curseur.advance().await? {
+        let doc_mappe = curseur.deserialize_current()?;
+        let fuuids_version = &doc_mappe.fuuids;
+        let fuuid_fichier = doc_mappe.fuuid;
+        let supprime = doc_mappe.supprime;
+
+        if supprime {
+            // Verifier si l'original est l'orphelin a supprimer
+            if fuuids_commande.contains(fuuid_fichier) {
+                if !versions_supprimees.contains_key(fuuid_fichier) {
+                    // S'assurer de ne pas faire d'override si le fuuid est deja present avec false
+                    versions_supprimees.insert(fuuid_fichier.to_string(), true);
+                }
+            }
+        } else {
+            if fuuids_commande.contains(fuuid_fichier) {
+                // Override, s'assurer de ne pas supprimer le fichier si au moins 1 usager le conserve
+                versions_supprimees.insert(fuuid_fichier.to_string(), false);
+            }
+
+            // Pas supprime localement, ajouter tous les fuuids qui sont identifies comme orphelins
+            for fuuid in fuuids_version {
+                if fuuids_commande.contains(*fuuid) {
+                    fuuids_a_conserver.push(fuuid.to_string());
+                }
+            }
+        }
+    }
+
+    debug!("commande_supprimer_partage_usager Versions supprimees : {:?}, fuuids a conserver : {:?}", versions_supprimees, fuuids_a_conserver);
+    let resultat = ResultatVerifierOrphelins { versions_supprimees, fuuids_a_conserver };
+    Ok(resultat)
+}
+
+async fn transaction_supprimer_orphelins<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T)
+    -> Result<Option<MessageMilleGrille>, String>
+    where
+        M: GenerateurMessages + MongoDao,
+        T: Transaction
+{
+    debug!("transaction_supprimer_partage_usager Consommer transaction : {:?}", &transaction);
+    let transaction_mappee: TransactionSupprimerOrphelins = match transaction.convertir() {
+        Ok(t) => t,
+        Err(e) => Err(format!("grosfichiers.transaction_supprimer_orphelins Erreur conversion transaction : {:?}", e))?
+    };
+    match traiter_transaction_supprimer_orphelins(middleware, transaction_mappee).await {
+        Ok(inner) => Ok(inner),
+        Err(e) => Err(format!("transaction_supprimer_orphelins Erreur traitement {:?}", e))?
+    }
+}
+
+async fn traiter_transaction_supprimer_orphelins<M>(middleware: &M, transaction: TransactionSupprimerOrphelins)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where
+        M: GenerateurMessages + MongoDao
+{
+    let resultat = trouver_orphelins_supprimer(middleware, &transaction).await?;
+
+    let collection_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    for (fuuid, supprimer) in resultat.versions_supprimees {
+        if supprimer {
+            info!("traiter_transaction_supprimer_orphelins Supprimer fuuid {}", fuuid);
+            let filtre_rep = doc! { CHAMP_FUUIDS_VERSIONS: &fuuid };
+            let ops = doc! {
+                "$pull": { CHAMP_FUUIDS_VERSIONS: &fuuid },
+                "$currentDate": { CHAMP_MODIFICATION: true }
+            };
+            collection_rep.update_many(filtre_rep, ops, None).await?;
+
+            let filtre_version = doc! { CHAMP_FUUID: &fuuid, CHAMP_SUPPRIME: true };
+            collection_versions.delete_many(filtre_version, None).await?;
+
+            // Nettoyage fichiers sans versions
+            let filtre_rep_vide = doc! {
+                CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
+                format!("{}.0", CHAMP_FUUIDS_VERSIONS): {"$exists": false}
+            };
+            collection_rep.delete_many(filtre_rep_vide, None).await?;
+        }
+    }
+
+    let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };
+    Ok(Some(middleware.formatter_reponse(reponse, None)?))
 }
