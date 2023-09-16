@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::time::Duration;
 use log::{debug, error, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
 use millegrilles_common_rust::async_trait::async_trait;
@@ -14,6 +15,7 @@ use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDa
 use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint};
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
+use millegrilles_common_rust::tokio::time as tokio_time;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use crate::grosfichiers::{emettre_evenement_maj_fichier, GestionnaireGrosFichiers};
 
@@ -104,7 +106,7 @@ async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValideAction
     Ok(None)
 }
 
-async fn transmettre_fuuids_fichiers<M>(middleware: &M, fuuids: &Vec<String>, archive: bool, termine: bool)
+async fn transmettre_fuuids_fichiers<M>(middleware: &M, fuuids: &Vec<String>, archive: bool, termine: bool, total: Option<i64>)
     -> Result<(), Box<dyn Error>>
     where M: GenerateurMessages + MongoDao,
 {
@@ -112,6 +114,7 @@ async fn transmettre_fuuids_fichiers<M>(middleware: &M, fuuids: &Vec<String>, ar
         "fuuids": fuuids,
         "archive": archive,
         "termine": termine,
+        "total": total,
     };
     let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, COMMANDE_ACTIVITE_FUUIDS)
         .exchanges(vec![L2Prive])
@@ -159,35 +162,39 @@ pub async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValideActi
     let filtre = doc! { CHAMP_SUPPRIME: false, CHAMP_FUUIDS_RECLAMES: {"$exists": true} };
     let mut curseur = collection.find(filtre, Some(options)).await?;
     // while let Some(f) = curseur.next().await {
+    let mut total = 0 as i64;
     while curseur.advance().await? {
         let info_fichier = curseur.deserialize_current()?;
         // let info_fichier: RowFichiersSyncpret = convertir_bson_deserializable(f?)?;
         let archive = match info_fichier.archive { Some(b) => b, None => false };
         if archive {
+            total += info_fichier.fuuids_reclames.len() as i64;
             fichiers_archives.extend(info_fichier.fuuids_reclames.into_iter().map(|s| s.to_owned()));
         } else {
+            total += info_fichier.fuuids_reclames.len() as i64;
             fichiers_actifs.extend(info_fichier.fuuids_reclames.into_iter().map(|s| s.to_owned()));
         }
 
         if fichiers_actifs.len() >= LIMITE_FUUIDS_BATCH {
-            transmettre_fuuids_fichiers(middleware, &fichiers_actifs, false, false).await?;
+            transmettre_fuuids_fichiers(middleware, &fichiers_actifs, false, false, None).await?;
             fichiers_actifs.clear();
+            tokio_time::sleep(Duration::from_millis(500)).await;
         }
         if fichiers_archives.len() >= LIMITE_FUUIDS_BATCH {
-            transmettre_fuuids_fichiers(middleware, &fichiers_archives, true, false).await?;
+            transmettre_fuuids_fichiers(middleware, &fichiers_archives, true, false, None).await?;
             fichiers_archives.clear();
         }
     }
 
     if ! fichiers_actifs.is_empty() {
-        transmettre_fuuids_fichiers(middleware, &fichiers_actifs, false, false).await?;
+        transmettre_fuuids_fichiers(middleware, &fichiers_actifs, false, false, Some(total.clone())).await?;
     }
     if ! fichiers_archives.is_empty() {
-        transmettre_fuuids_fichiers(middleware, &fichiers_archives, true, false).await?;
+        transmettre_fuuids_fichiers(middleware, &fichiers_archives, true, false, Some(total.clone())).await?;
     }
 
     // Transmettre message avec flag termine dans tous les cas
-    transmettre_fuuids_fichiers(middleware, &vec![], false, true).await?;
+    transmettre_fuuids_fichiers(middleware, &vec![], false, true, Some(total)).await?;
 
     Ok(None)
 }
