@@ -769,10 +769,23 @@ where
                 Ok(inner) => inner,
                 Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_collection Erreur mapper_fichier_db : {:?}", e))?
             };
-            let routage = RoutageMessageAction::builder("grosfichiers", "majCollection")
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_MAJ_COLLECTION)
                 .exchanges(vec![Securite::L2Prive])
+                .partition(tuuid_str)
                 .build();
             middleware.emettre_evenement(routage, &fichier_mappe).await?;
+
+            if let Some(cuuid) = fichier_mappe.cuuid {
+                // Emettre evenement de mise a jour de la collection parent.
+                let mut evenement_modif = EvenementContenuCollection::new();
+                evenement_modif.cuuid = Some(cuuid.clone());
+                evenement_modif.collections_modifiees = Some(vec![tuuid_str.to_string()]);
+                let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_MAJ_CONTENU_COLLECTION)
+                    .exchanges(vec![Securite::L2Prive])
+                    .partition(cuuid)
+                    .build();
+                middleware.emettre_evenement(routage, &evenement_modif).await?;
+            }
         },
         None => Err(format!("grosfichiers.emettre_evenement_maj_collection Collection {} introuvable", tuuid_str))?
     };
@@ -820,7 +833,7 @@ where
     let evenement_ref = evenement.borrow();
 
     let routage = {
-        let mut routage_builder = RoutageMessageAction::builder("grosfichiers", "majContenuCollection")
+        let mut routage_builder = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_MAJ_CONTENU_COLLECTION)
             .exchanges(vec![Securite::L2Prive]);
         if let Some(cuuid) = evenement_ref.cuuid.as_ref() {
             routage_builder = routage_builder.partition(cuuid.clone());

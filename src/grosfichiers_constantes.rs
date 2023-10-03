@@ -90,7 +90,9 @@ pub const COMMANDE_GET_CLE_JOB_CONVERSION: &str = "getCleJobConversion";
 pub const COMMANDE_INDEXATION_GET_JOB: &str = "getJobIndexation";
 pub const COMMANDE_RECLAMER_FUUIDS: &str = "reclamerFuuids";
 
-pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
+// pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
+pub const EVENEMENT_MAJ_COLLECTION: &str = "majCollection";
+pub const EVENEMENT_MAJ_CONTENU_COLLECTION: &str = "majContenuCollection";
 pub const EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION: &str = "fuuidAjouterFichierCollection";
 pub const EVENEMENT_FUUID_ASSOCIER_CONVERSION: &str = "fuuidAssocierConversion";
 pub const EVENEMENT_FUUID_ASSOCIER_VIDEO: &str = "fuuidAssocierVideo";

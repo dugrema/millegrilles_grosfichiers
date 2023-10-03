@@ -624,9 +624,9 @@ async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction,
 
 #[derive(Deserialize)]
 struct ReponseRecupererFichiers {
-    errors: Vec<String>,
-    inconnus: Vec<String>,
-    recuperes: Vec<String>,
+    errors: Option<Vec<String>>,
+    inconnus: Option<Vec<String>>,
+    recuperes: Option<Vec<String>>,
 }
 
 async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -689,7 +689,15 @@ async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValideActi
                     // Traiter la transaction
                     debug!("commande_recuperer_documents_v2 Reponse recuperer document OK : {:?}", reponse);
                     let parsed: ReponseRecupererFichiers = reponse.message.parsed.map_contenu()?;
-                    if parsed.inconnus.len() > 0 || parsed.errors.len() > 0 {
+                    let mut inconnus = 0;
+                    let mut errors = 0;
+                    if let Some(inconnus_vec) = parsed.inconnus.as_ref() {
+                        inconnus = inconnus_vec.len();
+                    }
+                    if let Some(errors_vec) = parsed.errors.as_ref() {
+                        errors = errors_vec.len();
+                    }
+                    if inconnus > 0 || errors > 0 {
                         let reponse = json!({
                             "ok": false,
                             "err": "Au moins 1 fichier supprime Fichiers supprimes",
@@ -887,7 +895,7 @@ async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction
 
             // Convertir le fichier en transaction
             let transaction_copier_message = middleware.formatter_message(
-                MessageKind::Commande, &fichier, DOMAINE_NOM.into(), "copierFichierTiers".into(), None, None, false)?;
+                MessageKind::Commande, &fichier, DOMAINE_NOM.into(), "copierFichierTiers".into(), None::<&str>, None::<&str>, None, false)?;
             let transaction_copier_message = MessageSerialise::from_parsed(transaction_copier_message)?;
 
             let mva = MessageValideAction::new(
