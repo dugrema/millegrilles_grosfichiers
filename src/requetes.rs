@@ -925,7 +925,18 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     } else if m.verifier_exchanges(vec![Securite::L4Secure]) && m.verifier_roles(vec![RolesCertificats::Media]) {
         // Ok, aucunes limitations
     } else if m.verifier_exchanges(vec![Securite::L2Prive]) && m.verifier_roles(vec![RolesCertificats::Stream]) {
-        filtre.insert(CHAMP_MIMETYPE, doc! {"mimetype": {"$regex": "video\\/"}} );
+        // filtre.insert(CHAMP_MIMETYPE, doc! {"mimetype": {"$regex": "video\\/"}} );
+        filtre.insert(CHAMP_MIMETYPE, doc! {
+            "mimetype": {
+                "$or": [
+                    {"$regex": "video\\/"},
+                    "application/vnd\\.rn-realmedia",
+		            "application/vnd\\.rn-realplayer",
+		            "application/x-mplayer2",
+		            "application/x-shockwave-flash"
+                ]
+            }
+        });
     } else {
         return Ok(Some(middleware.formatter_reponse(
             json!({"err": true, "message": "user_id n'est pas dans le certificat/certificat n'est pas de role media/stream"}),
@@ -1057,7 +1068,15 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gest
     let filtre = doc!{
         "fuuids": { "$in": vec![&fuuid] },
         "user_id": &user_id,
-        "mimetype": {"$regex": "(video\\/|audio\\/)"},
+        "$or": [
+            {"mimetype": {"$regex": "(video\\/|audio\\/)"}},
+            {"mimetype": {"$in": [
+                "application/vnd.rn-realmedia",
+                "application/vnd.rn-realplayer",
+                "application/x-mplayer2",
+                "application/x-shockwave-flash"
+            ]}}
+        ]
     };
 
     // Utiliser certificat du message client (requete) pour demande de rechiffrage

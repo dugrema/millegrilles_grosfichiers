@@ -11,6 +11,7 @@ use millegrilles_common_rust::bson::{Bson, bson};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::fichiers::is_mimetype_video;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
@@ -433,22 +434,14 @@ impl NodeFichierVersionOwned {
         if mimetype.starts_with("image") {
             flag_media_traite = false;
             flag_media = Some("image".to_string());
-            // doc_version.insert(CHAMP_FLAG_MEDIA, "image");
-            // doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
-        } else if mimetype.starts_with("video") {
+        } else if is_mimetype_video(mimetype) {
             flag_media_traite = false;
             flag_video_traite = false;
             flag_media = Some("video".to_string());
-            // doc_version.insert(CHAMP_FLAG_MEDIA, "video");
-            // doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
-            // doc_version.insert(CHAMP_FLAG_VIDEO_TRAITE, false);
         } else if mimetype =="application/pdf" {
             flag_media_traite = false;
             flag_media = Some("poster".to_string());
-            // doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
-            // doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, false);
         }
-        // doc_version.insert(CHAMP_FLAG_INDEX, false);
 
         Ok(Self {
             fuuid: value.fuuid.clone(),
@@ -456,7 +449,7 @@ impl NodeFichierVersionOwned {
             user_id: user_id.to_string(),
             mimetype: value.mimetype.clone(),
             metadata: value.metadata.clone(),
-            taille: value.taille,
+            taille: value.taille.clone(),
             fuuids: vec![value.fuuid.clone()],
             fuuids_reclames: vec![value.fuuid.clone()],
             supprime: false,

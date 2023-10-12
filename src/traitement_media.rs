@@ -11,6 +11,7 @@ use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissi
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
+use millegrilles_common_rust::fichiers::is_mimetype_video;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable};
@@ -529,6 +530,10 @@ fn job_image_supportee<S>(mimetype: S) -> bool
 {
     let mimetype = mimetype.as_ref();
 
+    if is_mimetype_video(mimetype) {
+        return true;
+    }
+
     match mimetype {
         "application/pdf" => true,
         _ => {
@@ -551,16 +556,17 @@ fn job_image_supportee<S>(mimetype: S) -> bool
 fn job_video_supportee<S>(mimetype: S) -> bool
     where S: AsRef<str>
 {
-    let mimetype = mimetype.as_ref();
-    let subtype = match mimetype.split("/").next() {
-        Some(t) => t,
-        None => {
-            error!("traitement_media.job_image_supportee Mimetype {}, subtype non identifiable", mimetype);
-            return false
-        }
-    };
-    match subtype {
-        "video" => true,
-        _ => false
-    }
+    is_mimetype_video(mimetype)
+    // let mimetype = mimetype.as_ref();
+    // let subtype = match mimetype.split("/").next() {
+    //     Some(t) => t,
+    //     None => {
+    //         error!("traitement_media.job_image_supportee Mimetype {}, subtype non identifiable", mimetype);
+    //         return false
+    //     }
+    // };
+    // match subtype {
+    //     "video" => true,
+    //     _ => false
+    // }
 }
