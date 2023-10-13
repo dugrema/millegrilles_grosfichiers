@@ -547,6 +547,11 @@ impl HandlerEvenements {
             Err(e) => Err(format!("evenements.HandlerEvenements.extraire_liste_expires Erreur lock : {}", e))?
         };
 
+        if lock.len() > 100 {
+            warn!("verifier_evenement_cuuid_contenu Limite atteinte, throttling ignore");
+            return Ok(Some(evenement));
+        }
+
         let cuuid = &evenement.cuuid;
         match lock.get_mut(cuuid) {
             Some(val) => {
