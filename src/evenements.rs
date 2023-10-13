@@ -1,12 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use log::{debug, error, warn};
-use millegrilles_common_rust::{serde_json, serde_json::json};
+use millegrilles_common_rust::{chrono, serde_json, serde_json::json};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{doc, Document};
 
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::L2Prive;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
@@ -16,8 +18,9 @@ use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hi
 use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::time as tokio_time;
+use millegrilles_common_rust::tokio::time::{Duration as DurationTokio, timeout};
 use millegrilles_common_rust::tokio_stream::StreamExt;
-use crate::grosfichiers::{emettre_evenement_maj_fichier, GestionnaireGrosFichiers};
+use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 
 use crate::grosfichiers_constantes::*;
 use crate::traitement_jobs::JobHandler;
@@ -367,7 +370,7 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
             marquer_visites_fuuids(middleware, &fuuids, date_visite, instance.clone()).await?;
         }
 
-        emettre_evenement_maj_fichier(middleware, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
+        emettre_evenement_maj_fichier(middleware, gestionnaire, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
 
         if let Some(mimetype) = doc_fuuid.mimetype {
             let mut champs_cles = HashMap::new();
@@ -439,4 +442,151 @@ async fn marquer_visites_fuuids<M>(
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+pub struct HandlerEvenements {
+    /// Key: user_id/cuuid, value : epoch secs
+    events_cuuid_content_expiration: Mutex<HashMap<String, EvenementHolder>>,
+}
+
+impl Clone for HandlerEvenements {
+    /// Creer nouvelle copie vide
+    fn clone(&self) -> Self {
+        HandlerEvenements::new()
+    }
+}
+
+#[derive(Clone, Debug)]
+enum EvenementHolderType {
+    ContenuCollection(EvenementContenuCollection),
+}
+
+#[derive(Clone, Debug)]
+struct EvenementHolder {
+    expiration: i64,
+    evenement: Option<EvenementHolderType>,
+}
+
+impl EvenementHolder {
+    fn new() -> Self {
+        Self { expiration: Utc::now().timestamp(), evenement: None }
+    }
+}
+
+impl HandlerEvenements {
+    pub fn new() -> Self {
+        HandlerEvenements {
+            events_cuuid_content_expiration: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn extraire_liste_expires(val: &Mutex<HashMap<String, EvenementHolder>>) -> Result<Option<Vec<EvenementHolder>>, String>
+    {
+        let mut lock = match val.lock() {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("evenements.HandlerEvenements.extraire_liste_expires Erreur lock : {}", e))?
+        };
+
+        if lock.is_empty() {
+            return Ok(None);  // Aucun evenement
+        }
+
+        let expiration = Utc::now() - chrono::Duration::seconds(3);
+        let expiration = expiration.timestamp();
+        let mut expired_keys = Vec::new();
+
+        // Conserver les keys a transmettre
+        for (key, value) in lock.iter() {
+            if value.expiration < expiration {
+                expired_keys.push(key.to_owned());
+            }
+        }
+
+        // Retirer les evenements a emettre
+        let mut holders = Vec::new();
+        for key in expired_keys.into_iter() {
+            if let Some(holder) = lock.remove(&key) {
+                holders.push(holder);
+            }
+        }
+
+        debug!("extraire_liste_expires Emettre {} evenements expires", holders.len());
+
+        return Ok(Some(holders))
+    }
+
+    pub async fn emettre_cuuid_content_expires<M>(&self, middleware: &M, gestionnaire: &GestionnaireGrosFichiers) -> Result<(), Box<dyn Error>>
+        where M: MongoDao + GenerateurMessages
+    {
+        if let Some(evenements_expires) = HandlerEvenements::extraire_liste_expires(
+            &self.events_cuuid_content_expiration)?
+        {
+            for holder in evenements_expires {
+                match holder.evenement {
+                    Some(inner) => {
+                        if let EvenementHolderType::ContenuCollection(evenement) = inner {
+                            emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
+                        } else {
+                            error!("emettre_cuuid_content_expires Mauvais type de Holder pour evenement emettre_cuuid_content_expires");
+                        }
+                    },
+                    None => ()  // Rien a faire, le lock a ete retire
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Insere une entree pour throttling d'evenement sur une collection (cuuid)
+    /// Retourne false si la collection n'est pas presentement en throttling
+    pub fn verifier_evenement_cuuid_contenu(&self, evenement: EvenementContenuCollection) -> Result<Option<EvenementContenuCollection>, String>
+    {
+        let mut lock = match self.events_cuuid_content_expiration.lock() {
+            Ok(inner) => inner,
+            Err(e) => Err(format!("evenements.HandlerEvenements.extraire_liste_expires Erreur lock : {}", e))?
+        };
+
+        let cuuid = &evenement.cuuid;
+        match lock.get_mut(cuuid) {
+            Some(val) => {
+                match val.evenement.as_mut() {
+                    Some(inner) => {
+                        if let EvenementHolderType::ContenuCollection(evenement_existant) = inner {
+                            evenement_existant.merge(evenement)?;
+                        } else {
+                            error!("verifier_evenement_cuuid_contenu Mauvais type de Holder pour evenement emettre_cuuid_content_expires");
+                        }
+                    },
+                    None => {
+                        // Inserer l'evenement recu tel quel pour re-emission apres expiration
+                        val.evenement = Some(EvenementHolderType::ContenuCollection(evenement));
+                    }
+                }
+
+                // Throttling actif (return None)
+                Ok(None)
+            },
+            None => {
+                // Creer un placeholder. Throttling actif pour prochains evenements.
+                lock.insert(cuuid.to_owned(), EvenementHolder::new());
+
+                // Pas de throttling pour cet evenement.
+                Ok(Some(evenement))
+            }
+        }
+    }
+
+    // pub async fn thread<M>(&self, middleware: &M, gestionnaire: Arc<GestionnaireGrosFichiers>)
+    //     where M: GenerateurMessages + MongoDao
+    // {
+    //     loop {
+    //         debug!("evenements.HandlerEvenements.thread loop");
+    //         if let Err(e) = self.emettre_cuuid_content_expires(middleware, gestionnaire.as_ref()).await {
+    //             error!("evenements.HandlerEvenements.thread Erreur emettre_cuuid_content_expires : {}", e);
+    //         }
+    //
+    //         tokio_time::sleep(DurationTokio::new(5, 0)).await;
+    //     }
+    // }
 }

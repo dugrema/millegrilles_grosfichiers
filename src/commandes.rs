@@ -1214,13 +1214,13 @@ async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValideAction, ges
     debug!("commande_nouveau_fichier Resultat transaction update : {:?}", resultat);
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_fichier(middleware, tuuid.as_str(), EVENEMENT_AJOUTER_FICHIER).await?;
+    emettre_evenement_maj_fichier(middleware, gestionnaire, tuuid.as_str(), EVENEMENT_AJOUTER_FICHIER).await?;
     //if let Some(c) = cuuid.as_ref() {
-        let mut event = EvenementContenuCollection::new();
+        let mut event = EvenementContenuCollection::new(cuuid.to_string());
         let fichiers_ajoutes = vec![tuuid.to_owned()];
-        event.cuuid = cuuid.into();
+        // event.cuuid = cuuid.into();
         event.fichiers_ajoutes = Some(fichiers_ajoutes);
-        emettre_evenement_contenu_collection(middleware, event).await?;
+        emettre_evenement_contenu_collection(middleware, gestionnaire, event).await?;
     //}
 
     Ok(middleware.reponse_ok()?)

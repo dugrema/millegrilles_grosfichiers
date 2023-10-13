@@ -33,7 +33,7 @@ use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction, Tr
 use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::commandes::consommer_commande;
-use crate::evenements::consommer_evenement;
+use crate::evenements::{consommer_evenement, HandlerEvenements};
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{consommer_requete, mapper_fichier_db};
 use crate::traitement_index::{IndexationJobHandler, InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche};
@@ -48,6 +48,7 @@ pub struct GestionnaireGrosFichiers {
     pub image_job_handler: ImageJobHandler,
     pub video_job_handler: VideoJobHandler,
     pub indexation_job_handler: IndexationJobHandler,
+    pub evenements_handler: HandlerEvenements,
 }
 
 #[async_trait]
@@ -679,7 +680,7 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
     Ok(())
 }
 
-pub async fn emettre_evenement_maj_fichier<M, S, T>(middleware: &M, tuuid: S, action: T) -> Result<(), Box<dyn Error>>
+pub async fn emettre_evenement_maj_fichier<M, S, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, tuuid: S, action: T) -> Result<(), Box<dyn Error>>
 where
     M: GenerateurMessages + MongoDao,
     S: AsRef<str>,
@@ -702,53 +703,28 @@ where
                 let routage_action = RoutageMessageAction::builder(DOMAINE_NOM, action_str)
                     .exchanges(vec![Securite::L2Prive])
                     .build();
+
                 middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: vec![*fuuid]})).await?;
             }
         }
 
         if let Some(cuuids) = doc_fichier.path_cuuids.as_ref() {
             if let Some(cuuid) = cuuids.first() {
-                let mut evenement = EvenementContenuCollection::new();
-                evenement.cuuid = Some((*cuuid).to_owned());
+                let mut evenement = EvenementContenuCollection::new(*cuuid);
+                // evenement.cuuid = Some((*cuuid).to_owned());
                 evenement.fichiers_modifies = Some(vec![tuuid_str.to_owned()]);
-                emettre_evenement_contenu_collection(middleware, evenement).await?;
+                emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
             }
         }
 
     } else {
         Err(format!("grosfichiers.emettre_evenement_maj_fichier Document {} introuvable", tuuid_str))?
     }
-    // let doc_fichier: FichierDetail = match collection.find_one(filtre, None).await {
-    //     Ok(inner) => match inner {
-    //         Some(d) => FichierDetail::try_from(d)?,
-    //         None => Err(format!("grosfichiers.emettre_evenement_maj_fichier Document {} introuvable", tuuid_str))?
-    //     },
-    //     Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_fichier Erreur collection.find_one pour {} : {:?}", tuuid_str, e))?
-    // };
-
-    // Extraire liste de fuuids directement
-    // let routage_action = RoutageMessageAction::builder(DOMAINE_NOM, action_str)
-    //     .exchanges(vec![Securite::L2Prive])
-    //     .build();
-    // middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: vec![&doc_fichier.fuuid_v_courante]})).await?;
-
-    // let fichier_mappe = match mapper_fichier_db(inner) {
-    //     Ok(inner) => inner,
-    //     Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_fichier Erreur mapper_fichier_db : {:?}", e))?
-    // };
-    // if let Some(cuuids) = doc_fichier.cuuids {
-    //     for cuuid in cuuids {
-    //         let mut evenement = EvenementContenuCollection::new();
-    //         evenement.cuuid = Some(cuuid);
-    //         evenement.fichiers_modifies = Some(vec![tuuid_str.to_owned()]);
-    //         emettre_evenement_contenu_collection(middleware, evenement).await?
-    //     }
-    // }
 
     Ok(())
 }
 
-pub async fn emettre_evenement_maj_collection<M, S>(middleware: &M, tuuid: S) -> Result<(), String>
+pub async fn emettre_evenement_maj_collection<M, S>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, tuuid: S) -> Result<(), String>
 where
     M: GenerateurMessages + MongoDao,
     S: AsRef<str>
@@ -777,14 +753,15 @@ where
 
             if let Some(cuuid) = fichier_mappe.cuuid {
                 // Emettre evenement de mise a jour de la collection parent.
-                let mut evenement_modif = EvenementContenuCollection::new();
-                evenement_modif.cuuid = Some(cuuid.clone());
+                let mut evenement_modif = EvenementContenuCollection::new(cuuid.clone());
+                // evenement_modif.cuuid = Some(cuuid.clone());
                 evenement_modif.collections_modifiees = Some(vec![tuuid_str.to_string()]);
-                let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_MAJ_CONTENU_COLLECTION)
-                    .exchanges(vec![Securite::L2Prive])
-                    .partition(cuuid)
-                    .build();
-                middleware.emettre_evenement(routage, &evenement_modif).await?;
+                emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_modif).await?;
+                // let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_MAJ_CONTENU_COLLECTION)
+                //     .exchanges(vec![Securite::L2Prive])
+                //     .partition(cuuid)
+                //     .build();
+                // middleware.emettre_evenement(routage, &evenement_modif).await?;
             }
         },
         None => Err(format!("grosfichiers.emettre_evenement_maj_collection Collection {} introuvable", tuuid_str))?
@@ -795,8 +772,7 @@ where
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EvenementContenuCollection {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cuuid: Option<String>,
+    pub cuuid: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fichiers_ajoutes: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -810,9 +786,11 @@ pub struct EvenementContenuCollection {
 }
 
 impl EvenementContenuCollection {
-    pub fn new() -> Self {
+    pub fn new<S>(cuuid: S) -> Self
+        where S: ToString
+    {
         Self {
-            cuuid: None,
+            cuuid: cuuid.to_string(),
             fichiers_ajoutes: None,
             fichiers_modifies: None,
             collections_ajoutees: None,
@@ -820,34 +798,78 @@ impl EvenementContenuCollection {
             retires: None,
         }
     }
+
+    /// Combine deux instances de EvenementContenuCollection
+    pub fn merge(&mut self, mut other: Self) -> Result<(), String> {
+        if self.cuuid.as_str() != other.cuuid.as_str() {
+            Err(format!("EvenementContenuCollection.merge cuuid mismatch"))?
+        }
+
+        match self.fichiers_ajoutes.as_mut() {
+            Some(inner) => match other.fichiers_ajoutes {
+                Some(inner_other) => inner.extend(inner_other),
+                None => () // Rien a faire
+            },
+            None => self.fichiers_ajoutes = other.fichiers_ajoutes
+        }
+
+        match self.fichiers_modifies.as_mut() {
+            Some(inner) => match other.fichiers_modifies {
+                Some(inner_other) => inner.extend(inner_other),
+                None => () // Rien a faire
+            },
+            None => self.fichiers_modifies = other.fichiers_modifies
+        }
+
+        match self.collections_ajoutees.as_mut() {
+            Some(inner) => match other.collections_ajoutees {
+                Some(inner_other) => inner.extend(inner_other),
+                None => () // Rien a faire
+            },
+            None => self.collections_ajoutees = other.collections_ajoutees
+        }
+
+        match self.collections_modifiees.as_mut() {
+            Some(inner) => match other.collections_modifiees {
+                Some(inner_other) => inner.extend(inner_other),
+                None => () // Rien a faire
+            },
+            None => self.collections_modifiees = other.collections_modifiees
+        }
+
+        match self.retires.as_mut() {
+            Some(inner) => match other.retires {
+                Some(inner_other) => inner.extend(inner_other),
+                None => () // Rien a faire
+            },
+            None => self.retires = other.retires
+        }
+
+        Ok(())
+    }
 }
 
-pub async fn emettre_evenement_contenu_collection<M,E>(middleware: &M, evenement: E)
+pub async fn emettre_evenement_contenu_collection<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, evenement: EvenementContenuCollection)
     -> Result<(), String>
 where
-    M: GenerateurMessages + MongoDao,
-    E: Borrow<EvenementContenuCollection> + Debug
+    M: GenerateurMessages + MongoDao
 {
     debug!("grosfichiers.emettre_evenement_contenu_collection Emettre evenement maj pour collection {:?}", evenement);
 
-    let evenement_ref = evenement.borrow();
+    // let evenement_ref = evenement.borrow();
 
-    let routage = {
-        let mut routage_builder = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_MAJ_CONTENU_COLLECTION)
-            .exchanges(vec![Securite::L2Prive]);
-        if let Some(cuuid) = evenement_ref.cuuid.as_ref() {
-            routage_builder = routage_builder.partition(cuuid.clone());
-        }
-        routage_builder.build()
-    };
+    // Voir si on throttle le message. Si l'evenement est retourne, on l'emet immediatement.
+    // Si on recoit None, l'evenement a ete conserve pour re-emission plus tard.
+    if let Some(inner) = gestionnaire.evenements_handler.verifier_evenement_cuuid_contenu(evenement)? {
+        let routage = {
+            let mut routage_builder = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_MAJ_CONTENU_COLLECTION)
+                .exchanges(vec![Securite::L2Prive]);
+            routage_builder = routage_builder.partition(inner.cuuid.clone());
+            routage_builder.build()
+        };
 
-    // let contenu = json!({
-    //     "cuuid": tuuid_str,
-    //     "fichiers_ajoutes": fichiers_ajoutes,
-    //     "collections_ajoutees": collections_ajoutees,
-    //     "tuuids_retires": tuuids_retires,
-    // });
-    middleware.emettre_evenement(routage, evenement_ref).await?;
+        middleware.emettre_evenement(routage, &inner).await?;
+    }
 
     Ok(())
 }

@@ -21,6 +21,7 @@ use millegrilles_common_rust::tokio::task::JoinHandle;
 use millegrilles_common_rust::tokio::time::sleep;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::resoumettre_transactions;
+use crate::evenements::HandlerEvenements;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::traitement_index::IndexationJobHandler;
@@ -67,9 +68,10 @@ fn charger_gestionnaire() -> &'static TypeGestionnaire {
     let image_job_handler = ImageJobHandler {};
     let video_job_handler = VideoJobHandler {};
     let indexation_job_handler = IndexationJobHandler {};
+    let evenements_handler = HandlerEvenements::new();
 
     let gestionnaire = Arc::new(GestionnaireGrosFichiers {
-        image_job_handler, video_job_handler, indexation_job_handler });
+        image_job_handler, video_job_handler, indexation_job_handler, evenements_handler });
 
     // Inserer les gestionnaires dans la variable static - permet d'obtenir lifetime 'static
     unsafe {
@@ -127,21 +129,56 @@ async fn executer(mut futures: FuturesUnordered<JoinHandle<()>>) {
 
 /// Thread d'entretien
 async fn entretien<M>(middleware: Arc<M>, gestionnaires: Vec<&'static TypeGestionnaire>)
-    where M: Middleware
+    where M: Middleware + 'static
+{
+    let gestionnaire = match gestionnaires.get(0) {
+        Some(TypeGestionnaire::PartitionConsignation(gestionnaire)) => gestionnaire.clone(),
+        _ => panic!("Mauvaise configuration gestionnaire")
+    };
+    let mut futures = FuturesUnordered::new();
+    let thread_entretien = entretien_grosfichiers(middleware.clone(), gestionnaire.clone());
+    let thread_evenements = thread_entretien_evenements(middleware.clone(), gestionnaire.clone());
+
+    futures.push(spawn(thread_entretien));
+    futures.push(spawn(thread_evenements));
+
+    let arret = futures.next().await;
+}
+
+async fn thread_entretien_evenements<M>(middleware: Arc<M>, gestionnaire: Arc<GestionnaireGrosFichiers>)
+    where M: Middleware + 'static
+{
+    let handler_evenements = &gestionnaire.evenements_handler;
+
+    loop {
+        debug!("thread_entretien_evenements.thread loop");
+        if let Err(e) = handler_evenements.emettre_cuuid_content_expires(middleware.as_ref(), gestionnaire.as_ref()).await {
+            error!("thread_entretien_evenements Erreur emettre_cuuid_content_expires : {}", e);
+        }
+        sleep(DurationTokio::new(5, 0)).await;
+    }
+}
+
+async fn entretien_grosfichiers<M>(middleware: Arc<M>, gestionnaire_arc: Arc<GestionnaireGrosFichiers>)
+    where M: Middleware + 'static
 {
     let mut certificat_emis = false;
+
+    let gestionnaire = gestionnaire_arc.as_ref();
 
     // Liste de collections de transactions pour tous les domaines geres par Core
     let collections_transaction = {
         let mut coll_docs_strings = Vec::new();
-        for g in &gestionnaires {
-            match g {
-                TypeGestionnaire::PartitionConsignation(g) => {
-                    coll_docs_strings.push(String::from(g.get_collection_transactions().expect("collection transactions")));
-                },
-                TypeGestionnaire::None => ()
-            }
-        }
+        coll_docs_strings.push(String::from(gestionnaire.get_collection_transactions()
+            .expect("collection transactions")));
+        // for g in &gestionnaires {
+        //     match g {
+        //         TypeGestionnaire::PartitionConsignation(g) => {
+        //             coll_docs_strings.push(String::from(g.get_collection_transactions().expect("collection transactions")));
+        //         },
+        //         TypeGestionnaire::None => ()
+        //     }
+        // }
         coll_docs_strings
     };
 
@@ -222,26 +259,26 @@ async fn entretien<M>(middleware: Arc<M>, gestionnaires: Vec<&'static TypeGestio
             debug!("domaines_grosfichiers.entretien Fin emission traitement certificat local, resultat : {}", certificat_emis);
         }
 
-        for g in &gestionnaires {
-            match g {
-                TypeGestionnaire::PartitionConsignation(g) => {
-                    debug!("Entretien GestionnaireGrosFichiers");
-                    // if prochain_entretien_elasticsearch < maintenant {
-                    //     prochain_entretien_elasticsearch = maintenant + intervalle_entretien_elasticsearch;
-                    //     if !g.es_est_pret() {
-                    //         info!("Preparer ElasticSearch");
-                    //         match g.es_preparer().await {
-                    //             Ok(()) => {
-                    //                 info!("Index ElasticSearch prets");
-                    //             },
-                    //             Err(e) => warn!("domaines_grosfichiers.entretien Erreur preparation ElasticSearch : {:?}", e)
-                    //         }
-                    //     }
-                    // }
-                },
-                _ => ()
-            }
-        }
+        // for g in &gestionnaires {
+        //     match g {
+        //         TypeGestionnaire::PartitionConsignation(g) => {
+        //             debug!("Entretien GestionnaireGrosFichiers");
+        //             // if prochain_entretien_elasticsearch < maintenant {
+        //             //     prochain_entretien_elasticsearch = maintenant + intervalle_entretien_elasticsearch;
+        //             //     if !g.es_est_pret() {
+        //             //         info!("Preparer ElasticSearch");
+        //             //         match g.es_preparer().await {
+        //             //             Ok(()) => {
+        //             //                 info!("Index ElasticSearch prets");
+        //             //             },
+        //             //             Err(e) => warn!("domaines_grosfichiers.entretien Erreur preparation ElasticSearch : {:?}", e)
+        //             //         }
+        //             //     }
+        //             // }
+        //         },
+        //         _ => ()
+        //     }
+        // }
 
     }
 
