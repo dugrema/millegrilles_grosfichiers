@@ -29,6 +29,7 @@ use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
 // use crate::traitement_index::{ElasticSearchDao, ElasticSearchDaoImpl};
 
 const DUREE_ATTENTE: u64 = 20000;
+const INTERVALLE_THREAD_EVENEMENTS_SECS: u64 = 2;
 
 // Creer espace static pour conserver les gestionnaires
 
@@ -155,7 +156,7 @@ async fn thread_entretien_evenements<M>(middleware: Arc<M>, gestionnaire: Arc<Ge
         if let Err(e) = handler_evenements.emettre_cuuid_content_expires(middleware.as_ref(), gestionnaire.as_ref()).await {
             error!("thread_entretien_evenements Erreur emettre_cuuid_content_expires : {}", e);
         }
-        sleep(DurationTokio::new(5, 0)).await;
+        sleep(DurationTokio::new(INTERVALLE_THREAD_EVENEMENTS_SECS, 0)).await;
     }
 }
 

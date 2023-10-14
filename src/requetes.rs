@@ -277,10 +277,14 @@ pub struct ReponseFichierRepVersion {
     // Champs recuperes a partir de la version courante
     #[serde(skip_serializing_if="Option::is_none")]
     pub version_courante: Option<NodeFichierVersionOwned>,
+
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub derniere_modification: Option<DateEpochSeconds>,
 }
 
 impl From<NodeFichierRepOwned> for ReponseFichierRepVersion {
-    fn from(value: NodeFichierRepOwned) -> Self {
+    fn from(mut value: NodeFichierRepOwned) -> Self {
+        value.map_date_modification();
         Self {
             tuuid: value.tuuid,
             user_id: value.user_id,
@@ -292,6 +296,7 @@ impl From<NodeFichierRepOwned> for ReponseFichierRepVersion {
             fuuids_versions: value.fuuids_versions,
             path_cuuids: value.path_cuuids,
             version_courante: None,
+            derniere_modification: value.derniere_modification,
         }
     }
 }
@@ -388,7 +393,8 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
     let mut map_fichiers_par_fuuid: HashMap<String, ReponseFichierRepVersion> = HashMap::new();
     {
         while let Some(r) = curseur.next().await {
-            let row = r?;
+            let mut row = r?;
+            row.map_date_modification();
             let type_node = TypeNode::try_from(row.type_node.as_str())?;
             match type_node {
                 TypeNode::Fichier => {

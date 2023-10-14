@@ -323,6 +323,12 @@ pub struct NodeFichierRepOwned {
     // Champs pour type_node Fichiers/Repertoires
     /// Path des cuuids parents (inverse, parent immediat est index 0)
     pub path_cuuids: Option<Vec<String>>,
+
+    // Mapping date - requis pour sync
+    #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
+    map_derniere_modification: DateTime<Utc>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub derniere_modification: Option<DateEpochSeconds>,
 }
 
 impl NodeFichierRepOwned {
@@ -370,7 +376,13 @@ impl NodeFichierRepOwned {
             mimetype: Some(value.mimetype.clone()),
             fuuids_versions: Some(vec![value.fuuid.clone()]),
             path_cuuids: Some(cuuids),
+            map_derniere_modification: Default::default(),
+            derniere_modification: None,
         })
+    }
+    
+    pub fn map_date_modification(&mut self) {
+        self.derniere_modification = Some(DateEpochSeconds::from(self.map_derniere_modification.clone()));
     }
 }
 
@@ -388,6 +400,12 @@ pub struct NodeFichierVersionOwned {
 
     pub supprime: bool,
     pub visites: HashMap<String, DateEpochSeconds>,
+
+    // Mapping date
+    #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
+    map_derniere_modification: DateTime<Utc>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    derniere_modification: Option<DateEpochSeconds>,
 
     // Champs optionnels media
     #[serde(skip_serializing_if="Option::is_none")]
@@ -454,6 +472,8 @@ impl NodeFichierVersionOwned {
             fuuids_reclames: vec![value.fuuid.clone()],
             supprime: false,
             visites: Default::default(),
+            map_derniere_modification: Default::default(),
+            derniere_modification: None,
             height: None,
             width: None,
             duration: None,
@@ -467,6 +487,10 @@ impl NodeFichierVersionOwned {
             flag_video_traite: Some(flag_video_traite),
             flag_index: Some(false),
         })
+    }
+
+    pub fn map_date_modification(&mut self) {
+        self.derniere_modification = Some(DateEpochSeconds::from(self.map_derniere_modification.clone()));
     }
 }
 

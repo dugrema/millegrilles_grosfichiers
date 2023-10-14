@@ -26,6 +26,7 @@ use crate::grosfichiers_constantes::*;
 use crate::traitement_jobs::JobHandler;
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
+const EXPIRATION_THROTTLING_EVENEMENT_CUUID_CONTENU: i64 = 1;
 
 pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValideAction)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -492,7 +493,7 @@ impl HandlerEvenements {
             return Ok(None);  // Aucun evenement
         }
 
-        let expiration = Utc::now() - chrono::Duration::seconds(3);
+        let expiration = Utc::now() - chrono::Duration::seconds(EXPIRATION_THROTTLING_EVENEMENT_CUUID_CONTENU);
         let expiration = expiration.timestamp();
         let mut expired_keys = Vec::new();
 
