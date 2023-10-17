@@ -2140,6 +2140,7 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
     };
 
     // Appliquer le filtre sur la version courante (pour l'usager si applicable)
+    // Note : obsolete depuis 2023.9 (refact structure fichiersRep). fuuid_v_courante n'est pas dans fichierRep
     let mut fuuid_video_existant = None;
     {
         let mut filtre = doc! {
@@ -2215,6 +2216,7 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
             Err(e) => Err(format!("transactions.transaction_associer_video Erreur maj versions : {:?}", e))?
         }
     }
+    // Fin obsolete depuis 2023.9
 
     // MAJ de la version du fichier
     {
@@ -2285,6 +2287,10 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
             warn!("transaction_associer_video Erreur emettre_evenement_maj_fichier : {:?}", e);
         }
     //}
+
+    if let Err(e) = touch_fichiers_rep(middleware, Some(&transaction_mappee.user_id), &fuuids).await {
+        error!("transaction_associer_video Erreur touch_fichiers_rep {:?}/{:?} : {:?}", transaction_mappee.user_id, fuuids, e);
+    }
 
     middleware.reponse_ok()
 }
@@ -2970,6 +2976,10 @@ async fn transaction_supprimer_video<M, T>(middleware: &M, gestionnaire: &Gestio
             Ok(_r) => (),
             Err(e) => Err(format!("transaction_supprimer_video Erreur update_one collection fichiers rep : {:?}", e))?
         }
+    }
+
+    if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), vec![fuuid]).await {
+        error!("transaction_favoris_creerpath Erreur touch_fichiers_rep {:?}/{:?} : {:?}", user_id, fuuid, e);
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
