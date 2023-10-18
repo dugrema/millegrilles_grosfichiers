@@ -415,22 +415,6 @@ async fn marquer_visites_fuuids<M>(
 {
     debug!("marquer_visites_fuuids  Visiter {} fuuids de l'instance {}", fuuids.len(), instance_id);
 
-    let ops = doc! {
-        "$set": {format!("visites.{}", instance_id): date_visite},
-        "$currentDate": { CHAMP_MODIFICATION: true },
-    };
-
-    // // Marquer fichiersrep
-    // {
-    //     let filtre_rep = doc! {
-    //         "fuuids": {"$in": fuuids},  // Utiliser index
-    //         "fuuid_v_courante": {"$in": fuuids}
-    //     };
-    //     debug!("marquer_visites_fuuids Filtre fichierrep {:?}", filtre_rep);
-    //     let collection_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    //     collection_rep.update_many(filtre_rep, ops.clone(), None).await?;
-    // }
-
     // Marquer versions
     {
         let filtre_versions = doc! {
@@ -438,8 +422,29 @@ async fn marquer_visites_fuuids<M>(
             // "fuuid": {"$in": fuuids}
         };
         debug!("marquer_visites_fuuids Filtre versions {:?}", filtre_versions);
+
+        let ops = doc! {
+            "$set": {format!("visites.{}", instance_id): date_visite},
+            "$currentDate": { CHAMP_MODIFICATION: true },
+        };
+
         let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
         collection_versions.update_many(filtre_versions, ops, None).await?;
+    }
+
+    // Marquer fichiersrep (date modification, requis pour pour sync)
+    {
+        let filtre_rep = doc! {
+            CHAMP_FUUIDS_VERSIONS: {"$in": fuuids},  // Utiliser index
+        };
+        debug!("marquer_visites_fuuids Filtre fichierrep {:?}", filtre_rep);
+        let collection_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+        let ops = doc! {
+            "$currentDate": { CHAMP_MODIFICATION: true },
+        };
+
+        collection_rep.update_many(filtre_rep, ops, None).await?;
     }
 
     Ok(())
