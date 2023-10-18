@@ -1761,16 +1761,10 @@ async fn commande_supprimer_partage_usager<M>(middleware: &M, mut m: MessageVali
     debug!("commande_supprimer_partage_usager Consommer commande : {:?}", & m.message);
     let commande: TransactionSupprimerPartageUsager = m.message.get_msg().map_contenu()?;
 
-    if ! m.message.verifier_exchanges(vec![Securite::L2Prive]) ||
-        !m.message.verifier_roles(vec![RolesCertificats::Fichiers]) {
-        debug!("commande_supprimer_partage_usager Mauvais certificat (securite doit etre L2Prive, role fichiers)");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Mauvais certificat (securite doit etre L2Prive, role fichiers)"}), None)?))
-    }
-
     let user_id = match m.get_user_id() {
         Some(inner) => inner,
         None => {
-            debug!("commande_partager_collections user_id absent, SKIP");
+            debug!("commande_supprimer_partage_usager user_id absent, SKIP");
             return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
         }
     };
