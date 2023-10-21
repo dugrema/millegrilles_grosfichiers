@@ -1603,7 +1603,7 @@ async fn commande_supprimer_video<M>(middleware: &M, m: MessageValideAction, ges
     }
 
     let filtre_fichier = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     let result = collection.count_documents(filtre_fichier, None).await?;
 
     if result > 0 {

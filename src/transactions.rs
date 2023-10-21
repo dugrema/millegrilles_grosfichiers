@@ -2913,49 +2913,24 @@ async fn transaction_supprimer_video<M, T>(middleware: &M, gestionnaire: &Gestio
 
     let mut labels_videos = Vec::new();
     let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
-    let collection_fichier_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let doc_video: FichierDetail = match collection_fichier_rep.find_one(filtre.clone(), None).await {
+    let collection_fichier_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    let doc_video = match collection_fichier_versions.find_one(filtre.clone(), None).await {
         Ok(d) => match d {
-            Some(d) => match convertir_bson_deserializable(d) {
-                Ok(d) => match d {
-                    Some(d) => d,
-                    None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?,
-                },
-                Err(e) => Err(format!("transaction_supprimer_video Erreur conversion info document : {:?}", e))?
-            },
+            Some(d) => d,
             None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
         },
         Err(e) => Err(format!("transaction_supprimer_video Erreur chargement info document : {:?}", e))?
     };
 
-    let tuuid = doc_video.tuuid.as_str();
+    let tuuid = doc_video.tuuid;
 
-    {
-        debug!("Information doc videos a supprimer : {:?}", doc_video);
-        let mut ops_unset = doc!{};
-        if let Some(version_courante) = doc_video.version_courante {
-            if let Some(map_video) = version_courante.video {
-                for (label, video) in map_video {
-                    if &video.fuuid_video == fuuid {
-                        ops_unset.insert(format!("version_courante.video.{}", label), true);
-                        labels_videos.push(label);
-                    }
-                }
+    let mut ops_unset = doc!{};
+    if let Some(map_video) = doc_video.video.as_ref() {
+        for (label, video) in map_video {
+            if &video.fuuid_video == fuuid {
+                ops_unset.insert(format!("video.{}", label), true);
+                labels_videos.push(label);
             }
-        }
-
-        ops_unset.insert(format!("version_courante.fuuidMimetypes.{}", fuuid), true);
-
-        let ops = doc! {
-            "$pull": {"fuuids": fuuid},
-            "$unset": ops_unset,
-            "$currentDate": {CHAMP_MODIFICATION: true},
-        };
-
-        debug!("transaction_supprimer_video Ops supprimer video fichier_rep : {:?}", ops);
-        match collection_fichier_rep.update_one(filtre.clone(), ops, None).await {
-            Ok(_r) => (),
-            Err(e) => Err(format!("transaction_supprimer_video Erreur update_one collection fichiers rep : {:?}", e))?
         }
     }
 
@@ -2967,11 +2942,14 @@ async fn transaction_supprimer_video<M, T>(middleware: &M, gestionnaire: &Gestio
         }
 
         let ops = doc! {
-            "$pull": {"fuuids": fuuid},
+            "$pull": {CHAMP_FUUIDS: fuuid, CHAMP_FUUIDS_RECLAMES: fuuid},
             "$unset": ops_unset,
             "$currentDate": {CHAMP_MODIFICATION: true},
         };
         let collection_version_fichier = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+
+        debug!("transaction_supprimer_video Supprimer video {:?} ops {:?}", filtre, ops);
+
         match collection_version_fichier.update_one(filtre, ops, None).await {
             Ok(_r) => (),
             Err(e) => Err(format!("transaction_supprimer_video Erreur update_one collection fichiers rep : {:?}", e))?
@@ -2983,7 +2961,7 @@ async fn transaction_supprimer_video<M, T>(middleware: &M, gestionnaire: &Gestio
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await {
+    if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
         warn!("transaction_favoris_creerpath Erreur emettre_evenement_maj_fichier : {:?}", e);
     }
 
