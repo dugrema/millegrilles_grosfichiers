@@ -781,7 +781,13 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, gestionnaire: &Ge
         }
     }
 
-    middleware.reponse_ok()
+    let reponse = json!({"ok": true, "tuuid": tuuid});
+    match middleware.formatter_reponse(&reponse, None) {
+        Ok(inner) => Ok(Some(inner)),
+        Err(e) => Err(format!("transaction_nouvelle_collection Erreur formattage reponse : {:?}", e))?
+    }
+
+    // middleware.reponse_ok()
 }
 
 #[derive(Deserialize)]

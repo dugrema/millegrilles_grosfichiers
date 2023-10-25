@@ -182,6 +182,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         REQUETE_INFO_STATISTIQUES,
         REQUETE_STRUCTURE_REPERTOIRE,
         REQUETE_JWT_STREAMING,
+        REQUETE_SOUS_REPERTOIRES,
     ];
     for req in requetes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L2Prive});

@@ -36,7 +36,8 @@ use crate::traitement_media::requete_jobs_video;
 use crate::transactions::*;
 
 const CONST_LIMITE_TAILLE_ZIP: u64 = 1024 * 1024 * 1024 * 100;   // Limite 100 GB
-const CONST_LIMITE_NOMBRE_ZIP: u64 = 1000;                       // Limite 1000 fichiers
+const CONST_LIMITE_NOMBRE_ZIP: u64 = 1_000;
+const CONST_LIMITE_NOMBRE_SOUS_REPERTOIRES: u64 = 10_000;
 
 pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
@@ -72,6 +73,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_INFO_STATISTIQUES => requete_info_statistiques(middleware, message, gestionnaire).await,
             REQUETE_STRUCTURE_REPERTOIRE => requete_structure_repertoire(middleware, message, gestionnaire).await,
             REQUETE_JWT_STREAMING => requete_creer_jwt_streaming(middleware, message, gestionnaire).await,
+            REQUETE_SOUS_REPERTOIRES => requete_sous_repertoires(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (1): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -125,6 +127,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_INFO_STATISTIQUES => requete_info_statistiques(middleware, message, gestionnaire).await,
             REQUETE_STRUCTURE_REPERTOIRE => requete_structure_repertoire(middleware, message, gestionnaire).await,
             REQUETE_JWT_STREAMING => requete_creer_jwt_streaming(middleware, message, gestionnaire).await,
+            REQUETE_SOUS_REPERTOIRES => requete_sous_repertoires(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -2430,6 +2433,68 @@ async fn requete_structure_repertoire<M>(middleware: &M, m: MessageValideAction,
     //     let row = curseur.deserialize_current()?;
     //     reponse.liste.push(row.into());
     // }
+
+    let reponse = if reponse.liste.len() <= limite_nombre as usize {
+        middleware.formatter_reponse(reponse, None)?
+    } else {
+        // On a depasser la limite, retourner une erreur
+        reponse.liste.clear();
+        reponse.err = Some("Limite nombre atteinte".into());
+        reponse.ok = false;
+        middleware.formatter_reponse(reponse, None)?
+    };
+
+    Ok(Some(reponse))
+}
+
+#[derive(Deserialize)]
+struct RequeteSousRepertoires {
+    cuuid: String,
+    limite_nombre: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct ReponseSousRepertoires {
+    ok: bool,
+    #[serde(skip_serializing_if="Option::is_none")]
+    err: Option<String>,
+    cuuid: String,
+    liste: Vec<NodeFichierRepOwned>,
+}
+
+async fn requete_sous_repertoires<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("requete_sous_repertoires Consommer commande : {:?}", & m.message);
+
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => {
+            debug!("requete_sous_repertoires user_id manquant du certificat");
+            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+        }
+    };
+
+    let requete: RequeteSousRepertoires = m.message.get_msg().map_contenu()?;
+    let limite_nombre = match requete.limite_nombre { Some(inner) => inner, None => CONST_LIMITE_NOMBRE_SOUS_REPERTOIRES };
+
+    let mut filtre = doc! {
+        CHAMP_USER_ID: &user_id,
+        CHAMP_SUPPRIME: false,
+        CHAMP_TYPE_NODE: TypeNode::Repertoire.to_str(),
+        CHAMP_PATH_CUUIDS: &requete.cuuid,
+    };
+
+    let mut reponse = ReponseSousRepertoires { ok: true, err: None, cuuid: requete.cuuid, liste: Vec::new() };
+    let collection = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+    let limite_1 = (&limite_nombre + 1) as i64;
+    let options = FindOptions::builder().limit(limite_1).build();
+    let mut curseur = collection.find(filtre, options).await?;
+    while curseur.advance().await? {
+        let doc_rep = curseur.deserialize_current()?;
+        reponse.liste.push(doc_rep);
+    }
 
     let reponse = if reponse.liste.len() <= limite_nombre as usize {
         middleware.formatter_reponse(reponse, None)?
