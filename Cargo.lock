@@ -1864,7 +1864,7 @@ checksum = "f665ee40bc4a3c5590afb1e9677db74a508659dfd71e126420da8274909a0167"
 
 [[package]]
 name = "millegrilles_common_rust"
-version = "2023.10.0"
+version = "2023.11.0"
 dependencies = [
  "async-recursion",
  "async-std",
@@ -1901,7 +1901,7 @@ dependencies = [
  "tokio",
  "tokio-amqp",
  "tokio-stream",
- "tokio-util 0.7.8",
+ "tokio-util 0.6.8",
  "url",
  "uuid",
  "x509-parser",

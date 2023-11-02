@@ -689,7 +689,7 @@ where
 {
     let tuuid_str = tuuid.as_ref();
     let action_str = action.as_ref();
-    debug!("grosfichiers.emettre_evenement_maj_fichier Emettre evenement maj pour fichier {}", tuuid_str);
+    debug!("grosfichiers.emettre_evenement_maj_fichier Emettre evenement maj pour fichier {} (action: {})", tuuid_str, action_str);
 
     // Charger fichier
     let filtre = doc! {CHAMP_TUUID: tuuid_str};
@@ -699,15 +699,15 @@ where
         let doc_fichier = curseur.deserialize_current()?;
 
         // Extraire liste de fuuids directement
-        if let Some(fuuids) = doc_fichier.fuuids_versions.as_ref() {
-            if let Some(fuuid) = fuuids.first() {
-                let routage_action = RoutageMessageAction::builder(DOMAINE_NOM, action_str)
-                    .exchanges(vec![Securite::L2Prive])
-                    .build();
-
-                middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: vec![*fuuid]})).await?;
-            }
-        }
+        // if let Some(fuuids) = doc_fichier.fuuids_versions.as_ref() {
+        //     if let Some(fuuid) = fuuids.first() {
+        //         let routage_action = RoutageMessageAction::builder(DOMAINE_NOM, action_str)
+        //             .exchanges(vec![Securite::L2Prive])
+        //             .build();
+        //
+        //         middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: vec![*fuuid]})).await?;
+        //     }
+        // }
 
         if let Some(cuuids) = doc_fichier.path_cuuids.as_ref() {
             if let Some(cuuid) = cuuids.first() {
@@ -869,6 +869,7 @@ where
             routage_builder.build()
         };
 
+        debug!("grosfichiers.emettre_evenement_contenu_collection Emettre evenement maj pour collection immediatement {:?}", routage);
         middleware.emettre_evenement(routage, &inner).await?;
     }
 
