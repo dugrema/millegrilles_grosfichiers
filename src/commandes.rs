@@ -184,12 +184,14 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValideAction, ges
     debug!("Commande decrire_fichier parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.get_user_id();
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => Err(format!("commande_decrire_fichier User_id absent"))?
+    };
     let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
-    if role_prive && user_id.is_some() {
-        let user_id_str = user_id.as_ref().expect("user_id");
-        let tuuids = vec![commande.tuuid];
-        let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
+    if role_prive {
+        let tuuids = vec![&commande.tuuid];
+        let resultat = verifier_autorisation_usager(middleware, user_id.as_str(), Some(&tuuids), None::<String>).await?;
         if resultat.erreur.is_some() {
             return Ok(resultat.erreur)
         }
@@ -199,8 +201,86 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValideAction, ges
         Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
     }
 
+    let (changement_media, fuuid) = match commande.mimetype.as_ref() {
+        Some(mimetype) => {
+            debug!("commande_decrire_fichier Verifier si le mimetype du fichier a change (nouveau: {})", mimetype);
+            let filtre = doc!{CHAMP_TUUID: &commande.tuuid, CHAMP_USER_ID: &user_id};
+            let collection = middleware.get_collection_typed::<NodeFichierRepVersionCouranteOwned>(
+                NOM_COLLECTION_FICHIERS_REP)?;
+            if let Some(fichier) = collection.find_one(filtre, None).await? {
+                if fichier.mimetype != commande.mimetype {
+                    debug!("commande_decrire_fichier Le mimetype a change de {:?} vers {:?}, reset traitement media de {}", fichier.mimetype, commande.mimetype, commande.tuuid);
+                    match fichier.fuuids_versions {
+                        Some(mut inner) => {
+                            if let Some(fuuid) = inner.pop() {
+                                (true, Some(fuuid))
+                            } else {
+                                (false, None)
+                            }
+                        },
+                        None => (false, None)
+                    }
+                } else {
+                    (false, None)
+                }
+            } else {
+                (false, None)
+            }
+        },
+        None => (false, None),
+    };
+
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    let resultat = sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?;
+
+    if changement_media {
+        if let Some(mimetype) = commande.mimetype.as_ref() {
+            if let Some(fuuid) = fuuid {
+                // Ajouter flags media au fichier si approprie
+                let (flag_media_traite, flag_video_traite, flag_media) = NodeFichierVersionOwned::get_flags_media(
+                    mimetype.as_str());
+                let filtre = doc! {CHAMP_TUUID: &commande.tuuid, CHAMP_USER_ID: &user_id};
+                let ops = doc! {
+                    "$set": {
+                        CHAMP_FLAG_MEDIA: flag_media,
+                        CHAMP_FLAG_MEDIA_TRAITE: flag_media_traite,
+                        CHAMP_FLAG_VIDEO_TRAITE: flag_video_traite,
+                    },
+                    "$currentDate": {CHAMP_MODIFICATION: true}
+                };
+                debug!("commande_decrire_fichier Reset flags media sur changement mimetype pour {} : {:?}", commande.tuuid, ops);
+                let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+                collection.update_one(filtre.clone(), ops, None).await?;
+
+                let mut champs_cles = HashMap::new();
+                champs_cles.insert("tuuid".to_string(), commande.tuuid.clone());
+                champs_cles.insert("mimetype".to_string(), mimetype.to_owned());
+
+                // Creer jobs de conversion
+                if flag_media_traite == false {
+                    if let Err(e) = gestionnaire.image_job_handler.sauvegarder_job(
+                        middleware, &fuuid, &user_id, None,
+                        Some(champs_cles.clone()), None, true).await {
+                        error!("commande_decrire_fichier Erreur image sauvegarder_job : {:?}", e);
+                    }
+                }
+
+                if flag_video_traite == false {
+                    if let Err(e) = gestionnaire.video_job_handler.sauvegarder_job(
+                        middleware, fuuid, user_id, None,
+                        Some(champs_cles), None, false).await {
+                        error!("commande_decrire_fichier Erreur video sauvegarder_job : {:?}", e);
+                    }
+                }
+            } else {
+                warn!("commande_decrire_fichier Erreur utilisation fuuid sur changement (None)");
+            }
+        } else {
+            warn!("commande_decrire_fichier Erreur utilisation mimetype sur changement (None)");
+        }
+    }
+
+    Ok(resultat)
 }
 
 async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)

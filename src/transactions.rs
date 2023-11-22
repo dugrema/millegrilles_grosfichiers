@@ -98,7 +98,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         // TRANSACTION_CHANGER_FAVORIS => transaction_changer_favoris(middleware, transaction).await,
         TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, gestionnaire, transaction).await,
         TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, gestionnaire, transaction).await,
-        TRANSACTION_DECRIRE_FICHIER => transaction_decire_fichier(middleware, gestionnaire, transaction).await,
+        TRANSACTION_DECRIRE_FICHIER => transaction_decrire_fichier(middleware, gestionnaire, transaction).await,
         TRANSACTION_DECRIRE_COLLECTION => transaction_decire_collection(middleware, gestionnaire, transaction).await,
         TRANSACTION_COPIER_FICHIER_TIERS => transaction_copier_fichier_tiers(gestionnaire, middleware, transaction).await,
         // TRANSACTION_FAVORIS_CREERPATH => transaction_favoris_creerpath(middleware, transaction).await,
@@ -142,7 +142,7 @@ pub struct TransactionDecrireFichier {
     // titre: Option<HashMap<String, String>>,
     metadata: Option<DataChiffre>,
     // description: Option<HashMap<String, String>>,
-    mimetype: Option<String>,
+    pub mimetype: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -444,22 +444,7 @@ impl NodeFichierVersionOwned {
 
         let mimetype = value.mimetype.as_str();
 
-        let mut flag_media_traite = true;
-        let mut flag_video_traite = true;
-        let mut flag_media = None;
-
-        // Information optionnelle pour accelerer indexation/traitement media
-        if mimetype.starts_with("image") {
-            flag_media_traite = false;
-            flag_media = Some("image".to_string());
-        } else if is_mimetype_video(mimetype) {
-            flag_media_traite = false;
-            flag_video_traite = false;
-            flag_media = Some("video".to_string());
-        } else if mimetype =="application/pdf" {
-            flag_media_traite = false;
-            flag_media = Some("poster".to_string());
-        }
+        let (flag_media_traite, flag_video_traite, flag_media) = Self::get_flags_media(mimetype);
 
         Ok(Self {
             fuuid: value.fuuid.clone(),
@@ -487,6 +472,26 @@ impl NodeFichierVersionOwned {
             flag_video_traite: Some(flag_video_traite),
             flag_index: Some(false),
         })
+    }
+
+    pub fn get_flags_media(mimetype: &str) -> (bool, bool, Option<String>) {
+        let mut flag_media_traite = true;
+        let mut flag_video_traite = true;
+        let mut flag_media = None;
+
+        // Information optionnelle pour accelerer indexation/traitement media
+        if mimetype.starts_with("image") {
+            flag_media_traite = false;
+            flag_media = Some("image".to_string());
+        } else if is_mimetype_video(mimetype) {
+            flag_media_traite = false;
+            flag_video_traite = false;
+            flag_media = Some("video".to_string());
+        } else if mimetype == "application/pdf" {
+            flag_media_traite = false;
+            flag_media = Some("poster".to_string());
+        }
+        (flag_media_traite, flag_video_traite, flag_media)
     }
 
     pub fn map_date_modification(&mut self) {
@@ -2301,7 +2306,7 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
     middleware.reponse_ok()
 }
 
-async fn transaction_decire_fichier<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+async fn transaction_decrire_fichier<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
     where
         M: GenerateurMessages + MongoDao,
         T: Transaction
@@ -2351,29 +2356,7 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, gestionnaire: &Gestion
         set_ops.insert("mimetype", &mimetype);
     }
 
-    // Modifier champ nom si present
-    // if let Some(nom) = &transaction_mappee.nom {
-    //     set_ops.insert("nom", nom);
-    // }
-
-    // Modifier champ titre si present
-    // if let Some(titre) = &transaction_mappee.titre {
-    //     let titre_bson = match bson::to_bson(titre) {
-    //         Ok(inner) => inner,
-    //         Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion titre vers bson : {:?}", e))?
-    //     };
-    //     set_ops.insert("titre", titre_bson);
-    // }
-
-    // Modifier champ description si present
-    // if let Some(description) = &transaction_mappee.description {
-    //     let description_bson = match bson::to_bson(description) {
-    //         Ok(inner) => inner,
-    //         Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion titre vers bson : {:?}", e))?
-    //     };
-    //     set_ops.insert("description", description_bson);
-    // }
-
+    // Creer job indexation
     let ops = doc! {
         "$set": set_ops,
         "$currentDate": { CHAMP_MODIFICATION: true }
@@ -2395,40 +2378,11 @@ async fn transaction_decire_fichier<M, T>(middleware: &M, gestionnaire: &Gestion
                                     Some(champs_cles), None, false).await {
                                     error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
                                 }
-                                // if let Err(e) = ajout_job_indexation(middleware, tuuid, fuuid, user_id, mimetype).await {
-                                //     error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
-                                // }
                             }
                         }
                     }
                 }
             }
-            // if let Some(d) = inner {
-            //     // Emettre evenement de maj contenu sur chaque cuuid
-            //     match convertir_bson_deserializable::<FichierDetail>(d) {
-            //         Ok(fichier) => {
-            //             if let Some(favoris) = fichier.favoris {
-            //                 if let Some(u) = user_id {
-            //                     if favoris {
-            //                         let mut evenement = EvenementContenuCollection::new();
-            //                         evenement.cuuid = Some(u);
-            //                         evenement.fichiers_modifies = Some(vec![tuuid.to_owned()]);
-            //                         emettre_evenement_contenu_collection(middleware, evenement).await?;
-            //                     }
-            //                 }
-            //             }
-            //             if let Some(cuuids) = fichier.cuuids {
-            //                 for cuuid in cuuids {
-            //                     let mut evenement = EvenementContenuCollection::new();
-            //                     evenement.cuuid = Some(cuuid);
-            //                     evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
-            //                     emettre_evenement_contenu_collection(middleware, evenement).await?;
-            //                 }
-            //             }
-            //         },
-            //         Err(e) => warn!("transaction_decire_fichier Erreur conversion a FichierDetail : {:?}", e)
-            //     }
-            // }
         },
         Err(e) => Err(format!("transaction_decire_fichier Erreur update description : {:?}", e))?
     }
