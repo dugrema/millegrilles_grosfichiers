@@ -495,15 +495,14 @@ async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValideAction
     let requete: RequeteVerifierAccesFuuids = m.message.get_msg().map_contenu()?;
     debug!("requete_verifier_acces_fuuids cle parsed : {:?}", requete);
 
-    let user_id_option = m.get_user_id();
-    let user_id = match user_id_option.as_ref() {
+    let user_id = match m.get_user_id() {
         Some(u) => u,
         None => {
             if ! m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
                 return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "acces refuse"}), None)?))
             }
             match requete.user_id.as_ref() {
-                Some(u) => u,
+                Some(u) => u.to_owned(),
                 None => {
                     return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User_id manquant"}), None)?))
                 }
@@ -2217,6 +2216,7 @@ async fn requete_partages_contact<M>(middleware: &M, m: MessageValideAction, ges
 struct RequeteInfoStatistiques {
     /// Collection / repertoire a utiliser comme top de l'arborescence
     cuuid: Option<String>,
+    contact_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2247,6 +2247,23 @@ async fn requete_info_statistiques<M>(middleware: &M, m: MessageValideAction, ge
     };
 
     let requete: RequeteInfoStatistiques = m.message.get_msg().map_contenu()?;
+
+    let user_id = if let Some(contact_id) = requete.contact_id {
+        // Determiner le user_id effectif pour la requete en confirmant le droit d'acces via contact
+        let filtre = doc!{ CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: &user_id };
+        let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
+        match collection.find_one(filtre, None).await? {
+            Some(inner) => {
+                inner.user_id   // User id du proprietaire des fichiers
+            },
+            None => {
+                error!("requetes.requete_verifier_acces_fuuids Acces refuse, mauvais contact_id");
+                return Ok(None)
+            }
+        }
+    } else {
+        user_id
+    };
 
     let filtre = match requete.cuuid.as_ref() {
         Some(cuuid) => {
