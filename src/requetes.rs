@@ -2327,6 +2327,7 @@ struct RequeteStructureRepertoire {
     cuuid: Option<String>,
     // limite_bytes: Option<u64>,
     limite_nombre: Option<u64>,
+    contact_id: Option<String>,
 }
 
 // #[derive(Serialize)]
@@ -2384,6 +2385,23 @@ async fn requete_structure_repertoire<M>(middleware: &M, m: MessageValideAction,
     let requete: RequeteStructureRepertoire = m.message.get_msg().map_contenu()?;
     // let limite_bytes = match requete.limite_bytes { Some(inner) => inner, None => CONST_LIMITE_TAILLE_ZIP};
     let limite_nombre = match requete.limite_nombre { Some(inner) => inner, None => CONST_LIMITE_NOMBRE_ZIP};
+
+    let user_id = if let Some(contact_id) = requete.contact_id {
+        // Determiner le user_id effectif pour la requete en confirmant le droit d'acces via contact
+        let filtre = doc!{ CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: &user_id };
+        let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
+        match collection.find_one(filtre, None).await? {
+            Some(inner) => {
+                inner.user_id   // User id du proprietaire des fichiers
+            },
+            None => {
+                error!("requetes.requete_verifier_acces_fuuids Acces refuse, mauvais contact_id");
+                return Ok(None)
+            }
+        }
+    } else {
+        user_id
+    };
 
     let mut filtre = doc! {
         CHAMP_USER_ID: &user_id,
