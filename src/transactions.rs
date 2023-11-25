@@ -24,7 +24,7 @@ use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::transactions::Transaction;
+use millegrilles_common_rust::transactions::{get_user_effectif, Transaction};
 use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 
@@ -2939,13 +2939,21 @@ async fn transaction_supprimer_job_image<M, T>(middleware: &M, gestionnaire: &Ge
         T: Transaction
 {
     debug!("transaction_supprimer_job_image Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionSupprimerJobImage = match transaction.clone().convertir() {
+    let transaction_supprimer_job: TransactionSupprimerJobImage = match transaction.clone().convertir() {
         Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_supprimer_job_image Erreur conversion transaction : {:?}", e))?
+        Err(e) => Err(format!("grosfichiers.transaction_supprimer_job_video Erreur conversion transaction : {:?}", e))?
     };
 
-    let fuuid = &transaction_collection.fuuid;
-    let user_id = &transaction_collection.user_id;
+    let user_id = get_user_effectif(&transaction, &transaction_supprimer_job)?;
+
+    let fuuid = &transaction_supprimer_job.fuuid;
+
+    // let enveloppe = match transaction.get_enveloppe_certificat() {
+    //     Some(e) => e,
+    //     None => Err(format!("transaction_supprimer_video Certificat inconnu, transaction ignoree"))?
+    // };
+    //
+    // let user_id = enveloppe.get_user_id()?;
 
     // Indiquer que la job a ete completee et ne doit pas etre redemarree.
     if let Err(e) = gestionnaire.image_job_handler.set_flag(middleware, fuuid, Some(user_id),None, true).await {
@@ -2965,15 +2973,17 @@ async fn transaction_supprimer_job_video<M, T>(middleware: &M, gestionnaire: &Ge
         T: Transaction
 {
     debug!("transaction_supprimer_job_video Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionSupprimerJobVideo = match transaction.clone().convertir() {
+    let transaction_supprimer: TransactionSupprimerJobVideo = match transaction.clone().convertir() {
         Ok(t) => t,
         Err(e) => Err(format!("grosfichiers.transaction_supprimer_job_image Erreur conversion transaction : {:?}", e))?
     };
 
-    let fuuid = &transaction_collection.fuuid;
-    let user_id = &transaction_collection.user_id;
+    let user_id = get_user_effectif(&transaction, &transaction_supprimer)?;
+
+    let fuuid = &transaction_supprimer.fuuid;
+    // let user_id = &transaction_supprimer.user_id;
     let mut cles_supplementaires = HashMap::new();
-    cles_supplementaires.insert("cle_conversion".to_string(), transaction_collection.cle_conversion.clone());
+    cles_supplementaires.insert("cle_conversion".to_string(), transaction_supprimer.cle_conversion.clone());
 
     // Indiquer que la job a ete completee et ne doit pas etre redemarree.
     if let Err(e) = gestionnaire.video_job_handler.set_flag(middleware, fuuid, Some(user_id),Some(cles_supplementaires), true).await {

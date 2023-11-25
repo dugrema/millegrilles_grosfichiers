@@ -14,6 +14,7 @@ use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::fichiers::is_mimetype_video;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::messages_generiques::CommandeUsager;
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable};
 use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
@@ -62,7 +63,7 @@ impl JobHandler for ImageJobHandler {
 
         let transaction = TransactionSupprimerJobImage {
             fuuid,
-            user_id,
+            user_id: Some(user_id),
             err: Some(erreur),
         };
 
@@ -148,7 +149,7 @@ impl JobHandler for VideoJobHandler {
         let transaction = TransactionSupprimerJobVideo {
             fuuid,
             cle_conversion,
-            user_id,
+            user_id: Some(user_id),
             err: Some(erreur),
         };
 
@@ -452,6 +453,15 @@ struct CommandeSupprimerJobVideo {
     fuuid: String,
     cle_conversion: String,
     user_id: Option<String>,
+}
+
+impl<'a> CommandeUsager<'a> for CommandeSupprimerJobVideo {
+    fn get_user_id(&'a self) -> Option<&'a str> {
+        match self.user_id.as_ref() {
+            Some(inner) => Some(inner.as_str()),
+            None => None
+        }
+    }
 }
 
 pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)

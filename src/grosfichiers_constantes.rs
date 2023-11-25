@@ -3,6 +3,7 @@ use millegrilles_common_rust::bson::{Bson, DateTime, Document};
 use millegrilles_common_rust::chiffrage_cle::InformationCle;
 use millegrilles_common_rust::chrono::Utc;
 use millegrilles_common_rust::formatteur_messages::DateEpochSeconds;
+use millegrilles_common_rust::messages_generiques::CommandeUsager;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use crate::requetes::mapper_fichier_db;
@@ -450,16 +451,34 @@ pub struct TransactionSupprimerVideo {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionSupprimerJobImage {
     pub fuuid: String,
-    pub user_id: String,
+    pub user_id: Option<String>,
     pub err: Option<String>,
+}
+
+impl<'a> CommandeUsager<'a> for TransactionSupprimerJobImage {
+    fn get_user_id(&'a self) -> Option<&'a str> {
+        match self.user_id.as_ref() {
+            Some(inner) => Some(inner.as_str()),
+            None => None
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionSupprimerJobVideo {
     pub fuuid: String,
     pub cle_conversion: String,
-    pub user_id: String,
+    pub user_id: Option<String>,
     pub err: Option<String>,
+}
+
+impl<'a> CommandeUsager<'a> for TransactionSupprimerJobVideo {
+    fn get_user_id(&'a self) -> Option<&'a str> {
+        match self.user_id.as_ref() {
+            Some(inner) => Some(inner.as_str()),
+            None => None
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
