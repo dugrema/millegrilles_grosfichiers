@@ -166,8 +166,9 @@ pub struct TransactionNouvelleCollection {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionAjouterFichiersCollection {
-    pub cuuid: String,  // Collection qui recoit les documents
-    pub inclure_tuuids: Vec<String>,  // Fichiers/rep a ajouter a la collection
+    pub cuuid: String,                  // Collection qui recoit les documents
+    pub inclure_tuuids: Vec<String>,    // Fichiers/rep a ajouter a la collection
+    pub contact_id: Option<String>,     // Permission de copie a partir d'un partage
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -948,36 +949,17 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, gestionna
         Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur conversion transaction : {:?}", e))?
     };
 
-    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-
-    // // Ajouter le cuuid aux fichiers
-    // {
-    //     // Conserver champs transaction uniquement (filtrer champs meta)
-    //     let type_node_fichiers: &str = TypeNode::Fichier.into();
-    //     let add_to_set = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid};
-    //     let filtre = doc! {
-    //         CHAMP_TUUID: {"$in": &transaction_collection.inclure_tuuids},
-    //         "type_node": type_node_fichiers
-    //     };
-    //     let ops = doc! {
-    //         "$addToSet": add_to_set,
-    //         "$currentDate": {CHAMP_MODIFICATION: true}
-    //     };
-    //     let resultat = match collection.update_many(filtre, ops, None).await {
-    //         Ok(r) => r,
-    //         Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur update_one sur transcation : {:?}", e))?
-    //     };
-    //     debug!("transaction_ajouter_fichiers_collection Resultat transaction update : {:?}", resultat);
-    // }
-
-    // debug!("transaction_ajouter_fichiers_collection Recalculer cuuids fichiers pour cuuid {}", transaction_collection.cuuid);
-    // if let Err(e) = recalculer_cuuids_fichiers(middleware, vec![&transaction_collection.cuuid], None::<Vec<&str>>).await {
-    //     error!("dupliquer_structure_repertoires Erreur recalculer_cuuids_fichiers : {:?}", e);
-    // }
+    let user_id = match transaction.get_enveloppe_certificat() {
+        Some(e) => match e.get_user_id()?.to_owned() {
+            Some(inner) => inner,
+            None => Err(format!("transaction.transaction_ajouter_fichiers_collection Certificat sans user_id"))?
+        },
+        None => Err(format!("transaction.transaction_ajouter_fichiers_collection Certificat n'est pas charge"))?
+    };
 
     // Dupliquer la structure de repertoires
     if let Err(e) = dupliquer_structure_repertoires(
-        middleware, uuid_transaction, &transaction_collection.cuuid, &transaction_collection.inclure_tuuids).await {
+        middleware, uuid_transaction, &transaction_collection.cuuid, &transaction_collection.inclure_tuuids, user_id.as_str()).await {
         Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur dupliquer_structure_repertoires sur transcation : {:?}", e))?
     }
 
@@ -998,7 +980,7 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, gestionna
     middleware.reponse_ok()
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct CopieTuuidVersCuuid {
     tuuid_original: String,
     cuuid_destination: String,
@@ -1006,11 +988,12 @@ struct CopieTuuidVersCuuid {
 
 /// Duplique la structure des repertoires listes dans tuuids.
 /// Les fichiers des sous-repertoires sont linkes (pas copies).
-async fn dupliquer_structure_repertoires<M,U,C,T>(middleware: &M, uuid_transaction: U, cuuid: C, tuuids: &Vec<T>)
+async fn dupliquer_structure_repertoires<M,U,C,T,S>(middleware: &M, uuid_transaction: U, cuuid: C, tuuids: &Vec<T>, user_id: S)
     -> Result<(), Box<dyn Error>>
-    where M: MongoDao, U: AsRef<str>, C: AsRef<str>, T: ToString
+    where M: MongoDao, U: AsRef<str>, C: AsRef<str>, T: ToString, S: AsRef<str>
 {
     let uuid_transaction = uuid_transaction.as_ref();
+    let user_id = user_id.as_ref();
     let cuuid = cuuid.as_ref();
     let mut tuuids_remaining: Vec<CopieTuuidVersCuuid> = tuuids.iter().map(|t| {
         CopieTuuidVersCuuid { tuuid_original: t.to_string(), cuuid_destination: cuuid.to_owned() }
@@ -1028,11 +1011,13 @@ async fn dupliquer_structure_repertoires<M,U,C,T>(middleware: &M, uuid_transacti
 
         let filtre = doc! {
             CHAMP_TUUID: &fichier_rep_tuuid.tuuid_original,
+            CHAMP_USER_ID: user_id,
         };
         let mut curseur = collection_nodes.find(filtre, None).await?;
         if curseur.advance().await? {
             let mut fichier_rep = curseur.deserialize_current()?;
             let type_node = TypeNode::try_from(fichier_rep.type_node)?;
+            let tuuid_src = fichier_rep.tuuid.to_owned();
 
             debug!("dupliquer_structure_repertoires Copier fichier_rep {} vers {}", fichier_rep_tuuid.tuuid_original, fichier_rep_tuuid.cuuid_destination);
 
@@ -1061,30 +1046,37 @@ async fn dupliquer_structure_repertoires<M,U,C,T>(middleware: &M, uuid_transacti
             };
 
             // collection.insert_one(doc_repertoire, None).await?;
-            let filtre = doc! { CHAMP_TUUID: &fichier_rep.tuuid, CHAMP_USER_ID: &fichier_rep.user_id };
+            let filtre = doc! {
+                CHAMP_TUUID: &fichier_rep.tuuid, CHAMP_USER_ID: &fichier_rep.user_id,
+                CHAMP_SUPPRIME: false, CHAMP_SUPPRIME_INDIRECT: false,
+            };
             let mut set_ops = convertir_to_bson(fichier_rep)?;
             set_ops.insert(CHAMP_CREATION, Utc::now());
+
             let ops = doc! {
                 "$setOnInsert": set_ops,
                 "$currentDate": { CHAMP_MODIFICATION: true }
             };
             let options = UpdateOptions::builder().upsert(true).build();
-            collection.update_one(filtre, ops, options).await?;
+            let result = collection.update_one(filtre, ops, options).await?;
+            if result.upserted_id.is_none() {
+                info!("dupliquer_structure_repertoires Erreur, aucune valeur upserted pour tuuid {}", tuuid_src);
+            }
 
             match type_node {
-                TypeNode::Fichier => {
-
-                },
+                TypeNode::Fichier => (),
                 TypeNode::Collection | TypeNode::Repertoire => {
                     // Trouver les sous-repertoires, traiter individuellement
-                    let filtre_ajout_cuuid = doc! { CHAMP_CUUID: &nouveau_tuuid, CHAMP_TYPE_NODE: TypeNode::Repertoire.to_str() };
+                    let filtre_ajout_cuuid = doc! { format!("{}.0", CHAMP_PATH_CUUIDS): &tuuid_src };
+                    debug!("dupliquer_structure_repertoires filtre_ajout_cuuid : {:?}", filtre_ajout_cuuid);
                     let mut curseur = collection_nodes.find(filtre_ajout_cuuid, None).await?;
-                    if curseur.advance().await? {
-                        let sous_repertoire = curseur.deserialize_current()?;
+                    while curseur.advance().await? {
+                        let sous_document = curseur.deserialize_current()?;
                         let copie_tuuid = CopieTuuidVersCuuid {
-                            tuuid_original: sous_repertoire.tuuid.to_owned(),
+                            tuuid_original: sous_document.tuuid.to_owned(),
                             cuuid_destination: nouveau_tuuid.clone()
                         };
+                        debug!("dupliquer_structure_repertoires Parcourir sous-fichier/rep {:?}", copie_tuuid);
                         tuuids_remaining.push(copie_tuuid);
                     }
                 }
@@ -2853,23 +2845,6 @@ async fn transaction_supprimer_video<M, T>(middleware: &M, gestionnaire: &Gestio
         None => Err(format!("transaction_supprimer_video Certificat inconnu, transaction ignoree"))?
     };
     let user_id = enveloppe.get_user_id()?;
-
-    // {   // Verifier acces
-    //     let delegation_globale = enveloppe.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE);
-    //     if delegation_globale || enveloppe.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
-    //         // Ok
-    //     } else if user_id.is_some() {
-    //         let u = user_id.expect("commande_video_convertir user_id");
-    //         let resultat = verifier_acces_usager(middleware, &u, vec![fuuid]).await?;
-    //         if ! resultat.contains(fuuid) {
-    //             debug!("commande_video_convertir verifier_exchanges : Usager n'a pas acces a fuuid {}", fuuid);;
-    //             return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
-    //         }
-    //     } else {
-    //         debug!("commande_video_convertir verifier_exchanges : Certificat n'a pas l'acces requis (securite 2,3,4 ou user_id avec acces fuuid)");
-    //         return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
-    //     }
-    // }
 
     let mut labels_videos = Vec::new();
     let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
