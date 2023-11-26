@@ -23,6 +23,7 @@ use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convert
 use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::mongodb::options::{FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMessage};
+use millegrilles_common_rust::redis::Commands;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
@@ -63,6 +64,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
+            REQUETE_VERIFIER_ACCES_TUUIDS => requete_verifier_acces_tuuids(middleware, message, gestionnaire).await,
             REQUETE_SYNC_COLLECTION => requete_sync_collection(middleware, message, gestionnaire).await,
             REQUETE_SYNC_RECENTS => requete_sync_plusrecent(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CORBEILLE => requete_sync_corbeille(middleware, message, gestionnaire).await,
@@ -99,6 +101,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
+            REQUETE_VERIFIER_ACCES_TUUIDS => requete_verifier_acces_tuuids(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CUUIDS => requete_sync_cuuids(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_STREAM => requete_get_cles_stream(middleware, message, gestionnaire).await,
@@ -485,6 +488,76 @@ struct ReponseVerifierAccesFuuids {
     fuuids_acces: Vec<String>,
     acces_tous: bool,
     user_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RequeteVerifierAccesTuuids {
+    user_id: Option<String>,
+    tuuids: Vec<String>,
+    contact_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ReponseVerifierAccesTuuids {
+    tuuids_acces: Vec<String>,
+    acces_tous: bool,
+    user_id: String,
+}
+
+/// Requete pour verifier si un contact_id ou user_id a acces aux tuuids listes.
+async fn requete_verifier_acces_tuuids<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+{
+    debug!("requete_verifier_acces_tuuids Message : {:?}", & m.message);
+    let requete: RequeteVerifierAccesTuuids = m.message.get_msg().map_contenu()?;
+
+    let user_id = match m.get_user_id() {
+        Some(u) => u,
+        None => {
+            if ! m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
+                return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "acces refuse"}), None)?))
+            }
+            match requete.user_id.as_ref() {
+                Some(u) => u.to_owned(),
+                None => {
+                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User_id manquant"}), None)?))
+                }
+            }
+        }
+    };
+
+    let user_id = match requete.contact_id.as_ref() {
+        Some(contact_id) => {
+            // Verifier que le contact_id et les contact_user_id correspondent, extraire user_id partage
+            let filtre = doc! { CHAMP_CONTACT_ID: &contact_id, CHAMP_CONTACT_USER_ID: user_id };
+            let collection = middleware.get_collection_typed::<RowPartageContactOwned>(
+                NOM_COLLECTION_PARTAGE_CONTACT)?;
+            let contact = match collection.find_one(filtre, None).await? {
+                Some(inner) => inner,
+                None => {
+                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "contact_id et user_id mismatch ou manquant"}), None)?))
+                }
+            };
+            // Ok, le contact est valide. Retourner user_id de l'usager qui a fait le partage.
+            contact.user_id
+        },
+        None => user_id.to_owned()
+    };
+
+    debug!("requete_verifier_acces_tuuids user_id {} utilise pour verifier acces tuuids sur {:?}", user_id, requete.tuuids);
+
+    let resultat = verifier_acces_usager_tuuids(middleware, &user_id, &requete.tuuids).await?;
+
+    let acces_tous = resultat.len() == requete.tuuids.len();
+
+    // let reponse = json!({ "fuuids_acces": resultat , "acces_tous": acces_tous, "user_id": user_id });
+    let reponse = ReponseVerifierAccesTuuids {
+        tuuids_acces: resultat,
+        acces_tous,
+        user_id,
+    };
+    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
 async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
@@ -1552,6 +1625,49 @@ pub async fn verifier_acces_usager<M,S,T,V>(middleware: &M, user_id_in: S, fuuid
     Ok(resultat.into_iter().map(|s| s.to_string()).collect())
 }
 
+pub async fn verifier_acces_usager_tuuids<M,S,T,V>(middleware: &M, user_id_in: S, tuuids_in: V)
+    -> Result<Vec<String>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+          S: AsRef<str>,
+          T: AsRef<str>,
+          V: AsRef<Vec<T>>
+{
+    let user_id = user_id_in.as_ref();
+    let tuuids: Vec<&str> = tuuids_in.as_ref().iter().map(|s| s.as_ref()).collect();
+
+    let mut filtre = doc! {
+        CHAMP_TUUID: { "$in": &tuuids },
+        CHAMP_USER_ID: user_id,
+        CHAMP_SUPPRIME: false,
+    };
+
+    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection = middleware.get_collection_typed::<RowEtatTuuid>(NOM_COLLECTION_FICHIERS_REP)?;
+    let options = FindOptions::builder()
+        .projection(doc!{CHAMP_TUUID: 1, CHAMP_SUPPRIME: 1})
+        .hint(Hint::Name("fichiers_tuuid".into()))
+        .build();
+    let mut curseur = collection.find(filtre, Some(options)).await?;
+
+    let mut tuuids_acces = HashSet::new();
+
+    while curseur.advance().await? {
+        let doc_map = curseur.deserialize_current()?;
+        tuuids_acces.insert(doc_map.tuuid.to_owned());
+    }
+
+    let hashset_requete = HashSet::from_iter(tuuids);
+    let mut hashset_acces = HashSet::new();
+    for tuuid in &tuuids_acces {
+        hashset_acces.insert(tuuid.as_str());
+    }
+
+    let resultat: Vec<&&str> = hashset_acces.intersection(&hashset_requete).collect();
+
+    // String to_owned
+    Ok(resultat.into_iter().map(|s| s.to_string()).collect())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RequeteConfirmerEtatFuuids {
     fuuids: Vec<String>
@@ -1566,6 +1682,13 @@ struct ReponseConfirmerEtatFuuids {
 struct RowEtatFuuid<'a> {
     #[serde(borrow)]
     fuuids: Vec<&'a str>,
+    supprime: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RowEtatTuuid<'a> {
+    #[serde(borrow)]
+    tuuid: &'a str,
     supprime: bool,
 }
 
