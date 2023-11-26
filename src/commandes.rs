@@ -28,7 +28,7 @@ use crate::evenements::evenement_fichiers_syncpret;
 
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 use crate::grosfichiers_constantes::*;
-use crate::requetes::{mapper_fichier_db, verifier_acces_usager};
+use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids};
 use crate::traitement_index::{commande_indexation_get_job, reset_flag_indexe};
 use crate::traitement_jobs::{CommandeGetJob, JobHandler, ParametresConfirmerJob, ReponseJob};
 use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_video};
@@ -518,6 +518,27 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
         // Ok
     } else {
         Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+    }
+
+    if let Some(contact_id) = commande.contact_id.as_ref() {
+        debug!("Verifier que le contact_id est valide (correspond aux tuuids)");
+        let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_FICHIERS_REP)?;
+        let filtre = doc!{CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: user_id.as_ref()};
+        let contact = match collection.find_one(filtre, None).await? {
+            Some(inner) => inner,
+            None => {
+                let reponse = json!({"ok": false, "err": "Contact_id invalide"});
+                return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
+            }
+        };
+
+        let resultat = verifier_acces_usager_tuuids(
+            middleware, &contact.user_id, &commande.inclure_tuuids).await?;
+
+        if resultat.len() != commande.inclure_tuuids.len() {
+            let reponse = json!({"ok": false, "err": "Acces refuse"});
+            return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
+        }
     }
 
     // Traiter la transaction

@@ -2122,7 +2122,7 @@ async fn find_sync_cuuids<M>(middleware: &M, filtre: Document, opts: FindOptions
 struct RequeteChargerContacts {}
 
 #[derive(Deserialize)]
-struct ContactRow { contact_id: String, user_id: String, contact_user_id: String }
+pub struct ContactRow { pub contact_id: String, pub user_id: String, pub contact_user_id: String }
 
 #[derive(Serialize, Deserialize)]
 struct ReponseUsager {
