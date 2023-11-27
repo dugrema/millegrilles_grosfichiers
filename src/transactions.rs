@@ -1115,7 +1115,6 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
                 TypeNode::Fichier => {
                     if user_id_destination != user_id {
                         // Copier les versions des fichiers vers le user_id destination
-                        // Changer le tuuid pour la nouvelle valeur
                         let filtre = doc!{ CHAMP_TUUID: &tuuid_src, CHAMP_USER_ID: &user_id };
                         let collection_versions = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(
                             NOM_COLLECTION_VERSIONS)?;
@@ -1125,7 +1124,11 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
                             row.user_id = user_id_destination;
                             row.tuuid = nouveau_tuuid.as_str();
 
-                            let filtre = doc! {CHAMP_TUUID: &nouveau_tuuid, CHAMP_USER_ID: user_id_destination};
+                            let filtre = doc! {
+                                // Utiliser le fuuid pour eviter duplication dans la destination
+                                CHAMP_FUUID: &row.fuuid,
+                                CHAMP_USER_ID: user_id_destination
+                            };
                             let mut set_ops = convertir_to_bson(row)?;
                             set_ops.insert(CHAMP_CREATION, Utc::now());
 
