@@ -522,7 +522,7 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
 
     if let Some(contact_id) = commande.contact_id.as_ref() {
         debug!("Verifier que le contact_id est valide (correspond aux tuuids)");
-        let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_FICHIERS_REP)?;
+        let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
         let filtre = doc!{CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: user_id.as_ref()};
         let contact = match collection.find_one(filtre, None).await? {
             Some(inner) => inner,

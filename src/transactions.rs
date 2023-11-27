@@ -29,7 +29,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 
 use crate::grosfichiers_constantes::*;
-use crate::requetes::verifier_acces_usager;
+use crate::requetes::{ContactRow, verifier_acces_usager, verifier_acces_usager_tuuids};
 use crate::traitement_jobs::JobHandler;
 // use crate::traitement_media::emettre_commande_media;
 // use crate::traitement_index::emettre_commande_indexation;
@@ -957,9 +957,49 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, gestionna
         None => Err(format!("transaction.transaction_ajouter_fichiers_collection Certificat n'est pas charge"))?
     };
 
+    let (user_id_origine, user_id_destination) = match transaction_collection.contact_id.as_ref() {
+        Some(contact_id) => {
+            debug!("transaction_ajouter_fichiers_collection Verifier que le contact_id est valide (correspond aux tuuids)");
+            let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
+            let filtre = doc! {CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: &user_id};
+            let contact = match collection.find_one(filtre, None).await {
+                Ok(inner) => match inner {
+                    Some(inner) => inner,
+                    None => {
+                        let reponse = json!({"ok": false, "err": "Contact_id invalide"});
+                        match middleware.formatter_reponse(&reponse, None) {
+                            Ok(inner) => return Ok(Some(inner)),
+                            Err(e) => Err(format!("transactions.transaction_ajouter_fichiers_collection Erreur formattage reponse (err) pour contact_id invalide : {:?}", e))?
+                        }
+                    }
+                },
+                Err(e) => Err(format!("transactions.transaction_ajouter_fichiers_collection Erreur traitement contact_id : {:?}", e))?
+            };
+
+            match verifier_acces_usager_tuuids(middleware, &contact.user_id, &transaction_collection.inclure_tuuids).await {
+                Ok(inner) => {
+                    if inner.len() != transaction_collection.inclure_tuuids.len() {
+                        let reponse = json!({"ok": false, "err": "Acces refuse"});
+                        match middleware.formatter_reponse(&reponse, None) {
+                            Ok(inner) => return Ok(Some(inner)),
+                            Err(e) => Err(format!("transactions.transaction_ajouter_fichiers_collection Erreur formattage reponse (err) pour verifier_acces_usager_tuuids : {:?}", e))?
+                        }
+                    }
+                },
+                Err(e) => Err(format!("transactions.transaction_ajouter_fichiers_collection Erreur verifier_acces_usager_tuuids : {:?}", e))?
+            }
+
+            // Retourner le user_id d'origine et destination
+            (contact.user_id, Some(user_id))
+        },
+        None => (user_id, None)  // Origine et destination est le meme user
+    };
+
+    debug!("transaction_ajouter_fichiers_collection Copier fichiers user_id {} (vers {:?})", user_id_origine, user_id_destination);
+
     // Dupliquer la structure de repertoires
     if let Err(e) = dupliquer_structure_repertoires(
-        middleware, uuid_transaction, &transaction_collection.cuuid, &transaction_collection.inclure_tuuids, user_id.as_str()).await {
+        middleware, uuid_transaction, &transaction_collection.cuuid, &transaction_collection.inclure_tuuids, user_id_origine.as_str(), user_id_destination).await {
         Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur dupliquer_structure_repertoires sur transcation : {:?}", e))?
     }
 
@@ -988,13 +1028,17 @@ struct CopieTuuidVersCuuid {
 
 /// Duplique la structure des repertoires listes dans tuuids.
 /// Les fichiers des sous-repertoires sont linkes (pas copies).
-async fn dupliquer_structure_repertoires<M,U,C,T,S>(middleware: &M, uuid_transaction: U, cuuid: C, tuuids: &Vec<T>, user_id: S)
+async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_transaction: U, cuuid: C, tuuids: &Vec<T>, user_id: S, user_id_destination: Option<D>)
     -> Result<(), Box<dyn Error>>
-    where M: MongoDao, U: AsRef<str>, C: AsRef<str>, T: ToString, S: AsRef<str>
+    where M: MongoDao, U: AsRef<str>, C: AsRef<str>, T: ToString, S: AsRef<str>, D: AsRef<str>
 {
     let uuid_transaction = uuid_transaction.as_ref();
     let user_id = user_id.as_ref();
     let cuuid = cuuid.as_ref();
+    let user_id_destination = match user_id_destination.as_ref() {
+        Some(inner) => inner.as_ref(),
+        None => user_id
+    };
     let mut tuuids_remaining: Vec<CopieTuuidVersCuuid> = tuuids.iter().map(|t| {
         CopieTuuidVersCuuid { tuuid_original: t.to_string(), cuuid_destination: cuuid.to_owned() }
     }).collect();
@@ -1047,11 +1091,15 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S>(middleware: &M, uuid_transac
 
             // collection.insert_one(doc_repertoire, None).await?;
             let filtre = doc! {
-                CHAMP_TUUID: &fichier_rep.tuuid, CHAMP_USER_ID: &fichier_rep.user_id,
-                CHAMP_SUPPRIME: false, CHAMP_SUPPRIME_INDIRECT: false,
+                CHAMP_TUUID: &fichier_rep.tuuid, CHAMP_USER_ID: &user_id_destination,
+                // CHAMP_SUPPRIME: false, CHAMP_SUPPRIME_INDIRECT: false,
             };
-            let mut set_ops = convertir_to_bson(fichier_rep)?;
+            let mut set_ops = convertir_to_bson(&fichier_rep)?;
             set_ops.insert(CHAMP_CREATION, Utc::now());
+            if user_id_destination != user_id {
+                // Changer le user_id (copie de repertoire partage)
+                set_ops.insert(CHAMP_USER_ID, user_id_destination);
+            }
 
             let ops = doc! {
                 "$setOnInsert": set_ops,
@@ -1064,7 +1112,34 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S>(middleware: &M, uuid_transac
             }
 
             match type_node {
-                TypeNode::Fichier => (),
+                TypeNode::Fichier => {
+                    if user_id_destination != user_id {
+                        // Copier les versions des fichiers vers le user_id destination
+                        // Changer le tuuid pour la nouvelle valeur
+                        let filtre = doc!{ CHAMP_TUUID: &tuuid_src, CHAMP_USER_ID: &user_id };
+                        let collection_versions = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(
+                            NOM_COLLECTION_VERSIONS)?;
+                        let mut curseur = collection_versions.find(filtre, None).await?;
+                        if curseur.advance().await? {
+                            let mut row = curseur.deserialize_current()?;
+                            row.user_id = user_id_destination;
+                            row.tuuid = nouveau_tuuid.as_str();
+
+                            let filtre = doc! {CHAMP_TUUID: &nouveau_tuuid, CHAMP_USER_ID: user_id_destination};
+                            let mut set_ops = convertir_to_bson(row)?;
+                            set_ops.insert(CHAMP_CREATION, Utc::now());
+
+                            let ops = doc!{
+                                "$setOnInsert": set_ops,
+                                "$currentDate": {CHAMP_MODIFICATION: true}
+                            };
+                            let options = UpdateOptions::builder().upsert(true).build();
+                            collection_versions.update_one(filtre, ops, options).await?;
+                        } else {
+                            warn!{"dupliquer_structure_repertoires Version fichier src tuuid {} introuvable, skip", tuuid_src};
+                        }
+                    }
+                },
                 TypeNode::Collection | TypeNode::Repertoire => {
                     // Trouver les sous-repertoires, traiter individuellement
                     let filtre_ajout_cuuid = doc! { format!("{}.0", CHAMP_PATH_CUUIDS): &tuuid_src };

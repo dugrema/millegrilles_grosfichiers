@@ -1627,7 +1627,7 @@ pub async fn verifier_acces_usager<M,S,T,V>(middleware: &M, user_id_in: S, fuuid
 
 pub async fn verifier_acces_usager_tuuids<M,S,T,V>(middleware: &M, user_id_in: S, tuuids_in: V)
     -> Result<Vec<String>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+    where M: GenerateurMessages + MongoDao,
           S: AsRef<str>,
           T: AsRef<str>,
           V: AsRef<Vec<T>>
