@@ -506,19 +506,6 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
     // Autorisation: Action usager avec compte prive ou delegation globale
     let user_id = m.get_user_id();
     let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
-    if role_prive && user_id.is_some() {
-        let user_id_str = user_id.as_ref().expect("user_id");
-        let cuuid = commande.cuuid.as_str();
-        let tuuids: Vec<&str> = commande.inclure_tuuids.iter().map(|t| t.as_str()).collect();
-        let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
-        if resultat.erreur.is_some() {
-            return Ok(resultat.erreur)
-        }
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        // Ok
-    } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
-    }
 
     if let Some(contact_id) = commande.contact_id.as_ref() {
         debug!("Verifier que le contact_id est valide (correspond aux tuuids)");
@@ -539,6 +526,18 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
             let reponse = json!({"ok": false, "err": "Acces refuse"});
             return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
         }
+    } else if role_prive && user_id.is_some() {
+        let user_id_str = user_id.as_ref().expect("user_id");
+        let cuuid = commande.cuuid.as_str();
+        let tuuids: Vec<&str> = commande.inclure_tuuids.iter().map(|t| t.as_str()).collect();
+        let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
+        if resultat.erreur.is_some() {
+            return Ok(resultat.erreur)
+        }
+    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+        // Ok
+    } else {
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
     }
 
     // Traiter la transaction
