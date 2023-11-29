@@ -367,9 +367,8 @@ pub async fn requete_jobs_video<M>(middleware: &M, m: MessageValideAction, gesti
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + VerificateurMessage
 {
-    debug!("requete_documents_par_tuuid Message : {:?}", & m.message);
+    debug!("requete_jobs_video Message : {:?}", & m.message);
     let requete: RequeteJobsVideo = m.message.get_msg().map_contenu()?;
-    debug!("requete_documents_par_tuuid cle parsed : {:?}", requete);
 
     let user_id = m.get_user_id();
     let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
@@ -392,8 +391,10 @@ pub async fn requete_jobs_video<M>(middleware: &M, m: MessageValideAction, gesti
             filtre.insert("user_id", Bson::String(user_id.expect("user_id")));
         }
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.requete_jobs_video: Commande autorisation invalide pour message {:?}", m.correlation_id))?
     }
+
+    debug!("requete_jobs_video Filtre {:?}", filtre);
 
     let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
     let mut curseur = collection.find(filtre, None).await?;

@@ -439,6 +439,7 @@ pub struct CommandeVideoConvertir {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeVideoGetJob {
     pub instance_id: Option<String>,
+    pub fallback: Option<bool>,
     // pub fuuid: Option<String>,
     // #[serde(rename="cleConversion")]
     // pub cle_conversion: Option<String>,

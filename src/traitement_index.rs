@@ -558,7 +558,7 @@ pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValideActi
         None => Err(format!("commandes.commande_indexation_get_job Certificat absent du message"))?
     };
 
-    let commande_get_job = CommandeGetJob { instance_id: commande.instance_id };
+    let commande_get_job = CommandeGetJob { instance_id: commande.instance_id, fallback: None };
     let reponse_prochaine_job = gestionnaire.indexation_job_handler.get_prochaine_job(
         middleware, certificat.as_ref(), commande_get_job).await?;
 

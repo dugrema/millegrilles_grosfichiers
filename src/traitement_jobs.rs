@@ -495,8 +495,11 @@ pub async fn sauvegarder_job<M,J,S,U>(
     Ok(Some(instances))
 }
 
+#[derive(Debug)]
 pub struct CommandeGetJob {
     pub instance_id: Option<String>,
+    /// Filtre format de fallback uniquement pour les videos
+    pub fallback: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -646,7 +649,7 @@ pub async fn get_prochaine_job<M,S>(middleware: &M, nom_collection: S, certifica
 {
     let nom_collection = nom_collection.as_ref();
 
-    debug!("commande_get_job Get pour {}", nom_collection);
+    debug!("commande_get_job Get pour {} : {:?}", nom_collection, commande);
     let job = match trouver_prochaine_job_traitement(middleware, nom_collection, &commande).await? {
         Some(inner) => inner,
         None => {
@@ -717,6 +720,12 @@ pub async fn trouver_prochaine_job_traitement<M,S>(middleware: &M, nom_collectio
             CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_PENDING,
             CHAMP_FLAG_DB_RETRY: {"$lt": MEDIA_RETRY_LIMIT},
         };
+
+        // Verifier si on utilise le filtre fallback pour les videos
+        if Some(true) == commande.fallback {
+            filtre.insert("fallback", true);
+        }
+
         match commande.instance_id.as_ref() {
             Some(instance_id) => {
                 filtre.insert("$or", vec![doc!{"instances": {"$exists": false}}, doc!{"instances": instance_id}]);
