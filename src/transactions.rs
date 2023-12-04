@@ -2303,7 +2303,7 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
     {
         let filtre = doc! {
             CHAMP_FUUID: &transaction_mappee.fuuid,
-            CHAMP_TUUID: &transaction_mappee.tuuid,
+            // CHAMP_TUUID: &transaction_mappee.tuuid,
             CHAMP_USER_ID: &transaction_mappee.user_id,
         };
 
