@@ -30,7 +30,7 @@ use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenemen
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids};
 use crate::traitement_index::{commande_indexation_get_job, reset_flag_indexe};
-use crate::traitement_jobs::{CommandeGetJob, JobHandler, ParametresConfirmerJob, ReponseJob};
+use crate::traitement_jobs::{CommandeGetJob, JobHandler, JobHandlerFichiersRep, JobHandlerVersions, ParametresConfirmerJobIndexation, ReponseJob};
 use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_video};
 use crate::transactions::*;
 
@@ -1230,7 +1230,7 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAc
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
     debug!("commande_confirmer_fichier_indexe Consommer commande : {:?}", & m.message);
-    let commande: ParametresConfirmerJob = m.message.get_msg().map_contenu()?;
+    let commande: ParametresConfirmerJobIndexation = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_confirmer_fichier_indexe parsed : {:?}", commande);
 
     // Autorisation : doit etre un message provenant d'un composant protege
@@ -1240,8 +1240,13 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAc
     }?;
 
     // Traiter la commande
+    // let tuuid = match commande.tuuid {
+    //     Some(inner) => inner,
+    //     None => Err(format!("commande_confirmer_fichier_indexe Tuuid manquant de la commande pour {:?}", commande))?
+    // };
+    let tuuid = commande.tuuid;
     if let Err(e) = gestionnaire.indexation_job_handler.set_flag(
-        middleware, commande.fuuid, Some(commande.user_id), None, true).await {
+        middleware, tuuid, Some(commande.user_id), None, true).await {
         error!("commande_confirmer_fichier_indexe Erreur traitement flag : {:?}", e);
     }
 
@@ -1618,7 +1623,7 @@ async fn commande_image_get_job<M>(middleware: &M, m: MessageValideAction, gesti
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
-    debug!("commande_video_get_job Consommer commande : {:?}", & m.message);
+    debug!("commande_image_get_job Consommer commande : {:?}", & m.message);
     let commande: CommandeImageGetJob = m.message.get_msg().map_contenu()?;
 
     let certificat = match m.message.certificat.as_ref() {

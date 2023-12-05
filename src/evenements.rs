@@ -23,7 +23,7 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 
 use crate::grosfichiers_constantes::*;
-use crate::traitement_jobs::JobHandler;
+use crate::traitement_jobs::{JobHandler, JobHandlerFichiersRep, JobHandlerVersions};
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
 const EXPIRATION_THROTTLING_EVENEMENT_CUUID_CONTENU: i64 = 1;
@@ -375,12 +375,13 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
 
         if let Some(mimetype) = doc_fuuid.mimetype {
             let mut champs_cles = HashMap::new();
-            champs_cles.insert("tuuid".to_string(), doc_fuuid.tuuid);
+            // champs_cles.insert("tuuid".to_string(), doc_fuuid.tuuid);
+            // champs_cles.insert("fuuid".to_string(), doc_fuuid.fuuid);
             champs_cles.insert("mimetype".to_string(), mimetype);
 
             if ! index_traite {
                 gestionnaire.indexation_job_handler.sauvegarder_job(
-                    middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), Some(instance_id.clone()),
+                    middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(instance_id.clone()),
                     Some(champs_cles.clone()), None, true
                 ).await?;
             }

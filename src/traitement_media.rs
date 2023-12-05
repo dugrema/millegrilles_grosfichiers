@@ -27,7 +27,7 @@ use crate::grosfichiers::GestionnaireGrosFichiers;
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::mapper_fichier_db;
-use crate::traitement_jobs::{BackgroundJob, JobHandler, sauvegarder_job};
+use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job};
 
 const EVENEMENT_IMAGE_DISPONIBLE: &str = "jobImageDisponible";
 const EVENEMENT_VIDEO_DISPONIBLE: &str = "jobVideoDisponible";
@@ -58,7 +58,10 @@ impl JobHandler for ImageJobHandler {
     {
         let erreur = erreur.to_string();
 
-        let fuuid = job.fuuid;
+        let fuuid = match job.fuuid {
+            Some(inner) => inner,
+            None => Err(format!("marquer_job_erreur Fuuid manquant"))?
+        };
         let user_id = job.user_id;
 
         let transaction = TransactionSupprimerJobImage {
@@ -73,6 +76,50 @@ impl JobHandler for ImageJobHandler {
 
         Ok(())
     }
+
+    // async fn sauvegarder_job<M, S, U>(
+    //     &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,
+    //     mut champs_cles: Option<HashMap<String, String>>,
+    //     parametres: Option<HashMap<String, Bson>>,
+    //     emettre_trigger: bool,
+    // )
+    //     -> Result<(), Box<dyn Error>>
+    //     where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send
+    // {
+    //     // Tester le mimetype pour savoir si la job s'applique
+    //     let mimetype = match champs_cles.as_ref() {
+    //         Some(inner) => {
+    //             match inner.get("mimetype") {
+    //                 Some(inner) => inner,
+    //                 None => {
+    //                     debug!("sauvegarder_job Mimetype absent, skip sauvegarder job image");
+    //                     return Ok(())
+    //                 }
+    //             }
+    //         },
+    //         None => {
+    //             debug!("sauvegarder_job Mimetype absent, skip sauvegarder job image");
+    //             return Ok(())
+    //         }
+    //     };
+    //
+    //     if job_image_supportee(mimetype) {
+    //         debug!("sauvegarder_job image type {}", mimetype);
+    //         sauvegarder_job(middleware, self, fuuid, user_id, instance.clone(), champs_cles, parametres).await?;
+    //
+    //         if let Some(inner) = instance {
+    //             if emettre_trigger {
+    //                 self.emettre_trigger(middleware, inner).await;
+    //             }
+    //         }
+    //     }
+    //
+    //     Ok(())
+    // }
+}
+
+#[async_trait]
+impl JobHandlerVersions for ImageJobHandler {
 
     async fn sauvegarder_job<M, S, U>(
         &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,
@@ -113,6 +160,7 @@ impl JobHandler for ImageJobHandler {
 
         Ok(())
     }
+
 }
 
 #[derive(Clone, Debug)]
@@ -136,7 +184,10 @@ impl JobHandler for VideoJobHandler {
     {
         let erreur = erreur.to_string();
 
-        let fuuid = job.fuuid;
+        let fuuid = match job.fuuid {
+            Some(inner) => inner,
+            None => Err(format!("VideoJobHandler fuuid manquant"))?
+        };
         let user_id = job.user_id;
         let champs_cles = job.champs_optionnels;
         let cle_conversion = match champs_cles.get("cle_conversion") {
@@ -159,6 +210,90 @@ impl JobHandler for VideoJobHandler {
 
         Ok(())
     }
+
+    // async fn sauvegarder_job<M, S, U>(
+    //     &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,
+    //     mut champs_cles: Option<HashMap<String, String>>,
+    //     parametres: Option<HashMap<String, Bson>>,
+    //     emettre_trigger: bool,
+    // )
+    //     -> Result<(), Box<dyn Error>>
+    //     where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send
+    // {
+    //
+    //     // Tester le mimetype pour savoir si la job s'applique
+    //     let mimetype = match champs_cles.as_ref() {
+    //         Some(inner) => {
+    //             match inner.get("mimetype") {
+    //                 Some(inner) => inner,
+    //                 None => {
+    //                     debug!("sauvegarder_job Mimetype absent, skip sauvegarder job video");
+    //                     return Ok(())
+    //                 }
+    //             }
+    //         },
+    //         None => {
+    //             debug!("sauvegarder_job Mimetype absent, skip sauvegarder job video");
+    //             return Ok(())
+    //         }
+    //     };
+    //
+    //     if ! job_video_supportee(mimetype) {
+    //         debug!("sauvegarder_job video, type {} non supporte", mimetype);
+    //         return Ok(())
+    //         // sauvegarder_job(middleware, self, fuuid, user_id, instance.clone(), champs_cles, parametres).await?;
+    //         //
+    //         // if let Some(inner) = instance {
+    //         //     if emettre_trigger {
+    //         //         self.emettre_trigger(middleware, inner).await;
+    //         //     }
+    //         // }
+    //     }
+    //
+    //
+    //     let mut champs_cles = match champs_cles {
+    //         Some(inner) => inner,
+    //         None => HashMap::new()
+    //     };
+    //     // Ajouter cle de conversion
+    //     champs_cles.insert("cle_conversion".to_string(), "video/mp4;h264;270p;28".to_string());
+    //
+    //     // let instance = instance.as_ref();
+    //
+    //     // S'assurer d'avoir des parametres - ajouter au besoin. Ne fait pas d'override de job existante.
+    //     let parametres = match parametres {
+    //         Some(parametres) => parametres,
+    //         None => {
+    //             // Ajouter params de la job 270p
+    //             let mut parametres = HashMap::new();
+    //
+    //             parametres.insert("bitrateAudio".to_string(), Bson::Int64(64000));
+    //             parametres.insert("bitrateVideo".to_string(), Bson::Int64(250000));
+    //             parametres.insert("qualityVideo".to_string(), Bson::Int64(28));
+    //             parametres.insert("resolutionVideo".to_string(), Bson::Int64(270));
+    //             parametres.insert("codecAudio".to_string(), Bson::String("aac".to_string()));
+    //             parametres.insert("codecVideo".to_string(), Bson::String("h264".to_string()));
+    //             parametres.insert("preset".to_string(), Bson::String("medium".to_string()));
+    //             parametres.insert("fallback".to_string(), Bson::Boolean(true));
+    //
+    //             parametres
+    //         }
+    //     };
+    //
+    //     sauvegarder_job(middleware, self, fuuid, user_id, instance.clone(), Some(champs_cles), Some(parametres)).await?;
+    //
+    //     if let Some(inner) = instance {
+    //         if emettre_trigger {
+    //             self.emettre_trigger(middleware, inner).await;
+    //         }
+    //     }
+    //
+    //     Ok(())
+    // }
+}
+
+#[async_trait]
+impl JobHandlerVersions for VideoJobHandler {
 
     async fn sauvegarder_job<M, S, U>(
         &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,
@@ -239,6 +374,7 @@ impl JobHandler for VideoJobHandler {
 
         Ok(())
     }
+
 }
 
 // pub async fn entretien_video_jobs<M>(middleware: &M) -> Result<(), Box<dyn Error>>

@@ -319,7 +319,7 @@ pub struct DBFichierVersionDetail {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionAssocierConversions {
-    pub tuuid: String,
+    pub tuuid: Option<String>,
     pub fuuid: String,
     pub user_id: Option<String>,  // Option = legacy, nouvelle version c'est obligatoire
     pub width: Option<u32>,
@@ -334,7 +334,7 @@ pub struct TransactionAssocierConversions {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionAssocierVideo {
-    pub tuuid: String,
+    pub tuuid: Option<String>,
     pub fuuid: String,
     pub user_id: String,
     pub mimetype: String,
@@ -360,7 +360,7 @@ pub struct TransactionAssocierVideo {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionAssocierVideoVersionDetail {
-    pub tuuid: String,
+    pub tuuid: Option<String>,
     pub fuuid: String,
     pub user_id: Option<String>,
     pub mimetype: String,
@@ -406,7 +406,7 @@ pub struct ImageConversion {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeVideoConvertir {
-    pub tuuid: String,
+    pub tuuid: Option<String>,
     pub fuuid: String,
     pub mimetype: String,
     #[serde(rename="codecVideo")]

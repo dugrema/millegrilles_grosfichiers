@@ -30,7 +30,7 @@ use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenemen
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, verifier_acces_usager, verifier_acces_usager_tuuids};
-use crate::traitement_jobs::JobHandler;
+use crate::traitement_jobs::{JobHandler, JobHandlerFichiersRep, JobHandlerVersions};
 // use crate::traitement_media::emettre_commande_media;
 // use crate::traitement_index::emettre_commande_indexation;
 
@@ -606,6 +606,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
 
         // Ajouter date creation
         doc_rep_bson.insert(CHAMP_CREATION, Utc::now());
+        doc_rep_bson.insert(CHAMP_FLAG_INDEX, false);
 
         let ops = doc!{
             "$setOnInsert": doc_rep_bson,
@@ -708,6 +709,7 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, gestionnaire: &Ge
         CHAMP_SUPPRIME_INDIRECT: false,
         CHAMP_FAVORIS: favoris,
         CHAMP_TYPE_NODE: type_node,
+        CHAMP_FLAG_INDEX: false,
     };
     debug!("grosfichiers.transaction_nouvelle_collection Ajouter nouvelle collection doc : {:?}", doc_collection);
 
@@ -2097,64 +2099,13 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, gestionnaire: &G
         if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), &fuuids).await {
             error!("transaction_associer_conversions Erreur touch_fichiers_rep {:?}/{} : {:?}", user_id, fuuid, e);
         }
-
-        // let filtre = doc! {
-        //     CHAMP_TUUID: &transaction_mappee.tuuid,
-        //     CHAMP_FUUID_V_COURANTE: &transaction_mappee.fuuid,
-        // };
-        //
-        // let mut set_ops = doc! {};
-        //
-        // // Inserer images par cle dans set_ops
-        // for (k, v) in doc_images {
-        //     let cle_image = format!("version_courante.images.{}", k);
-        //     set_ops.insert(cle_image, v);
-        // };
-        //
-        // if let Some(inner) = &transaction_mappee.anime {
-        //     set_ops.insert("version_courante.anime", inner);
-        // }
-        // if let Some(inner) = &transaction_mappee.mimetype {
-        //     set_ops.insert("mimetype", inner);
-        //     set_ops.insert("version_courante.mimetype", inner);
-        // }
-        // if let Some(inner) = &transaction_mappee.width {
-        //     set_ops.insert("version_courante.width", inner);
-        // }
-        // if let Some(inner) = &transaction_mappee.height {
-        //     set_ops.insert("version_courante.height", inner);
-        // }
-        // if let Some(inner) = transaction_mappee.video_codec.as_ref() {
-        //     set_ops.insert("version_courante.videoCodec", inner);
-        // }
-        // if let Some(inner) = transaction_mappee.duration.as_ref() {
-        //     set_ops.insert("version_courante.duration", inner);
-        // }
-        // // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
-        // //     set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
-        // // }
-        //
-        // // Combiner les fuuids hors de l'info de version
-        // let add_to_set = doc! {
-        //     CHAMP_FUUIDS: {"$each": &fuuids},
-        //     CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids_reclames},
-        // };
-        //
-        // let ops = doc! {
-        //     "$set": set_ops,
-        //     "$addToSet": add_to_set,
-        //     "$currentDate": { CHAMP_MODIFICATION: true }
-        // };
-        // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-        // match collection.update_one(filtre, ops, None).await {
-        //     Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
-        //     Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
-        // }
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION).await {
-        warn!("transaction_associer_conversions Erreur emettre_evenement_maj_fichier : {:?}", e);
+    if let Some(tuuid) = tuuid {
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION).await {
+            warn!("transaction_associer_conversions Erreur emettre_evenement_maj_fichier : {:?}", e);
+        }
     }
 
     middleware.reponse_ok()
@@ -2363,11 +2314,11 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    //if let Some(t) = tuuid.as_ref() {
-        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
+    if let Some(t) = tuuid.as_ref() {
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, t, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
             warn!("transaction_associer_video Erreur emettre_evenement_maj_fichier : {:?}", e);
         }
-    //}
+    }
 
     if let Err(e) = touch_fichiers_rep(middleware, Some(&transaction_mappee.user_id), &fuuids).await {
         error!("transaction_associer_video Erreur touch_fichiers_rep {:?}/{:?} : {:?}", transaction_mappee.user_id, fuuids, e);
@@ -2441,10 +2392,11 @@ async fn transaction_decrire_fichier<M, T>(middleware: &M, gestionnaire: &Gestio
                         if let Some(fuuid) = inner.fuuid_v_courante {
                             if let Some(mimetype) = inner.mimetype {
                                 let mut champs_cles = HashMap::new();
-                                champs_cles.insert("tuuid".to_string(), tuuid.to_string());
+                                // champs_cles.insert("tuuid".to_string(), tuuid.to_string());
+                                champs_cles.insert("fuuid".to_string(), fuuid);
                                 champs_cles.insert("mimetype".to_string(), mimetype.to_string());
                                 if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
-                                    middleware, fuuid, user_id, None,
+                                    middleware, tuuid, user_id, None,
                                     Some(champs_cles), None, false).await {
                                     error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
                                 }

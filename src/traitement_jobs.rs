@@ -23,7 +23,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 use serde::{Deserialize, Serialize};
 
 use crate::grosfichiers_constantes::*;
-use crate::transactions::{NodeFichierRepOwned, NodeFichierVersionOwned};
+use crate::transactions::{NodeFichierRepBorrowed, NodeFichierRepOwned, NodeFichierVersionOwned};
 
 const CONST_MAX_RETRY: i32 = 3;
 const CONST_LIMITE_BATCH: i64 = 1_000;
@@ -93,6 +93,62 @@ pub trait JobHandler: Clone + Sized + Sync {
         }
     }
 
+    // async fn sauvegarder_job<M,S,U>(
+    //     &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,
+    //     champs_cles: Option<HashMap<String, String>>,
+    //     parametres: Option<HashMap<String, Bson>>,
+    //     emettre_trigger: bool
+    // )
+    //     -> Result<(), Box<dyn Error>>
+    //     where M: GenerateurMessages + MongoDao,
+    //           S: AsRef<str> + Send, U: AsRef<str> + Send
+    // {
+    //     let instances = sauvegarder_job(middleware, self, fuuid, user_id, instance.clone(), champs_cles, parametres).await?;
+    //     if let Some(inner) = instances {
+    //         if emettre_trigger {
+    //             for instance in inner.into_iter() {
+    //                 self.emettre_trigger(middleware, instance).await;
+    //             }
+    //         }
+    //     }
+    //     Ok(())
+    // }
+
+    // /// Set le flag de traitement complete
+    // async fn set_flag<M,S,U>(
+    //     &self, middleware: &M, fuuid: S, user_id: Option<U>,
+    //     cles_supplementaires: Option<HashMap<String, String>>,
+    //     valeur: bool
+    // ) -> Result<(), Box<dyn Error>>
+    // where M: MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send {
+    //     set_flag(middleware, self, fuuid, user_id, cles_supplementaires, valeur).await
+    // }
+
+    // async fn get_prochaine_job<M>(&self, middleware: &M, certificat: &EnveloppeCertificat, commande: CommandeGetJob)
+    //     -> Result<ReponseJob, Box<dyn Error>>
+    //     where M: GenerateurMessages + MongoDao
+    // {
+    //     get_prochaine_job_versions(middleware, self.get_nom_collection(), certificat, commande).await
+    // }
+
+    // async fn entretien<M,G>(&self, middleware: &M, gestionnaire: &G, limite_batch: Option<i64>)
+    //     where
+    //         M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage,
+    //         G: GestionnaireDomaine;
+}
+
+#[async_trait]
+pub trait JobHandlerVersions: JobHandler {
+    /// Set le flag de traitement complete
+    async fn set_flag<M,S,U>(
+        &self, middleware: &M, fuuid: S, user_id: Option<U>,
+        cles_supplementaires: Option<HashMap<String, String>>,
+        valeur: bool
+    ) -> Result<(), Box<dyn Error>>
+    where M: MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send {
+        set_flag_versions(middleware, self, fuuid, user_id, cles_supplementaires, valeur).await
+    }
+
     async fn sauvegarder_job<M,S,U>(
         &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,
         champs_cles: Option<HashMap<String, String>>,
@@ -114,14 +170,11 @@ pub trait JobHandler: Clone + Sized + Sync {
         Ok(())
     }
 
-    /// Set le flag de traitement complete
-    async fn set_flag<M,S,U>(
-        &self, middleware: &M, fuuid: S, user_id: Option<U>,
-        cles_supplementaires: Option<HashMap<String, String>>,
-        valeur: bool
-    ) -> Result<(), Box<dyn Error>>
-    where M: MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send {
-        set_flag(middleware, self, fuuid, user_id, cles_supplementaires, valeur).await
+    async fn get_prochaine_job<M>(&self, middleware: &M, certificat: &EnveloppeCertificat, commande: CommandeGetJob)
+        -> Result<ReponseJob, Box<dyn Error>>
+        where M: GenerateurMessages + MongoDao
+    {
+        get_prochaine_job_versions(middleware, self.get_nom_collection(), certificat, commande).await
     }
 
     /// Doit etre invoque regulierement pour generer nouvelles jobs, expirer vieilles, etc.
@@ -137,19 +190,76 @@ pub trait JobHandler: Clone + Sized + Sync {
             None => CONST_LIMITE_BATCH
         };
 
-        if let Err(e) = entretien_jobs(middleware, gestionnaire, self, limite_batch).await {
+        if let Err(e) = entretien_jobs_versions(middleware, gestionnaire, self, limite_batch).await {
             error!("traitement_jobs.JobHandler.entretien {} Erreur sur ajouter_jobs_manquantes : {:?}", self.get_nom_flag(), e);
         }
 
         /// Emettre des triggers au besoin.
         self.emettre_evenements_job(middleware).await;
     }
+}
+
+#[async_trait]
+pub trait JobHandlerFichiersRep: JobHandler {
+    /// Set le flag de traitement complete
+    async fn set_flag<M,S,U>(
+        &self, middleware: &M, tuuid: S, user_id: Option<U>,
+        cles_supplementaires: Option<HashMap<String, String>>,
+        valeur: bool
+    ) -> Result<(), Box<dyn Error>>
+    where M: MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send {
+        set_flag_fichiersrep(middleware, self, tuuid, user_id, cles_supplementaires, valeur).await
+    }
+
+    async fn sauvegarder_job<M,S,U>(
+        &self, middleware: &M, tuuid: S, user_id: U, instance: Option<String>,
+        champs_cles: Option<HashMap<String, String>>,
+        parametres: Option<HashMap<String, Bson>>,
+        emettre_trigger: bool
+    )
+        -> Result<(), Box<dyn Error>>
+        where M: GenerateurMessages + MongoDao,
+              S: AsRef<str> + Send, U: AsRef<str> + Send
+    {
+        let instances = sauvegarder_job_fichiersrep(
+            middleware, self, tuuid, user_id, instance.clone(),
+            champs_cles, parametres).await?;
+        if let Some(inner) = instances {
+            if emettre_trigger {
+                for instance in inner.into_iter() {
+                    self.emettre_trigger(middleware, instance).await;
+                }
+            }
+        }
+        Ok(())
+    }
 
     async fn get_prochaine_job<M>(&self, middleware: &M, certificat: &EnveloppeCertificat, commande: CommandeGetJob)
         -> Result<ReponseJob, Box<dyn Error>>
         where M: GenerateurMessages + MongoDao
     {
-        get_prochaine_job(middleware, self.get_nom_collection(), certificat, commande).await
+        get_prochaine_job_fichiersrep(middleware, self.get_nom_collection(), certificat, commande).await
+    }
+
+    /// Doit etre invoque regulierement pour generer nouvelles jobs, expirer vieilles, etc.
+    async fn entretien<M,G>(&self, middleware: &M, gestionnaire: &G, limite_batch: Option<i64>)
+        where
+            M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage,
+            G: GestionnaireDomaine
+    {
+        debug!("entretien Cycle entretien JobHandler {}", self.get_nom_flag());
+
+        let limite_batch = match limite_batch {
+            Some(inner) => inner,
+            None => CONST_LIMITE_BATCH
+        };
+
+        if let Err(e) = entretien_jobs_fichiersrep(middleware, gestionnaire, self, limite_batch).await {
+            error!("traitement_jobs.JobHandler.entretien {} Erreur sur ajouter_jobs_manquantes : {:?}", self.get_nom_flag(), e);
+        }
+
+        /// Emettre des triggers au besoin.
+        self.emettre_evenements_job(middleware).await;
     }
 }
 
@@ -186,7 +296,7 @@ pub async fn trouver_jobs_instances<J,M>(middleware: &M, job_handler: &J)
     }
 }
 
-async fn set_flag<M,J,S,U>(
+async fn set_flag_versions<M,J,S,U>(
     middleware: &M, job_handler: &J, fuuid: S, user_id: Option<U>,
     cles_supplementaires: Option<HashMap<String, String>>,
     valeur: bool
@@ -249,6 +359,74 @@ async fn set_flag<M,J,S,U>(
     Ok(())
 }
 
+async fn set_flag_fichiersrep<M,J,S,U>(
+    middleware: &M, job_handler: &J, tuuid: S, user_id: Option<U>,
+    cles_supplementaires: Option<HashMap<String, String>>,
+    valeur: bool
+) -> Result<(), Box<dyn Error>>
+    where M: MongoDao, J: JobHandler, S: AsRef<str> + Send, U: AsRef<str> + Send
+{
+    let tuuid = tuuid.as_ref();
+    let user_id = match user_id.as_ref() {
+        Some(inner) => match Some(inner.as_ref()) {
+            Some(inner) => inner,
+            None => Err(format!("traitement_jobs.set_flag_fichiersrep User_id manquant (1)"))?
+        },
+        None => Err(format!("traitement_jobs.set_flag_fichiersrep User_id manquant (2)"))?
+    };
+
+    let mut filtre = doc!{ CHAMP_TUUID: tuuid, CHAMP_USER_ID: user_id };
+
+    // let mut filtre = doc!{
+    //     CHAMP_FUUIDS_VERSIONS: fuuid,
+    // };
+    // if let Some(inner) = user_id {
+    //     // Legacy - supporte vieilles commandes sans user_id
+    //     filtre.insert(CHAMP_USER_ID, inner);
+    // }
+
+    let collection_fichiersrep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+    // Set flag
+    let ops = doc! {
+        "$set": { job_handler.get_nom_flag(): valeur },
+        "$currentDate": { CHAMP_MODIFICATION: true }
+    };
+    debug!("set_flag {}={} : modifier table versions pour {:?}/{} (filtre : {:?}", job_handler.get_nom_flag(), valeur, user_id, tuuid, filtre.clone());
+    collection_fichiersrep.update_one(filtre.clone(), ops, None).await?;
+
+    // Completer flags pour job
+    if let Some(inner) = cles_supplementaires {
+        for (k, v) in inner.into_iter() {
+            filtre.insert(k, v);
+        }
+    }
+
+    match valeur {
+        true => {
+            debug!("set_flag supprimer job ({}) sur {:?}/{} (filtre : {:?}", job_handler.get_nom_flag(), user_id, tuuid, filtre);
+
+            // Set flag
+            // let ops = doc! {
+            //     "$set": { job_handler.get_nom_flag(): true },
+            //     "$currentDate": { CHAMP_MODIFICATION: true }
+            // };
+            // collection_versions.update_one(filtre.clone(), ops, None).await?;
+
+            // Retirer job
+            let collection_jobs = middleware.get_collection(job_handler.get_nom_collection())?;
+            let result = collection_jobs.delete_one(filtre.clone(), None).await?;
+            debug!("set_flag Delete result sur table {}, filtre {:?} : {:?}", job_handler.get_nom_collection(), filtre, result);
+        },
+        false => {
+            // Rien a faire
+            debug!("set_flag {} false : supprimer job sur {:?}/{} et modifier table versions", job_handler.get_nom_flag(), user_id, tuuid);
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 struct RowVersionsIds {
     tuuid: String,
@@ -258,11 +436,11 @@ struct RowVersionsIds {
     visites: Option<HashMap<String, i64>>,
 }
 
-async fn entretien_jobs<J,G,M>(middleware: &M, gestionnaire: &G, job_handler: &J, limite_batch: i64) -> Result<(), Box<dyn Error>>
+async fn entretien_jobs_versions<J,G,M>(middleware: &M, gestionnaire: &G, job_handler: &J, limite_batch: i64) -> Result<(), Box<dyn Error>>
     where
         M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage,
         G: GestionnaireDomaine,
-        J: JobHandler
+        J: JobHandler + JobHandlerVersions
 {
     debug!("entretien_jobs Debut");
 
@@ -322,10 +500,10 @@ async fn entretien_jobs<J,G,M>(middleware: &M, gestionnaire: &G, job_handler: &J
         let user_id = version_mappee.user_id;
         let mimetype_ref = version_mappee.mimetype;
 
-        let filtre_job = doc!{ CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref };
-
-        let options = FindOneOptions::builder().hint(Hint::Name(NOM_INDEX_USER_ID_TUUIDS.to_string())).build();
-        let job_existante = collection_jobs.find_one(filtre_job.clone(), options).await?;
+        // let filtre_job = doc!{ CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref };
+        //
+        // let options = FindOneOptions::builder().hint(Hint::Name(NOM_INDEX_USER_ID_TUUIDS.to_string())).build();
+        // let job_existante = collection_jobs.find_one(filtre_job.clone(), options).await?;
 
         // if let Some(job) = job_existante {
         //     if let Some(retry) = job.retry {
@@ -379,11 +557,183 @@ async fn entretien_jobs<J,G,M>(middleware: &M, gestionnaire: &G, job_handler: &J
         let mut curseur = collection_jobs.find(filtre, options).await?;
         while curseur.advance().await? {
             let job = curseur.deserialize_current()?;
-            warn!("traiter_indexation_batch Job sur fuuid {} (user_id {}) expiree, on met le flag termine pour annuler la job.", job.fuuid, job.user_id);
+            warn!("traiter_indexation_batch Job sur fuuid {:?} (user_id {:?}) expiree, on met le flag termine pour annuler la job.", job.fuuid, job.user_id);
 
             // Fabriquer transaction pour annuler la job et marquer le traitement complete
             if let Err(e) = job_handler.marquer_job_erreur(middleware, gestionnaire, job, "Too many retries").await {
                 error!("traiter_indexation_batch Erreur marquer job supprimee : {:?}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn entretien_jobs_fichiersrep<J,G,M>(middleware: &M, gestionnaire: &G, job_handler: &J, limite_batch: i64) -> Result<(), Box<dyn Error>>
+    where
+        M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage,
+        G: GestionnaireDomaine,
+        J: JobHandler + JobHandlerFichiersRep
+{
+    debug!("entretien_jobs_fichiersrep Debut");
+
+    let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(
+        job_handler.get_nom_collection())?;
+    let champ_flag_index = job_handler.get_nom_flag();
+
+    // Reset jobs indexation avec start_date expire pour les reprendre immediatement
+    {
+        let filtre_start_expire = doc! {
+            CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_RUNNING,
+            CONST_CHAMP_DATE_MAJ: { "$lte": Utc::now() - Duration::seconds(CONST_EXPIRATION_SECS) },
+            // CONST_CHAMP_RETRY: { "$lt": CONST_MAX_RETRY },
+        };
+        let ops_expire = doc! {
+            "$set": { CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_PENDING },
+            "$unset": { CONST_CHAMP_DATE_MAJ: true },
+            "$currentDate": { CHAMP_MODIFICATION: true },
+        };
+        let options = UpdateOptions::builder().hint(Hint::Name("etat_jobs_2".to_string())).build();
+        collection_jobs.update_many(filtre_start_expire, ops_expire, options).await?;
+    }
+
+    let collection_fichiersrep = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
+        NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(
+        NOM_COLLECTION_VERSIONS)?;
+
+    let mut curseur = {
+        let opts = FindOptions::builder()
+            // .hint(Hint::Name(String::from("flag_media_traite")))
+            .sort(doc! {champ_flag_index: 1, CHAMP_CREATION: 1})
+            .projection(doc!{
+                CHAMP_FUUIDS_VERSIONS: true, CHAMP_TUUID: true, CHAMP_USER_ID: true, CHAMP_MIMETYPE: true,
+
+                // Information requise a cause du format NodeFichierVersionBorrowed
+                CHAMP_TYPE_NODE: true, CHAMP_SUPPRIME: true, CHAMP_SUPPRIME_INDIRECT: true,
+                CHAMP_METADATA: true,
+            })
+            .limit(limite_batch)
+            .build();
+        let filtre = doc! { champ_flag_index: false };
+        debug!("entretien_jobs_fichiersrep filtre {:?}", filtre);
+        collection_fichiersrep.find(filtre, Some(opts)).await?
+    };
+
+    while curseur.advance().await? {
+        let version_mappee = match curseur.deserialize_current() {
+            Ok(inner) => inner,
+            Err(e) => {
+                warn!("entretien_jobs_fichiersrep Erreur mapping document : {:?} - SKIP", e);
+                continue;
+            }
+        };
+        debug!("entretien_jobs_fichiersrep Ajouter job (si applicable) pour {:?}", version_mappee);
+
+        let tuuid_ref = version_mappee.tuuid;
+        let user_id = version_mappee.user_id;
+        let type_node = TypeNode::try_from(version_mappee.type_node)?;
+
+        match type_node {
+            TypeNode::Fichier => {
+                let mimetype_ref = match version_mappee.mimetype {
+                    Some(inner) => inner,
+                    None => {
+                        warn!("entretien_jobs_fichiersrep Aucun mimetype pour fichier tuuid {} - SKIP", tuuid_ref);
+                        continue
+                    }
+                };
+
+                let fuuid_ref = match version_mappee.fuuids_versions {
+                    Some(inner) => match inner.get(0) {
+                        Some(inner) => *inner,
+                        None => {
+                            warn!("entretien_jobs_fichiersrep Aucun fuuid pour tuuid {} - SKIP", tuuid_ref);
+                            continue
+                        }
+                    },
+                    None => {
+                        warn!("entretien_jobs_fichiersrep Aucun fuuid pour tuuid {} - SKIP", tuuid_ref);
+                        continue;
+                    }
+                };
+
+                // Charger info de version
+                let filtre_version = doc!{ CHAMP_USER_ID: user_id, CHAMP_FUUID: fuuid_ref };
+                let mut curseur_version = collection_versions.find(filtre_version, None).await?;
+                let visites: Vec<String> = match curseur_version.advance().await? {
+                    true => {
+                        let r = curseur_version.deserialize_current()?;
+                        r.visites.into_keys().map(|f| f.to_string()).collect()
+                    },
+                    false => {
+                        warn!("entretien_jobs_fichiersrep Aucune information de version pour pour user_id {}, fuuid {} - SKIP", user_id, fuuid_ref);
+                        continue
+                    }
+                };
+
+                // Creer ou mettre a jour la job
+                for instance in visites {
+                    let mut champs_cles = HashMap::new();
+                    champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
+                    // champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
+                    champs_cles.insert("fuuid".to_string(), fuuid_ref.to_string());
+                    if let Err(e) = job_handler.sauvegarder_job(
+                        middleware, tuuid_ref, user_id,
+                        Some(instance), Some(champs_cles), None,
+                        false).await
+                    {
+                        info!("entretien_jobs Erreur creation job : {:?}", e)
+                    }
+                }
+            },
+            _ => {
+                // Repertoire
+                let ref_hachage_bytes = match version_mappee.metadata.ref_hachage_bytes {
+                    Some(inner) => inner,
+                    None => {
+                        warn!("Repertoire sans metadata/ref_hachage_bytes ne peut etre indexe : {}", tuuid_ref);
+                        continue
+                    }
+                };
+                let mut parametres = HashMap::new();
+                parametres.insert("ref_hachage_bytes".to_string(), Bson::String(ref_hachage_bytes.to_string()));
+                if let Err(e) = job_handler.sauvegarder_job(
+                    middleware, tuuid_ref, user_id,
+                    None, None, Some(parametres),
+                    false).await
+                {
+                    info!("entretien_jobs Erreur creation job : {:?}", e)
+                }
+            }
+        }
+    }
+
+    // Cleanup des jobs avec retry excessifs. Ces jobs sont orphelines (e.g. la correspondante dans
+    // versions est deja traitee).
+    {
+        let filtre = doc! {
+            // Inclue etat pour utiliser index etat_jobs_2
+            CHAMP_ETAT_JOB: {"$in": [
+                VIDEO_CONVERSION_ETAT_PENDING,
+                // VIDEO_CONVERSION_ETAT_RUNNING,
+                // VIDEO_CONVERSION_ETAT_PERSISTING,
+                VIDEO_CONVERSION_ETAT_ERROR,
+                VIDEO_CONVERSION_ETAT_ERROR_TOOMANYRETRIES,
+            ]},
+            CHAMP_FLAG_DB_RETRY: {"$gte": MEDIA_RETRY_LIMIT}
+        };
+        // let options = FindOptions::builder().hint(Hint::Name(NOM_INDEX_ETAT_JOBS.to_string())).build();
+        // let mut curseur = collection_jobs.find(filtre, options).await?;
+        let mut curseur = collection_jobs.find(filtre, None).await?;
+        while curseur.advance().await? {
+            let job = curseur.deserialize_current()?;
+            warn!("entretien_jobs_fichiersrep Job sur tuuid {:?}, fuuid: {:?}, (user_id {}) expiree, on met le flag termine pour annuler la job.",
+                job.tuuid, job.fuuid, job.user_id);
+
+            // Fabriquer transaction pour annuler la job et marquer le traitement complete
+            if let Err(e) = job_handler.marquer_job_erreur(middleware, gestionnaire, job, "Too many retries").await {
+                error!("entretien_jobs_fichiersrep Erreur marquer job supprimee : {:?}", e);
             }
         }
     }
@@ -495,6 +845,134 @@ pub async fn sauvegarder_job<M,J,S,U>(
     Ok(Some(instances))
 }
 
+pub async fn sauvegarder_job_fichiersrep<M,J,S,U>(
+    middleware: &M, job_handler: &J,
+    tuuid: S, user_id: U, instance: Option<String>,
+    champs_cles: Option<HashMap<String, String>>,
+    parametres: Option<HashMap<String, Bson>>
+)
+    -> Result<Option<Vec<String>>, Box<dyn Error>>
+    where M: MongoDao, J: JobHandler,
+          S: AsRef<str> + Send, U: AsRef<str> + Send
+{
+    // Creer ou mettre a jour la job
+    let now = Utc::now();
+
+    let tuuid = tuuid.as_ref();
+    let user_id = user_id.as_ref();
+    // let instance = instance.as_ref();
+
+    let fuuid = match champs_cles.as_ref() {
+        Some(inner) => match inner.get(CHAMP_FUUID) {
+            Some(inner) => Some(inner.as_str()),
+            None => None
+        },
+        None => None
+    };
+
+    let mut filtre = doc!{ CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid };
+
+    if let Some(inner) = champs_cles.as_ref() {
+        for (k, v) in inner.iter() {
+            filtre.insert(k.to_owned(), v.to_owned());
+        }
+    }
+
+    let mut set_on_insert = doc!{
+        CHAMP_TUUID: tuuid,
+        CHAMP_USER_ID: user_id,
+        CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_PENDING,
+        CONST_CHAMP_RETRY: 0,
+        CHAMP_CREATION: &now,
+    };
+
+    if let Some(inner) = champs_cles.as_ref() {
+        for (k, v) in inner.iter() {
+            set_on_insert.insert(k.to_string(), v.to_string());
+        }
+    }
+
+    // Ajouter parametres optionnels (e.g. codecVideo, preset, etc.)
+    if let Some(inner) = parametres {
+        for (k, v) in inner.into_iter() {
+            set_on_insert.insert(k, v);
+        }
+    }
+
+    let instances = match instance {
+        Some(inner) => Some(vec![inner]),
+        None => {
+            match fuuid {
+                Some(fuuid) => {
+                    // Tenter de charger les visites pour le fichier
+                    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+                    let filtre = doc! { CHAMP_USER_ID: user_id, CHAMP_FUUID: fuuid };
+                    match collection.find_one(filtre, None).await? {
+                        Some(inner) => {
+                            let fichier_mappe: FichierDetail = convertir_bson_deserializable(inner)?;
+                            match fichier_mappe.visites {
+                                Some(inner) => {
+                                    let liste_visites: Vec<String> = inner.into_keys().collect();
+                                    Some(liste_visites)
+                                },
+                                None => {
+                                    debug!("sauvegarder_job Le fichier {} n'est pas encore disponible (1 - aucunes instance avec visite) - SKIP", fuuid);
+                                    return Ok(None)
+                                }
+                            }
+                        },
+                        None => {
+                            debug!("sauvegarder_job Le fichier {} n'est pas encore disponible (2 - aucunes instance avec visite) - SKIP", fuuid);
+                            return Ok(None)
+                        }
+                    }
+                },
+                None => None
+            }
+        }
+    };
+
+    let mut ops_job = if let Some(instances) = instances.as_ref() {
+        doc! {
+            "$setOnInsert": set_on_insert,
+            "$addToSet": {CHAMP_INSTANCES: {"$each": &instances}},
+            "$currentDate": {
+                CHAMP_MODIFICATION: true,
+            }
+        }
+    } else {
+        // Aucunes instances requises (e.g. collection, repertoire)
+        doc! {
+            "$setOnInsert": set_on_insert,
+            "$unset": {CHAMP_INSTANCES: true},  // Retirer champ instances
+            "$currentDate": {
+                CHAMP_MODIFICATION: true,
+            }
+        }
+    };
+
+    let options = FindOneAndUpdateOptions::builder()
+        .upsert(true)
+        .build();
+
+    let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(job_handler.get_nom_collection())?;
+    if let Some(job) = collection_jobs.find_one_and_update(filtre.clone(), ops_job, options).await? {
+        if let Some(retries) = job.retry {
+            if retries >= CONST_MAX_RETRY {
+                warn!("sauvegarder_job Job excede max retries, on la desactive");
+                let ops = doc! {
+                    "$set": { CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_ERROR_TOOMANYRETRIES },
+                    "$currentDate": { CHAMP_MODIFICATION: true },
+                };
+                collection_jobs.update_one(filtre, ops, None).await?;
+                Err(format!("sauvegarder_job Job existante avec trop de retries"))?
+            }
+        }
+    }
+
+    Ok(instances)
+}
+
 #[derive(Debug)]
 pub struct CommandeGetJob {
     pub instance_id: Option<String>,
@@ -504,8 +982,8 @@ pub struct CommandeGetJob {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct BackgroundJob {
-    pub tuuid: String,
-    pub fuuid: String,
+    pub tuuid: Option<String>,
+    pub fuuid: Option<String>,
     pub user_id: String,
     pub etat: i32,
     #[serde(rename="_mg-derniere-modification", skip_serializing)]
@@ -625,8 +1103,8 @@ impl From<BackgroundJob> for ReponseJob {
         Self {
             ok: true,
             err: None,
-            tuuid: Some(value.tuuid),
-            fuuid: Some(value.fuuid),
+            tuuid: value.tuuid,
+            fuuid: value.fuuid,
             user_id: Some(value.user_id),
             mimetype,
             metadata: None,
@@ -643,7 +1121,58 @@ impl From<BackgroundJob> for ReponseJob {
     }
 }
 
-pub async fn get_prochaine_job<M,S>(middleware: &M, nom_collection: S, certificat: &EnveloppeCertificat, commande: CommandeGetJob)
+pub async fn get_prochaine_job_versions<M,S>(middleware: &M, nom_collection: S, certificat: &EnveloppeCertificat, commande: CommandeGetJob)
+    -> Result<ReponseJob, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send
+{
+    let nom_collection = nom_collection.as_ref();
+
+    debug!("get_prochaine_job Get pour {} : {:?}", nom_collection, commande);
+    let job = match trouver_prochaine_job_traitement(middleware, nom_collection, &commande).await? {
+        Some(inner) => inner,
+        None => {
+            // Il ne reste aucunes jobs
+            return Ok(ReponseJob::from("Aucun fichier a traiter"))
+        }
+    };
+
+    debug!("get_prochaine_job Prochaine job : {:?}", job);
+
+    let fuuid = match job.fuuid.as_ref() {
+        Some(inner) => inner.to_owned(),
+        None => Err(format!("traitement_jobs.get_prochaine_job fuuid manquant"))?
+    };
+
+    // Recuperer les metadonnees et information de version
+    let mut filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_FUUID: &fuuid };
+    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(
+        NOM_COLLECTION_VERSIONS)?;
+    let fichier_version = match collection_versions.find_one(filtre, None).await? {
+        Some(inner) => inner,
+        None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document inexistant user_id:{} fuuid:{}", job.user_id, fuuid))?
+    };
+
+    // Recuperer la cle de dechiffrage du fichier
+    let cle = get_cle_job_indexation(middleware, fuuid, certificat).await?;
+
+    let metadata = fichier_version.metadata;
+    let mimetype = fichier_version.mimetype;
+
+    // let mimetype = match fichier_version.mimetype.as_ref() {
+    //     Some(inner) => inner.as_str(),
+    //     None => "application/octet-stream"
+    // };
+
+    let mut reponse_job = ReponseJob::from(job);
+    reponse_job.metadata = Some(metadata);
+    reponse_job.mimetype = Some(mimetype);
+    reponse_job.cle = Some(cle);
+    debug!("get_prochaine_job Reponse job : {:?}", reponse_job);
+
+    Ok(reponse_job)
+}
+
+pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: S, certificat: &EnveloppeCertificat, commande: CommandeGetJob)
     -> Result<ReponseJob, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send
 {
@@ -658,33 +1187,63 @@ pub async fn get_prochaine_job<M,S>(middleware: &M, nom_collection: S, certifica
         }
     };
 
-    debug!("commande_get_job Prochaine job : {:?}", job);
+    debug!("get_prochaine_job_fichiersrep Prochaine job : {:?}", job);
 
-    let fuuid = job.fuuid.as_str();
+    let tuuid = match job.tuuid.as_ref() {
+        Some(inner) => inner.to_owned(),
+        None => Err(format!("get_prochaine_job_fichiersrep tuuid manquant"))?
+    };
+
+    let ref_hachage_bytes = match job.champs_optionnels.get("ref_hachage_bytes") {
+        Some(inner) => match inner.as_str() {
+            Some(inner) => Some(inner),
+            None => Err(format!("get_prochaine_job_fichiersrep Mauvais format ref_hachage_bytes (!str)"))?,
+        },
+        None => match job.fuuid.as_ref() { Some(inner) => Some(inner.as_str()), None => None }
+    };
 
     // Recuperer les metadonnees et information de version
-    let (fichier_rep, fichier_version) = {
-        let mut filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: &job.tuuid };
+    let (fichier_rep, cle) = {
+        let mut filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: &tuuid };
         let collection_rep = middleware.get_collection_typed::<NodeFichierRepOwned>(
             NOM_COLLECTION_FICHIERS_REP)?;
+
         let fichier_rep = match collection_rep.find_one(filtre, None).await? {
             Some(inner) => inner,
-            None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document inexistant user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+            None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document inexistant user_id:{} tuuid:{}", job.user_id, tuuid))?
         };
-        match fichier_rep.fuuids_versions.as_ref() {
-            Some(inner) => if !inner.contains(&job.fuuid) {
-                Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - fuuid {} non associe au document user_id:{} tuuid:{}", job.fuuid, job.user_id, job.tuuid))?
-            },
-            None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document sans fuuids user_id:{} tuuid:{}", job.user_id, job.tuuid))?
+
+        // Utiliser la version courante (fuuid[0])
+        let fuuid = match ref_hachage_bytes {
+            Some(inner) => inner.to_owned(),
+            None => {
+                match fichier_rep.metadata.ref_hachage_bytes.as_ref() {
+                    Some(inner) => inner.to_owned(),
+                    None => {
+                        match fichier_rep.fuuids_versions.as_ref() {
+                            Some(mut inner) => match inner.get(0) {
+                                Some(inner) => inner.to_owned(),
+                                None => Err(format!("traitement_jobs.get_prochaine_job Aucun fuuid courant pour tuuid {}", tuuid))?
+                            },
+                            None => Err(format!("traitement_jobs.get_prochaine_job Aucuns version_fuuids pour tuuid {}", tuuid))?
+                        }
+                    }
+                }
+            }
         };
-        let filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_FUUID: fuuid };
-        let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(
-            NOM_COLLECTION_VERSIONS)?;
-        let fichier_version = match collection_versions.find_one(filtre, None).await? {
-            Some(inner) => inner,
-            None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document version inexistant user_id:{} fuuid:{}", job.user_id, fuuid))?
-        };
-        (fichier_rep, fichier_version)
+
+        // let fuuid = match fichier_rep.fuuids_versions.as_ref() {
+        //     Some(mut inner) => match inner.get(0) {
+        //         Some(inner) => inner.to_owned(),
+        //         None => Err(format!("traitement_jobs.get_prochaine_job Aucun fuuid courant pour tuuid {}", tuuid))?
+        //     },
+        //     None => Err(format!("traitement_jobs.get_prochaine_job Aucuns version_fuuids pour tuuid {}", tuuid))?
+        // };
+
+        // Recuperer la cle de dechiffrage du fichier
+        let cle = get_cle_job_indexation(middleware, fuuid, certificat).await?;
+
+        (fichier_rep, cle)
     };
 
     let metadata = fichier_rep.metadata;
@@ -693,9 +1252,6 @@ pub async fn get_prochaine_job<M,S>(middleware: &M, nom_collection: S, certifica
         Some(inner) => inner.as_str(),
         None => "application/octet-stream"
     };
-
-    // Recuperer la cle de dechiffrage du fichier
-    let cle = get_cle_job_indexation(middleware, fuuid, certificat).await?;
 
     let mut reponse_job = ReponseJob::from(job);
     reponse_job.metadata = Some(metadata);
@@ -726,17 +1282,23 @@ pub async fn trouver_prochaine_job_traitement<M,S>(middleware: &M, nom_collectio
             filtre.insert("fallback", true);
         }
 
+        // Si le champ instances n'existe pas, l'instance de s'applique pas (e.g. repertoire).
+        // Sinon on attend qu'au moins une instance soit disponible.
         match commande.instance_id.as_ref() {
             Some(instance_id) => {
                 filtre.insert("$or", vec![doc!{"instances": {"$exists": false}}, doc!{"instances": instance_id}]);
             },
             None => {
-                filtre.insert("instances.0", doc! {"$exists": true} );
+                // Si le champ instances n'existe pas, l'instance de s'applique pas.
+                // Sinon on attend qu'au moins une instance soit disponible.
+                filtre.insert("$or", vec![doc!{"instances": {"$exists": false}}, doc!{"instances.0": {"$exists": true}}]);
             }
         }
+
         // if let Some(instance_id) = commande.instance_id.as_ref() {
         //     filtre.insert("$or", vec![doc!{"instances": {"$exists": false}}, doc!{"instances": instance_id}]);
         // }
+
         let hint = Some(Hint::Name("etat_jobs_2".into()));
         let options = FindOneAndUpdateOptions::builder()
             .hint(hint)
@@ -807,8 +1369,9 @@ pub async fn get_cle_job_indexation<M,S>(middleware: &M, fuuid: S, certificat: &
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct ParametresConfirmerJob {
-    pub fuuid: String,
+pub struct ParametresConfirmerJobIndexation {
+    // pub fuuid: Option<String>,
     pub user_id: String,
     pub cle_conversion: Option<String>,
+    pub tuuid: String,
 }

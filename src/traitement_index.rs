@@ -29,7 +29,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
-use crate::traitement_jobs::{BackgroundJob, CommandeGetJob, get_prochaine_job, JobHandler, ReponseJob};
+use crate::traitement_jobs::{BackgroundJob, CommandeGetJob, get_prochaine_job_versions, JobHandler, JobHandlerFichiersRep, JobHandlerVersions, ReponseJob};
 
 const EVENEMENT_INDEXATION_DISPONIBLE: &str = "jobIndexationDisponible";
 
@@ -55,14 +55,19 @@ impl JobHandler for IndexationJobHandler {
     {
         let erreur = erreur.to_string();
 
-        let fuuid = job.fuuid;
+        let tuuid = match job.tuuid {
+            Some(inner) => inner,
+            None => Err(format!("traitement_index.JobHandler Tuuid manquant"))?
+        };
         let user_id = job.user_id;
 
-        self.set_flag(middleware, fuuid, Some(user_id), None, true).await?;
+        self.set_flag(middleware, tuuid, Some(user_id), None, true).await?;
 
         Ok(())
     }
 }
+
+impl JobHandlerFichiersRep for IndexationJobHandler {}
 
 // /// Set le flag indexe a true pour le fuuid (version)
 // pub async fn set_flag_indexe<M,S,T>(middleware: &M, fuuid: S, user_id: T) -> Result<(), Box<dyn Error>>
@@ -107,7 +112,8 @@ pub async fn reset_flag_indexe<M,G>(middleware: &M, gestionnaire: &G, job_handle
         "$currentDate": { CHAMP_MODIFICATION: true },
     };
 
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    // let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     match collection.update_many(filtre.clone(), ops, None).await {
         Ok(_) => (),
         Err(e) => Err(format!("traitement_index.set_flag_indexe Erreur {:?}", e))?
