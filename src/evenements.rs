@@ -5,7 +5,7 @@ use std::time::Duration;
 use log::{debug, error, warn};
 use millegrilles_common_rust::{chrono, serde_json, serde_json::json};
 use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{doc, Document};
+use millegrilles_common_rust::bson::{Bson, doc, Document};
 
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::Utc;
@@ -337,11 +337,11 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
 
     };
     let options = FindOptions::builder().projection(projection).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let collection = middleware.get_collection_typed::<DocumentFichierDetailIds>(NOM_COLLECTION_VERSIONS)?;
 
     let mut curseur = collection.find(filtre, Some(options)).await?;
-    while let Some(r) = curseur.next().await {
-        let doc_fuuid: DocumentFichierDetailIds = convertir_bson_deserializable(r?)?;
+    while curseur.advance().await? {
+        let doc_fuuid = curseur.deserialize_current()?;
 
         let fuuids = vec![doc_fuuid.fuuid.clone()];
         let instances: Vec<String> = match doc_fuuid.visites {
@@ -351,11 +351,6 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
                 continue;
             }
         };
-
-        // let index_traite = match doc_fuuid.flag_index {
-        //     Some(inner) => inner,
-        //     None => false
-        // };
 
         let image_traitee = match doc_fuuid.flag_media_traite {
             Some(inner) => inner,
@@ -374,18 +369,16 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
         emettre_evenement_maj_fichier(middleware, gestionnaire, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
 
         if let Some(mimetype) = doc_fuuid.mimetype {
-            let mut champs_cles = HashMap::new();
-            // champs_cles.insert("tuuid".to_string(), doc_fuuid.tuuid);
-            // champs_cles.insert("fuuid".to_string(), doc_fuuid.fuuid);
-            champs_cles.insert("mimetype".to_string(), mimetype);
+            let mut parametres_index = HashMap::new();
+            parametres_index.insert("mimetype".to_string(), Bson::String(mimetype.to_string()));
+            parametres_index.insert("fuuid".to_string(), Bson::String(doc_fuuid.fuuid.clone()));
+            gestionnaire.indexation_job_handler.sauvegarder_job(
+                middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(instance_id.clone()),
+                None, Some(parametres_index), true
+            ).await?;
 
-            // if ! index_traite {
-            //     // TODO Charger path_cuuids
-            //     gestionnaire.indexation_job_handler.sauvegarder_job(
-            //         middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(instance_id.clone()),
-            //         Some(champs_cles.clone()), None, true
-            //     ).await?;
-            // }
+            let mut champs_cles = HashMap::new();
+            champs_cles.insert("mimetype".to_string(), mimetype);
 
             if ! image_traitee {
                 // Note : La job est uniquement creee si le format est une image

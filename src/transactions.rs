@@ -2362,7 +2362,9 @@ async fn transaction_decrire_fichier<M, T>(middleware: &M, gestionnaire: &Gestio
     //     }
     // }
 
-    let mut set_ops = doc! {};
+    let mut set_ops = doc! {
+        CHAMP_FLAG_INDEX: false,
+    };
 
     // Modifier metadata
     if let Some(metadata) = transaction_mappee.metadata {
@@ -2380,28 +2382,31 @@ async fn transaction_decrire_fichier<M, T>(middleware: &M, gestionnaire: &Gestio
     // Creer job indexation
     let ops = doc! {
         "$set": set_ops,
+        "$unset": {CHAMP_FLAG_INDEX_RETRY: true, CHAMP_FLAG_INDEX_ERREUR: true},
         "$currentDate": { CHAMP_MODIFICATION: true }
     };
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
     match collection.find_one_and_update(filtre, ops, None).await {
         Ok(inner) => {
             debug!("transaction_decire_fichier Update description : {:?}", inner);
             if let Some(doc_fichier) = inner {
-                if let Ok(inner) = convertir_bson_deserializable::<FichierDetail>(doc_fichier) {
-                    if let Some(user_id) = inner.user_id {
-                        if let Some(fuuid) = inner.fuuid_v_courante {
-                            if let Some(mimetype) = inner.mimetype {
-                                // let mut champs_cles = HashMap::new();
-                                // champs_cles.insert("tuuid".to_string(), tuuid.to_string());
-                                let mut parametres = HashMap::new();
-                                parametres.insert("mimetype".to_string(), Bson::String(mimetype.to_string()));
-                                parametres.insert("fuuid".to_string(), Bson::String(fuuid));
-                                if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
-                                    middleware, tuuid, user_id, None,
-                                    None, Some(parametres), false).await {
-                                    error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
-                                }
-                            }
+                let user_id = doc_fichier.user_id;
+                let fuuid = match doc_fichier.fuuids_versions.as_ref() {
+                    Some(inner) => match inner.get(0) {
+                        Some(inner) => Some(inner),
+                        None => None
+                    },
+                    None => None
+                };
+                if let Some(fuuid) = fuuid {
+                    if let Some(mimetype) = doc_fichier.mimetype {
+                        let mut parametres = HashMap::new();
+                        parametres.insert("mimetype".to_string(), Bson::String(mimetype.to_string()));
+                        parametres.insert("fuuid".to_string(), Bson::String(fuuid.to_string()));
+                        if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
+                            middleware, tuuid, user_id, None,
+                            None, Some(parametres), true).await {
+                            error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
                         }
                     }
                 }
