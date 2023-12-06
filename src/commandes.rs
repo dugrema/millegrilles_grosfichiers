@@ -76,7 +76,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         // TRANSACTION_CHANGER_FAVORIS => commande_changer_favoris(middleware, m, gestionnaire).await,
         TRANSACTION_DECRIRE_FICHIER => commande_decrire_fichier(middleware, m, gestionnaire).await,
         TRANSACTION_DECRIRE_COLLECTION => commande_decrire_collection(middleware, m, gestionnaire).await,
-        TRANSACTION_COPIER_FICHIER_TIERS => commande_copier_fichier_tiers(middleware, m, gestionnaire).await,
+        // TRANSACTION_COPIER_FICHIER_TIERS => commande_copier_fichier_tiers(middleware, m, gestionnaire).await,
         // TRANSACTION_FAVORIS_CREERPATH => commande_favoris_creerpath(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_VIDEO => commande_supprimer_video(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_ORPHELINS => commande_supprimer_orphelins(middleware, m, gestionnaire).await,
@@ -909,135 +909,136 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValideAction, 
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
-{
-    debug!("commande_copier_fichier_tiers Consommer commande : {:?}", & m.message);
-    let commande: CommandeCopierFichierTiers = m.message.get_msg().map_contenu()?;
-    debug!("commande_copier_fichier_tiers parsed : {:?}", commande);
-    // debug!("Commande en json (DEBUG) : \n{:?}", serde_json::to_string(&commande));
-
-    let fingerprint_client = match &m.message.certificat {
-        Some(inner) => inner.fingerprint.clone(),
-        None => Err(format!("commande_copier_fichier_tiers Envelopppe manquante"))?
-    };
-
-    let user_id = match m.get_user_id() {
-        Some(inner) => inner,
-        None => Err(format!("commande_copier_fichier_tiers Enveloppe sans user_id"))?
-    };
-
-    // Verifier aupres du maitredescles si les cles sont valides
-    let reponse_preuves = {
-        let requete_preuves = json!({"fingerprint": fingerprint_client, "preuves": &commande.preuves});
-        let routage_maitrecles = RoutageMessageAction::builder(
-            DOMAINE_NOM_MAITREDESCLES, REQUETE_MAITREDESCLES_VERIFIER_PREUVE)
-            .exchanges(vec![Securite::L4Secure])
-            .build();
-        debug!("commande_copier_fichier_tiers Requete preuve possession cles : {:?}", requete_preuves);
-        let reponse_preuve = match middleware.transmettre_requete(routage_maitrecles, &requete_preuves).await? {
-            TypeMessage::Valide(m) => {
-                match m.message.certificat.as_ref() {
-                    Some(c) => {
-                        if c.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
-                            debug!("commande_copier_fichier_tiers Reponse preuve : {:?}", m);
-                            let preuve_value: ReponsePreuvePossessionCles = m.message.get_msg().map_contenu()?;
-                            Ok(preuve_value)
-                        } else {
-                            Err(format!("commandes.commande_copier_fichier_tiers Erreur chargement certificat de reponse verification preuve, certificat n'est pas de role maitre des cles"))
-                        }
-                    },
-                    None => Err(format!("commandes.commande_copier_fichier_tiers Erreur chargement certificat de reponse verification preuve, certificat inconnu"))
-                }
-            },
-            m => Err(format!("commandes.commande_copier_fichier_tiers Erreur reponse message verification cles, mauvais type : {:?}", m))
-        }?;
-        debug!("commande_copier_fichier_tiers Reponse verification preuve : {:?}", reponse_preuve);
-
-        reponse_preuve.verification
-    };
-
-    let mut resultat_fichiers = HashMap::new();
-    for mut fichier in commande.fichiers {
-        let fuuid = fichier.fuuid.as_str();
-
-        let mut etat_cle = false;
-        if Some(&true) == reponse_preuves.get(fuuid) {
-            etat_cle = true;
-        } else {
-            // Tenter de sauvegarder la cle
-            if let Some(cle) = commande.cles.get(fuuid) {
-                debug!("commande_copier_fichier_tiers Sauvegarder cle fuuid {} : {:?}", fuuid, cle);
-                let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE)
-                    .exchanges(vec![Securite::L4Secure])
-                    .timeout_blocking(5000)
-                    .build();
-                let reponse_cle = middleware.transmettre_commande(routage, &cle, true).await?;
-                debug!("commande_copier_fichier_tiers Reponse sauvegarde cle : {:?}", reponse_cle);
-                if let Some(reponse) = reponse_cle {
-                    if let TypeMessage::Valide(mva) = reponse {
-                        debug!("Reponse valide : {:?}", mva);
-                        let reponse_mappee: ReponseCle = mva.message.get_msg().map_contenu()?;
-                        etat_cle = true;
-                    }
-                }
-            } else {
-                debug!("commande_copier_fichier_tiers Aucune cle trouvee pour fuuid {} : {:?}", fuuid, commande.cles);
-            }
-        }
-
-        if etat_cle {
-            debug!("commande_copier_fichier_tiers Fuuid {} preuve OK", fuuid);
-
-            // Injecter le user_id du certificat recu
-            fichier.user_id = Some(user_id.clone());
-
-            // Convertir le fichier en transaction
-            let transaction_copier_message = middleware.formatter_message(
-                MessageKind::Commande, &fichier, DOMAINE_NOM.into(), "copierFichierTiers".into(), None::<&str>, None::<&str>, None, false)?;
-            let transaction_copier_message = MessageSerialise::from_parsed(transaction_copier_message)?;
-
-            let mva = MessageValideAction::new(
-                transaction_copier_message,
-                m.q.clone(),
-                "transaction.GrosFichiers.copierFichierTiers".into(),
-                m.domaine.clone(),
-                "copierFichierTiers".into(),
-                m.type_message.clone()
-            );
-
-            // Conserver transaction
-            match sauvegarder_traiter_transaction(middleware, mva, gestionnaire).await {
-                Ok(r) => {
-                    debug!("commande_copier_fichier_tiers Reponse sauvegarde fichier {} : {:?}", fuuid, r);
-                    resultat_fichiers.insert(fuuid.to_string(), true);
-
-                    // Demander visite de presence du fichier par consignation_fichiers
-                    let params = json!({ "visiter": true, "fuuids": vec![&fuuid] });
-                    debug!("commande_copier_fichier_tiers Emettre demande visite fichier {}", fuuid);
-                    let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, "fuuidVerifierExistance")
-                        .exchanges(vec![Securite::L2Prive])
-                        .build();
-                    if let Err(e) = middleware.transmettre_requete(routage, &params).await {
-                        info!("commande_copier_fichier_tiers Erreur visite fichier {} : {:?}", fuuid, e);
-                    }
-                },
-                Err(e) => {
-                    error!("commande.commande_copier_fichier_tiers Erreur sauvegarder_traiter_transaction {} : {:?}", fuuid, e);
-                    resultat_fichiers.insert(fuuid.to_string(), false);
-                }
-            }
-
-        } else {
-            warn!("commande_copier_fichier_tiers Fuuid {} preuve refusee ou cle inconnue", fuuid);
-            resultat_fichiers.insert(fuuid.to_string(), false);
-        }
-    }
-
-    let reponse = json!({"resultat": resultat_fichiers});
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
-}
+// commande_copier_fichier_tiers est OBSOLETE
+// async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+//     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+//     where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+// {
+//     debug!("commande_copier_fichier_tiers Consommer commande : {:?}", & m.message);
+//     let commande: CommandeCopierFichierTiers = m.message.get_msg().map_contenu()?;
+//     debug!("commande_copier_fichier_tiers parsed : {:?}", commande);
+//     // debug!("Commande en json (DEBUG) : \n{:?}", serde_json::to_string(&commande));
+//
+//     let fingerprint_client = match &m.message.certificat {
+//         Some(inner) => inner.fingerprint.clone(),
+//         None => Err(format!("commande_copier_fichier_tiers Envelopppe manquante"))?
+//     };
+//
+//     let user_id = match m.get_user_id() {
+//         Some(inner) => inner,
+//         None => Err(format!("commande_copier_fichier_tiers Enveloppe sans user_id"))?
+//     };
+//
+//     // Verifier aupres du maitredescles si les cles sont valides
+//     let reponse_preuves = {
+//         let requete_preuves = json!({"fingerprint": fingerprint_client, "preuves": &commande.preuves});
+//         let routage_maitrecles = RoutageMessageAction::builder(
+//             DOMAINE_NOM_MAITREDESCLES, REQUETE_MAITREDESCLES_VERIFIER_PREUVE)
+//             .exchanges(vec![Securite::L4Secure])
+//             .build();
+//         debug!("commande_copier_fichier_tiers Requete preuve possession cles : {:?}", requete_preuves);
+//         let reponse_preuve = match middleware.transmettre_requete(routage_maitrecles, &requete_preuves).await? {
+//             TypeMessage::Valide(m) => {
+//                 match m.message.certificat.as_ref() {
+//                     Some(c) => {
+//                         if c.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
+//                             debug!("commande_copier_fichier_tiers Reponse preuve : {:?}", m);
+//                             let preuve_value: ReponsePreuvePossessionCles = m.message.get_msg().map_contenu()?;
+//                             Ok(preuve_value)
+//                         } else {
+//                             Err(format!("commandes.commande_copier_fichier_tiers Erreur chargement certificat de reponse verification preuve, certificat n'est pas de role maitre des cles"))
+//                         }
+//                     },
+//                     None => Err(format!("commandes.commande_copier_fichier_tiers Erreur chargement certificat de reponse verification preuve, certificat inconnu"))
+//                 }
+//             },
+//             m => Err(format!("commandes.commande_copier_fichier_tiers Erreur reponse message verification cles, mauvais type : {:?}", m))
+//         }?;
+//         debug!("commande_copier_fichier_tiers Reponse verification preuve : {:?}", reponse_preuve);
+//
+//         reponse_preuve.verification
+//     };
+//
+//     let mut resultat_fichiers = HashMap::new();
+//     for mut fichier in commande.fichiers {
+//         let fuuid = fichier.fuuid.as_str();
+//
+//         let mut etat_cle = false;
+//         if Some(&true) == reponse_preuves.get(fuuid) {
+//             etat_cle = true;
+//         } else {
+//             // Tenter de sauvegarder la cle
+//             if let Some(cle) = commande.cles.get(fuuid) {
+//                 debug!("commande_copier_fichier_tiers Sauvegarder cle fuuid {} : {:?}", fuuid, cle);
+//                 let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE)
+//                     .exchanges(vec![Securite::L4Secure])
+//                     .timeout_blocking(5000)
+//                     .build();
+//                 let reponse_cle = middleware.transmettre_commande(routage, &cle, true).await?;
+//                 debug!("commande_copier_fichier_tiers Reponse sauvegarde cle : {:?}", reponse_cle);
+//                 if let Some(reponse) = reponse_cle {
+//                     if let TypeMessage::Valide(mva) = reponse {
+//                         debug!("Reponse valide : {:?}", mva);
+//                         let reponse_mappee: ReponseCle = mva.message.get_msg().map_contenu()?;
+//                         etat_cle = true;
+//                     }
+//                 }
+//             } else {
+//                 debug!("commande_copier_fichier_tiers Aucune cle trouvee pour fuuid {} : {:?}", fuuid, commande.cles);
+//             }
+//         }
+//
+//         if etat_cle {
+//             debug!("commande_copier_fichier_tiers Fuuid {} preuve OK", fuuid);
+//
+//             // Injecter le user_id du certificat recu
+//             fichier.user_id = Some(user_id.clone());
+//
+//             // Convertir le fichier en transaction
+//             let transaction_copier_message = middleware.formatter_message(
+//                 MessageKind::Commande, &fichier, DOMAINE_NOM.into(), "copierFichierTiers".into(), None::<&str>, None::<&str>, None, false)?;
+//             let transaction_copier_message = MessageSerialise::from_parsed(transaction_copier_message)?;
+//
+//             let mva = MessageValideAction::new(
+//                 transaction_copier_message,
+//                 m.q.clone(),
+//                 "transaction.GrosFichiers.copierFichierTiers".into(),
+//                 m.domaine.clone(),
+//                 "copierFichierTiers".into(),
+//                 m.type_message.clone()
+//             );
+//
+//             // Conserver transaction
+//             match sauvegarder_traiter_transaction(middleware, mva, gestionnaire).await {
+//                 Ok(r) => {
+//                     debug!("commande_copier_fichier_tiers Reponse sauvegarde fichier {} : {:?}", fuuid, r);
+//                     resultat_fichiers.insert(fuuid.to_string(), true);
+//
+//                     // Demander visite de presence du fichier par consignation_fichiers
+//                     let params = json!({ "visiter": true, "fuuids": vec![&fuuid] });
+//                     debug!("commande_copier_fichier_tiers Emettre demande visite fichier {}", fuuid);
+//                     let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, "fuuidVerifierExistance")
+//                         .exchanges(vec![Securite::L2Prive])
+//                         .build();
+//                     if let Err(e) = middleware.transmettre_requete(routage, &params).await {
+//                         info!("commande_copier_fichier_tiers Erreur visite fichier {} : {:?}", fuuid, e);
+//                     }
+//                 },
+//                 Err(e) => {
+//                     error!("commande.commande_copier_fichier_tiers Erreur sauvegarder_traiter_transaction {} : {:?}", fuuid, e);
+//                     resultat_fichiers.insert(fuuid.to_string(), false);
+//                 }
+//             }
+//
+//         } else {
+//             warn!("commande_copier_fichier_tiers Fuuid {} preuve refusee ou cle inconnue", fuuid);
+//             resultat_fichiers.insert(fuuid.to_string(), false);
+//         }
+//     }
+//
+//     let reponse = json!({"resultat": resultat_fichiers});
+//     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandeCopierFichierTiers {

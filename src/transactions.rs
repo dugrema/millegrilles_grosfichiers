@@ -1010,6 +1010,17 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, gestionna
         if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION).await {
             warn!("transaction_ajouter_fichiers_collection Erreur emettre_evenement_maj_fichier : {:?}", e)
         }
+
+        // {
+        //     let mut parametres = HashMap::new();
+        //     parametres.insert("mimetype".to_string(), Bson::String(mimetype.clone()));
+        //     parametres.insert("fuuid".to_string(), Bson::String(fuuid.clone()));
+        //     if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
+        //         middleware, &tuuid, &user_id, None,
+        //         None, Some(parametres), true).await {
+        //         error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
+        //     }
+        // }
     }
 
     {
@@ -1104,6 +1115,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
             }
 
             let ops = doc! {
+                "$set": {CHAMP_FLAG_INDEX: false},
                 "$setOnInsert": set_ops,
                 "$currentDate": { CHAMP_MODIFICATION: true }
             };
@@ -2449,10 +2461,12 @@ async fn transaction_decire_collection<M, T>(middleware: &M, gestionnaire: &Gest
 
     let mut set_ops = doc! {
         "metadata": doc_metadata,
+        CHAMP_FLAG_INDEX: false,
     };
 
     let ops = doc! {
         "$set": set_ops,
+        "$unset": {CHAMP_FLAG_INDEX_RETRY: true, CHAMP_FLAG_INDEX_ERREUR: true},
         "$currentDate": { CHAMP_MODIFICATION: true }
     };
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
@@ -2501,208 +2515,222 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
         M: GenerateurMessages + MongoDao,
         T: Transaction
 {
-    debug!("transaction_copier_fichier_tiers Consommer transaction : {:?}", &transaction);
-    let transaction_fichier: TransactionCopierFichierTiers = match transaction.clone().convertir::<TransactionCopierFichierTiers>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur conversion transaction : {:?}", e))?
-    };
-
-    let user_id = match transaction_fichier.user_id.as_ref() {
-        Some(inner) => inner,
-        None => Err(format!("transactions.transaction_copier_fichier_tiers user_id manquant"))?
-    };
-
-    // Detecter si le fichier existe deja pour l'usager (par fuuid)
-    let tuuid = {
-        let filtre = doc!{CHAMP_USER_ID: &user_id, CHAMP_FUUIDS: &transaction_fichier.fuuid};
-        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-        match collection.find_one(filtre, None).await {
-            Ok(inner) => {
-                match inner {
-                    Some(doc) => {
-                        // Le document existe deja, reutiliser le tuuid et ajouter au nouveau cuuid
-                        let fichier: FichierDetail = match convertir_bson_deserializable(doc) {
-                            Ok(inner) => inner,
-                            Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur mapping a FichierDetail : {:?}", e))?
-                        };
-                        fichier.tuuid
-                    },
-                    None => {
-                        // Nouveau fichier, utiliser uuid_transaction pour le tuuid
-                        transaction.get_uuid_transaction().to_string()
-                    }
-                }
-            },
-            Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur verification fuuid existant : {:?}", e))?
-        }
-    };
-
-    // Conserver champs transaction uniquement (filtrer champs meta)
-    let mut doc_bson_transaction = match convertir_to_bson(&transaction_fichier) {
-        Ok(d) => d,
-        Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur conversion transaction en bson : {:?}", e))?
-    };
-
-    debug!("transaction_copier_fichier_tiers Tuuid {} Doc bson : {:?}", tuuid, doc_bson_transaction);
-
-    let fuuid = transaction_fichier.fuuid;
-    let cuuid = transaction_fichier.cuuid;
-    let metadata = transaction_fichier.metadata;
-    let mimetype = transaction_fichier.mimetype;
-
-    let mut fuuids = HashSet::new();
-    let mut fuuids_reclames = HashSet::new();
-    fuuids.insert(fuuid.as_str());
-    fuuids_reclames.insert(fuuid.as_str());
-    let images_presentes = match &transaction_fichier.images {
-        Some(images) => {
-            let presentes = ! images.is_empty();
-            for image in images.values() {
-                fuuids.insert(image.hachage.as_str());
-                if image.data_chiffre.is_none() {
-                    fuuids_reclames.insert(image.hachage.as_str());
-                }
-            }
-            presentes
-        },
-        None => false
-    };
-    let videos_presents = match &transaction_fichier.video {
-        Some(videos) => {
-            let presents = ! videos.is_empty();
-            for video in videos.values() {
-                fuuids.insert(video.fuuid_video.as_str());
-                fuuids_reclames.insert(video.fuuid_video.as_str());
-            }
-            presents
-        },
-        None => false
-    };
-
-    let fuuids: Vec<&str> = fuuids.into_iter().collect();  // Convertir en vec
-    let fuuids_reclames: Vec<&str> = fuuids_reclames.into_iter().collect();  // Convertir en vec
-
-    debug!("transaction_copier_fichier_tiers Fuuids fichier : {:?}", fuuids);
-    doc_bson_transaction.insert(CHAMP_FUUIDS, &fuuids);
-    doc_bson_transaction.insert(CHAMP_FUUIDS_RECLAMES, &fuuids_reclames);
-
-    // Retirer champ CUUID, pas utile dans l'information de version
-    doc_bson_transaction.remove(CHAMP_CUUID);
-
-    // Inserer document de version
-    {
-        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-        let mut doc_version = doc_bson_transaction.clone();
-        doc_version.insert(CHAMP_TUUID, &tuuid);
-        doc_version.insert(CHAMP_FUUIDS, &fuuids);
-        doc_version.insert(CHAMP_FUUIDS_RECLAMES, &fuuids_reclames);
-
-        // Information optionnelle pour accelerer indexation/traitement media
-        if mimetype.starts_with("image") {
-            doc_version.insert(CHAMP_FLAG_MEDIA, "image");
-
-            // Si au moins 1 image est presente dans l'entree, on ne fait pas de traitements supplementaires
-            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, images_presentes);
-        } else if mimetype.starts_with("video") {
-            doc_version.insert(CHAMP_FLAG_MEDIA, "video");
-
-            // Si au moins 1 image est presente dans l'entree, on ne fait pas de traitements supplementaires
-            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, images_presentes);
-
-            // Si au moins 1 video est present dans l'entree, on ne fait pas de traitements supplementaires
-            doc_version.insert(CHAMP_FLAG_VIDEO_TRAITE, videos_presents);
-        } else if mimetype =="application/pdf" {
-            doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
-
-            // Si au moins 1 image est presente dans l'entree, on ne fait pas de traitements supplementaires
-            doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, images_presentes);
-        }
-        doc_version.insert(CHAMP_FLAG_INDEX, false);
-
-        // Champs date
-        doc_version.insert(CHAMP_CREATION, Utc::now());
-
-        let ops = doc! {
-            "$setOnInsert": doc_version,
-            "$currentDate": {CHAMP_MODIFICATION: true}
-        };
-
-        let filtre = doc! { "fuuid": &fuuid, "tuuid": &tuuid };
-        let options = UpdateOptions::builder()
-            .upsert(true)
-            .build();
-
-        match collection.update_one(filtre, ops, options).await {
-            Ok(resultat_update) => {
-                if resultat_update.upserted_id.is_none() && resultat_update.matched_count != 1 {
-                   Err(format!("transactions.transaction_copier_fichier_tiers Erreur mise a jour versionsFichiers, echec insertion document (updated count == 0)"))?;
-                }
-            },
-            Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur update versionFichiers : {:?}", e))?
-        }
-    }
-
-    // Retirer champs cles - ils sont inutiles dans la version_courante
-    doc_bson_transaction.remove(CHAMP_TUUID);
-    doc_bson_transaction.remove(CHAMP_FUUID);
-    doc_bson_transaction.remove(CHAMP_METADATA);
-    doc_bson_transaction.remove(CHAMP_FUUIDS);
-    doc_bson_transaction.remove(CHAMP_FUUIDS_RECLAMES);
-    doc_bson_transaction.remove(CHAMP_USER_ID);
-
-    let filtre = doc! {CHAMP_TUUID: &tuuid};
-    let mut add_to_set = doc!{
-        "fuuids": {"$each": &fuuids},
-        "fuuids_reclames": {"$each": &fuuids_reclames},
-    };
-
-    // Ajouter collection
-    add_to_set.insert("cuuids", &cuuid);
-
-    let metadata = match metadata {
-        Some(inner) => match convertir_to_bson(inner) {
-            Ok(metadata) => Some(metadata),
-            Err(e) => Err(format!("Erreur conversion metadata a bson : {:?}", e))?
-        },
-        None => None
-    };
-
-    let ops = doc! {
-        "$set": {
-            // "version_courante": doc_bson_transaction,
-            CHAMP_FUUIDS_VERSIONS: vec![&fuuid],
-            CHAMP_MIMETYPE: &mimetype,
-            CHAMP_SUPPRIME: false,
-        },
-        "$addToSet": add_to_set,
-        "$setOnInsert": {
-            CHAMP_TUUID: &tuuid,
-            CHAMP_CREATION: Utc::now(),
-            CHAMP_USER_ID: &user_id,
-            CHAMP_METADATA: metadata,
-            CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
-        },
-        "$currentDate": {CHAMP_MODIFICATION: true}
-    };
-    let opts = UpdateOptions::builder().upsert(true).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    debug!("nouveau fichier update ops : {:?}", ops);
-    let resultat = match collection.update_one(filtre, ops, opts).await {
-        Ok(r) => r,
-        Err(e) => Err(format!("grosfichiers.transaction_copier_fichier_tiers Erreur update_one sur transcation : {:?}", e))?
-    };
-    debug!("transaction_copier_fichier_tiers nouveau fichier Resultat transaction update : {:?}", resultat);
-
-    if let Err(e) = recalculer_path_cuuids(middleware, cuuid).await {
-        Err(format!("grosfichiers.transaction_copier_fichier_tiers Erreur update_one sur transcation : {:?}", e))?
-    }
-
-    // Emettre fichier pour que tous les clients recoivent la mise a jour
-    if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_COPIER_FICHIER_TIERS).await {
-        warn!("transaction_copier_fichier_tiers Erreur emettre_evenement_maj_fichier : {:?}", e);
-    }
-
-    middleware.reponse_ok()
+    warn!("transaction_copier_fichier_tiers Transaction OBSOLETE - SKIP");
+    Ok(None)
+    // debug!("transaction_copier_fichier_tiers Consommer transaction : {:?}", &transaction);
+    // let transaction_fichier: TransactionCopierFichierTiers = match transaction.clone().convertir::<TransactionCopierFichierTiers>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur conversion transaction : {:?}", e))?
+    // };
+    //
+    // let user_id = match transaction_fichier.user_id.as_ref() {
+    //     Some(inner) => inner,
+    //     None => Err(format!("transactions.transaction_copier_fichier_tiers user_id manquant"))?
+    // };
+    //
+    // // Detecter si le fichier existe deja pour l'usager (par fuuid)
+    // let tuuid = {
+    //     let filtre = doc!{CHAMP_USER_ID: &user_id, CHAMP_FUUIDS: &transaction_fichier.fuuid};
+    //     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    //     match collection.find_one(filtre, None).await {
+    //         Ok(inner) => {
+    //             match inner {
+    //                 Some(doc) => {
+    //                     // Le document existe deja, reutiliser le tuuid et ajouter au nouveau cuuid
+    //                     let fichier: FichierDetail = match convertir_bson_deserializable(doc) {
+    //                         Ok(inner) => inner,
+    //                         Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur mapping a FichierDetail : {:?}", e))?
+    //                     };
+    //                     fichier.tuuid
+    //                 },
+    //                 None => {
+    //                     // Nouveau fichier, utiliser uuid_transaction pour le tuuid
+    //                     transaction.get_uuid_transaction().to_string()
+    //                 }
+    //             }
+    //         },
+    //         Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur verification fuuid existant : {:?}", e))?
+    //     }
+    // };
+    //
+    // // Conserver champs transaction uniquement (filtrer champs meta)
+    // let mut doc_bson_transaction = match convertir_to_bson(&transaction_fichier) {
+    //     Ok(d) => d,
+    //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur conversion transaction en bson : {:?}", e))?
+    // };
+    //
+    // debug!("transaction_copier_fichier_tiers Tuuid {} Doc bson : {:?}", tuuid, doc_bson_transaction);
+    //
+    // let fuuid = transaction_fichier.fuuid;
+    // let cuuid = transaction_fichier.cuuid;
+    // let metadata = transaction_fichier.metadata;
+    // let mimetype = transaction_fichier.mimetype;
+    //
+    // let mut fuuids = HashSet::new();
+    // let mut fuuids_reclames = HashSet::new();
+    // fuuids.insert(fuuid.as_str());
+    // fuuids_reclames.insert(fuuid.as_str());
+    // let images_presentes = match &transaction_fichier.images {
+    //     Some(images) => {
+    //         let presentes = ! images.is_empty();
+    //         for image in images.values() {
+    //             fuuids.insert(image.hachage.as_str());
+    //             if image.data_chiffre.is_none() {
+    //                 fuuids_reclames.insert(image.hachage.as_str());
+    //             }
+    //         }
+    //         presentes
+    //     },
+    //     None => false
+    // };
+    // let videos_presents = match &transaction_fichier.video {
+    //     Some(videos) => {
+    //         let presents = ! videos.is_empty();
+    //         for video in videos.values() {
+    //             fuuids.insert(video.fuuid_video.as_str());
+    //             fuuids_reclames.insert(video.fuuid_video.as_str());
+    //         }
+    //         presents
+    //     },
+    //     None => false
+    // };
+    //
+    // let fuuids: Vec<&str> = fuuids.into_iter().collect();  // Convertir en vec
+    // let fuuids_reclames: Vec<&str> = fuuids_reclames.into_iter().collect();  // Convertir en vec
+    //
+    // debug!("transaction_copier_fichier_tiers Fuuids fichier : {:?}", fuuids);
+    // doc_bson_transaction.insert(CHAMP_FUUIDS, &fuuids);
+    // doc_bson_transaction.insert(CHAMP_FUUIDS_RECLAMES, &fuuids_reclames);
+    //
+    // // Retirer champ CUUID, pas utile dans l'information de version
+    // doc_bson_transaction.remove(CHAMP_CUUID);
+    //
+    // // Inserer document de version
+    // {
+    //     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    //     let mut doc_version = doc_bson_transaction.clone();
+    //     doc_version.insert(CHAMP_TUUID, &tuuid);
+    //     doc_version.insert(CHAMP_FUUIDS, &fuuids);
+    //     doc_version.insert(CHAMP_FUUIDS_RECLAMES, &fuuids_reclames);
+    //
+    //     // Information optionnelle pour accelerer indexation/traitement media
+    //     if mimetype.starts_with("image") {
+    //         doc_version.insert(CHAMP_FLAG_MEDIA, "image");
+    //
+    //         // Si au moins 1 image est presente dans l'entree, on ne fait pas de traitements supplementaires
+    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, images_presentes);
+    //     } else if mimetype.starts_with("video") {
+    //         doc_version.insert(CHAMP_FLAG_MEDIA, "video");
+    //
+    //         // Si au moins 1 image est presente dans l'entree, on ne fait pas de traitements supplementaires
+    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, images_presentes);
+    //
+    //         // Si au moins 1 video est present dans l'entree, on ne fait pas de traitements supplementaires
+    //         doc_version.insert(CHAMP_FLAG_VIDEO_TRAITE, videos_presents);
+    //     } else if mimetype =="application/pdf" {
+    //         doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
+    //
+    //         // Si au moins 1 image est presente dans l'entree, on ne fait pas de traitements supplementaires
+    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, images_presentes);
+    //     }
+    //     doc_version.insert(CHAMP_FLAG_INDEX, false);
+    //
+    //     // Champs date
+    //     doc_version.insert(CHAMP_CREATION, Utc::now());
+    //
+    //     let ops = doc! {
+    //         "$setOnInsert": doc_version,
+    //         "$currentDate": {CHAMP_MODIFICATION: true}
+    //     };
+    //
+    //     let filtre = doc! { "fuuid": &fuuid, "tuuid": &tuuid };
+    //     let options = UpdateOptions::builder()
+    //         .upsert(true)
+    //         .build();
+    //
+    //     match collection.update_one(filtre, ops, options).await {
+    //         Ok(resultat_update) => {
+    //             if resultat_update.upserted_id.is_none() && resultat_update.matched_count != 1 {
+    //                Err(format!("transactions.transaction_copier_fichier_tiers Erreur mise a jour versionsFichiers, echec insertion document (updated count == 0)"))?;
+    //             }
+    //         },
+    //         Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur update versionFichiers : {:?}", e))?
+    //     }
+    // }
+    //
+    // // Retirer champs cles - ils sont inutiles dans la version_courante
+    // doc_bson_transaction.remove(CHAMP_TUUID);
+    // doc_bson_transaction.remove(CHAMP_FUUID);
+    // doc_bson_transaction.remove(CHAMP_METADATA);
+    // doc_bson_transaction.remove(CHAMP_FUUIDS);
+    // doc_bson_transaction.remove(CHAMP_FUUIDS_RECLAMES);
+    // doc_bson_transaction.remove(CHAMP_USER_ID);
+    //
+    // let filtre = doc! {CHAMP_TUUID: &tuuid};
+    // let mut add_to_set = doc!{
+    //     "fuuids": {"$each": &fuuids},
+    //     "fuuids_reclames": {"$each": &fuuids_reclames},
+    // };
+    //
+    // // Ajouter collection
+    // add_to_set.insert("cuuids", &cuuid);
+    //
+    // let metadata = match metadata {
+    //     Some(inner) => match convertir_to_bson(inner) {
+    //         Ok(metadata) => Some(metadata),
+    //         Err(e) => Err(format!("Erreur conversion metadata a bson : {:?}", e))?
+    //     },
+    //     None => None
+    // };
+    //
+    // let ops = doc! {
+    //     "$set": {
+    //         // "version_courante": doc_bson_transaction,
+    //         CHAMP_FUUIDS_VERSIONS: vec![&fuuid],
+    //         CHAMP_MIMETYPE: &mimetype,
+    //         CHAMP_SUPPRIME: false,
+    //         CHAMP_FLAG_INDEX: false,
+    //     },
+    //     "$addToSet": add_to_set,
+    //     "$setOnInsert": {
+    //         CHAMP_TUUID: &tuuid,
+    //         CHAMP_CREATION: Utc::now(),
+    //         CHAMP_USER_ID: &user_id,
+    //         CHAMP_METADATA: metadata,
+    //         CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
+    //     },
+    //     "$currentDate": {CHAMP_MODIFICATION: true}
+    // };
+    // let opts = UpdateOptions::builder().upsert(true).build();
+    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    // debug!("nouveau fichier update ops : {:?}", ops);
+    // let resultat = match collection.update_one(filtre, ops, opts).await {
+    //     Ok(r) => r,
+    //     Err(e) => Err(format!("grosfichiers.transaction_copier_fichier_tiers Erreur update_one sur transcation : {:?}", e))?
+    // };
+    // debug!("transaction_copier_fichier_tiers nouveau fichier Resultat transaction update : {:?}", resultat);
+    //
+    // if let Err(e) = recalculer_path_cuuids(middleware, cuuid).await {
+    //     Err(format!("grosfichiers.transaction_copier_fichier_tiers Erreur update_one sur transcation : {:?}", e))?
+    // }
+    //
+    // {
+    //     let mut parametres = HashMap::new();
+    //     parametres.insert("mimetype".to_string(), Bson::String(mimetype.clone()));
+    //     parametres.insert("fuuid".to_string(), Bson::String(fuuid.clone()));
+    //     if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
+    //         middleware, &tuuid, user_id, None,
+    //         None, Some(parametres), true).await {
+    //         error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
+    //     }
+    // }
+    //
+    // // Emettre fichier pour que tous les clients recoivent la mise a jour
+    // if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_COPIER_FICHIER_TIERS).await {
+    //     warn!("transaction_copier_fichier_tiers Erreur emettre_evenement_maj_fichier : {:?}", e);
+    // }
+    //
+    // middleware.reponse_ok()
 }
 
 async fn transaction_favoris_creerpath<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
