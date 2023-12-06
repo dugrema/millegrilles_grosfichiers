@@ -2391,13 +2391,14 @@ async fn transaction_decrire_fichier<M, T>(middleware: &M, gestionnaire: &Gestio
                     if let Some(user_id) = inner.user_id {
                         if let Some(fuuid) = inner.fuuid_v_courante {
                             if let Some(mimetype) = inner.mimetype {
-                                let mut champs_cles = HashMap::new();
+                                // let mut champs_cles = HashMap::new();
                                 // champs_cles.insert("tuuid".to_string(), tuuid.to_string());
-                                champs_cles.insert("fuuid".to_string(), fuuid);
-                                champs_cles.insert("mimetype".to_string(), mimetype.to_string());
+                                let mut parametres = HashMap::new();
+                                parametres.insert("mimetype".to_string(), Bson::String(mimetype.to_string()));
+                                parametres.insert("fuuid".to_string(), Bson::String(fuuid));
                                 if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
                                     middleware, tuuid, user_id, None,
-                                    Some(champs_cles), None, false).await {
+                                    None, Some(parametres), false).await {
                                     error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
                                 }
                             }

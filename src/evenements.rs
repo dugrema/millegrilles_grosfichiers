@@ -294,7 +294,7 @@ struct DocumentFichierDetailIds {
     flag_media: Option<String>,
     flag_media_traite: Option<bool>,
     flag_video_traite: Option<bool>,
-    flag_index: Option<bool>,
+    // flag_index: Option<bool>,
     mimetype: Option<String>,
     visites: Option<HashMap<String, u32>>,
 }
@@ -352,10 +352,10 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
             }
         };
 
-        let index_traite = match doc_fuuid.flag_index {
-            Some(inner) => inner,
-            None => false
-        };
+        // let index_traite = match doc_fuuid.flag_index {
+        //     Some(inner) => inner,
+        //     None => false
+        // };
 
         let image_traitee = match doc_fuuid.flag_media_traite {
             Some(inner) => inner,
@@ -379,12 +379,13 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
             // champs_cles.insert("fuuid".to_string(), doc_fuuid.fuuid);
             champs_cles.insert("mimetype".to_string(), mimetype);
 
-            if ! index_traite {
-                gestionnaire.indexation_job_handler.sauvegarder_job(
-                    middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(instance_id.clone()),
-                    Some(champs_cles.clone()), None, true
-                ).await?;
-            }
+            // if ! index_traite {
+            //     // TODO Charger path_cuuids
+            //     gestionnaire.indexation_job_handler.sauvegarder_job(
+            //         middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(instance_id.clone()),
+            //         Some(champs_cles.clone()), None, true
+            //     ).await?;
+            // }
 
             if ! image_traitee {
                 // Note : La job est uniquement creee si le format est une image

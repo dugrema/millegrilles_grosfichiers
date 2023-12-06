@@ -36,7 +36,7 @@ use crate::commandes::consommer_commande;
 use crate::evenements::{consommer_evenement, HandlerEvenements};
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{consommer_requete, mapper_fichier_db};
-use crate::traitement_index::{IndexationJobHandler, InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche};
+use crate::traitement_index::{entretien_supprimer_fichiersrep, IndexationJobHandler, InfoDocumentIndexation, ParametresIndex, ParametresRecherche, ResultatRecherche};
 use crate::traitement_jobs::{JobHandler, JobHandlerFichiersRep, JobHandlerVersions};
 use crate::traitement_media::{/*entretien_video_jobs,*/ ImageJobHandler, /*traiter_media_batch,*/ VideoJobHandler};
 use crate::transactions::*;
@@ -184,6 +184,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
         REQUETE_STRUCTURE_REPERTOIRE,
         REQUETE_JWT_STREAMING,
         REQUETE_SOUS_REPERTOIRES,
+        REQUETE_RECHERCHE_INDEX,
     ];
     for req in requetes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L2Prive});
@@ -677,6 +678,10 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
         gestionnaire.image_job_handler.entretien(middleware, gestionnaire, None).await;
         gestionnaire.video_job_handler.entretien(middleware, gestionnaire, None).await;
         gestionnaire.indexation_job_handler.entretien(middleware, gestionnaire, None).await;
+
+        if let Err(e) = entretien_supprimer_fichiersrep(middleware).await {
+            error!("Erreur suppression fichiers indexes et supprimes: {:?}", e);
+        }
     }
 
     Ok(())

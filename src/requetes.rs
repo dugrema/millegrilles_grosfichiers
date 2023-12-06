@@ -76,6 +76,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_STRUCTURE_REPERTOIRE => requete_structure_repertoire(middleware, message, gestionnaire).await,
             REQUETE_JWT_STREAMING => requete_creer_jwt_streaming(middleware, message, gestionnaire).await,
             REQUETE_SOUS_REPERTOIRES => requete_sous_repertoires(middleware, message, gestionnaire).await,
+            REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (1): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -131,6 +132,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_STRUCTURE_REPERTOIRE => requete_structure_repertoire(middleware, message, gestionnaire).await,
             REQUETE_JWT_STREAMING => requete_creer_jwt_streaming(middleware, message, gestionnaire).await,
             REQUETE_SOUS_REPERTOIRES => requete_sous_repertoires(middleware, message, gestionnaire).await,
+            REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", message.action);
                 Ok(None)
@@ -2665,4 +2667,102 @@ async fn requete_sous_repertoires<M>(middleware: &M, m: MessageValideAction, ges
     };
 
     Ok(Some(reponse))
+}
+
+#[derive(Deserialize)]
+struct RequeteRechercheIndex {
+    query: String,
+    start: Option<i64>,
+    limit: Option<i64>,
+    inclure_partages: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct TransfertRequeteRechercheIndex {
+    user_id: String,
+    query: String,
+    start: Option<i64>,
+    limit: Option<i64>,
+    cuuids_partages: Option<Vec<String>>,
+}
+
+impl TransfertRequeteRechercheIndex {
+    fn new<S>(user_id: S, value: RequeteRechercheIndex) -> Self
+        where S: ToString
+    {
+        Self {
+            user_id: user_id.to_string(),
+            query: value.query,
+            start: value.start,
+            limit: value.limit,
+            cuuids_partages: None
+        }
+    }
+}
+
+pub async fn requete_recherche_index<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    debug!("requete_recherche_index Consommer commande : {:?}", & m.message);
+
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => {
+            debug!("requete_recherche_index user_id manquant du certificat");
+            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+        }
+    };
+
+    let correlation_id = match m.correlation_id {
+        Some(inner) => inner,
+        None => Err(format!("requete_recherche_index Requete sans correlation_id"))?
+    };
+
+    let reply_q = match m.reply_q {
+        Some(inner) => inner,
+        None => Err(format!("requete_recherche_index Requete sans correlation_id"))?
+    };
+
+    let requete: RequeteRechercheIndex = m.message.get_msg().map_contenu()?;
+    let inclure_partages = match requete.inclure_partages.as_ref() { Some(true) => true, _ => false};
+
+    let mut requete_transfert = TransfertRequeteRechercheIndex::new(
+        &user_id, requete);
+
+    // Recuperer la liste des partages si necessaire
+    if inclure_partages {
+        // Charger la liste des contact_id qui correspondent a l'usager courant
+        let contacts = get_contacts_user(middleware, user_id).await?;
+
+        // Faire une requete pour obtenir tous les partages associes aux contacts
+        let contact_ids: Vec<&str> = contacts.iter().map(|c| c.contact_id.as_str()).collect();
+        let filtre = doc! {CHAMP_CONTACT_ID: {"$in": contact_ids}};
+        let collection = middleware.get_collection_typed::<RowPartagesUsager>(
+            NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
+        let mut curseur = collection.find(filtre, None).await?;
+
+        // Conserver les tuuids (cuuids partages)
+        let mut cuuids = HashSet::new();
+        while curseur.advance().await? {
+            let row = curseur.deserialize_current()?;
+            cuuids.insert(row.tuuid.to_owned());
+        }
+
+        // Convertir en vec
+        let cuuids: Vec<String> = cuuids.into_iter().collect();
+        requete_transfert.cuuids_partages = Some(cuuids);
+    };
+
+    let domaine: &str = RolesCertificats::SolrRelai.into();
+    let action = "fichiers";
+    let routage = RoutageMessageAction::builder(domaine, action)
+        .exchanges(vec![Securite::L3Protege])
+        .reply_to(reply_q)
+        .correlation_id(correlation_id)
+        .blocking(false)
+        .build();
+    middleware.transmettre_requete(routage, &requete_transfert).await?;
+
+    Ok(None)
 }

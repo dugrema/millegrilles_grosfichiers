@@ -30,6 +30,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
 use crate::traitement_jobs::{BackgroundJob, CommandeGetJob, get_prochaine_job_versions, JobHandler, JobHandlerFichiersRep, JobHandlerVersions, ReponseJob};
+use crate::transactions::NodeFichierRepBorrowed;
 
 const EVENEMENT_INDEXATION_DISPONIBLE: &str = "jobIndexationDisponible";
 
@@ -591,6 +592,61 @@ pub struct ParametresGetClesStream {
     pub user_id: Option<String>,
     pub fuuids: Vec<String>,
     pub jwt: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SupprimerIndexTuuids {
+    tuuids: Vec<String>,
+}
+
+pub async fn entretien_supprimer_fichiersrep<M>(middleware: &M)
+    -> Result<(), Box<dyn Error>>
+    where M: MongoDao + GenerateurMessages
+{
+    debug!("entretien_supprimer_fichiersrep Debut");
+
+    let filtre = doc!{
+        CHAMP_FLAG_INDEX: true,
+        "$or": [
+            {CHAMP_SUPPRIME: true},
+            {CHAMP_SUPPRIME_INDIRECT: true}
+        ]
+    };
+    let collection = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
+        NOM_COLLECTION_FICHIERS_REP)?;
+    let mut curseur = collection.find(filtre, None).await?;
+
+    let mut tuuids_supprimer = Vec::new();
+    while curseur.advance().await? {
+        let row = curseur.deserialize_current()?;
+        tuuids_supprimer.push(row.tuuid.to_owned());
+        if tuuids_supprimer.len() > 1000 {
+            // On limite a 1000 suppression a la fois
+            break
+        }
+    }
+
+    if tuuids_supprimer.len() > 0 {
+        info!("entretien_supprimer_fichiersrep Supprimer indexation sur {} tuuids", tuuids_supprimer.len());
+        let domaine: &str = RolesCertificats::SolrRelai.into();
+        let routage = RoutageMessageAction::builder(domaine, "supprimerTuuids")
+            .exchanges(vec![Securite::L4Secure])
+            .timeout_blocking(30_000)
+            .build();
+        let commande = SupprimerIndexTuuids { tuuids: tuuids_supprimer.clone() };
+        middleware.transmettre_commande(routage, &commande, true).await?;
+
+        // Marquer tuuids comme non indexes
+        let filtre = doc!{ CHAMP_TUUID: {"$in": tuuids_supprimer} };
+        let ops = doc!{
+            "$set": {CHAMP_FLAG_INDEX: false},
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        collection.update_many(filtre, ops, None).await?;
+    }
+
+    debug!("entretien_supprimer_fichiersrep Fin");
+    Ok(())
 }
 
 // pub async fn traiter_index_manquant<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, limite: i64)

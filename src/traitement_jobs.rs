@@ -480,7 +480,10 @@ async fn entretien_jobs_versions<J,G,M>(middleware: &M, gestionnaire: &G, job_ha
             })
             .limit(limite_batch)
             .build();
-        let filtre = doc! { champ_flag_index: false };
+        let filtre = doc! {
+            champ_flag_index: false,
+            CHAMP_SUPPRIME: false,
+        };
         debug!("traiter_indexation_batch filtre {:?}", filtre);
         collection_versions.find(filtre, Some(opts)).await?
     };
@@ -607,7 +610,8 @@ async fn entretien_jobs_fichiersrep<J,G,M>(middleware: &M, gestionnaire: &G, job
             // .hint(Hint::Name(String::from("flag_media_traite")))
             .sort(doc! {champ_flag_index: 1, CHAMP_CREATION: 1})
             .projection(doc!{
-                CHAMP_FUUIDS_VERSIONS: true, CHAMP_TUUID: true, CHAMP_USER_ID: true, CHAMP_MIMETYPE: true,
+                CHAMP_FUUIDS_VERSIONS: true, CHAMP_TUUID: true, CHAMP_USER_ID: true,
+                CHAMP_MIMETYPE: true, CHAMP_PATH_CUUIDS: true,
 
                 // Information requise a cause du format NodeFichierVersionBorrowed
                 CHAMP_TYPE_NODE: true, CHAMP_SUPPRIME: true, CHAMP_SUPPRIME_INDIRECT: true,
@@ -615,7 +619,11 @@ async fn entretien_jobs_fichiersrep<J,G,M>(middleware: &M, gestionnaire: &G, job
             })
             .limit(limite_batch)
             .build();
-        let filtre = doc! { champ_flag_index: false };
+        let filtre = doc! {
+            champ_flag_index: false,
+            CHAMP_SUPPRIME: false,
+            CHAMP_SUPPRIME_INDIRECT: false,
+        };
         debug!("entretien_jobs_fichiersrep filtre {:?}", filtre);
         collection_fichiersrep.find(filtre, Some(opts)).await?
     };
@@ -677,10 +685,19 @@ async fn entretien_jobs_fichiersrep<J,G,M>(middleware: &M, gestionnaire: &G, job
                     let mut champs_cles = HashMap::new();
                     champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
                     // champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
-                    champs_cles.insert("fuuid".to_string(), fuuid_ref.to_string());
+                    let mut champs_parametres = HashMap::new();
+                    champs_parametres.insert("fuuid".to_string(), Bson::String(fuuid_ref.to_string()));
+                    match version_mappee.path_cuuids.as_ref() {
+                        Some(inner) => {
+                            let array_cuuids: Vec<Bson> = inner.iter().map(|v| Bson::String(v.to_string())).collect();
+                            champs_parametres.insert("path_cuuids".to_string(), Bson::Array(array_cuuids));
+                        },
+                        None => ()
+                    }
+
                     if let Err(e) = job_handler.sauvegarder_job(
                         middleware, tuuid_ref, user_id,
-                        Some(instance), Some(champs_cles), None,
+                        Some(instance), Some(champs_cles), Some(champs_parametres),
                         false).await
                     {
                         info!("entretien_jobs Erreur creation job : {:?}", e)
@@ -862,9 +879,12 @@ pub async fn sauvegarder_job_fichiersrep<M,J,S,U>(
     let user_id = user_id.as_ref();
     // let instance = instance.as_ref();
 
-    let fuuid = match champs_cles.as_ref() {
+    let fuuid = match parametres.as_ref() {
         Some(inner) => match inner.get(CHAMP_FUUID) {
-            Some(inner) => Some(inner.as_str()),
+            Some(inner) => match inner.as_str() {
+                Some(inner) => Some(inner.to_owned()),
+                None => None
+            },
             None => None
         },
         None => None
@@ -906,7 +926,7 @@ pub async fn sauvegarder_job_fichiersrep<M,J,S,U>(
                 Some(fuuid) => {
                     // Tenter de charger les visites pour le fichier
                     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-                    let filtre = doc! { CHAMP_USER_ID: user_id, CHAMP_FUUID: fuuid };
+                    let filtre = doc! { CHAMP_USER_ID: user_id, CHAMP_FUUID: &fuuid };
                     match collection.find_one(filtre, None).await? {
                         Some(inner) => {
                             let fichier_mappe: FichierDetail = convertir_bson_deserializable(inner)?;
@@ -1004,6 +1024,7 @@ pub struct ReponseJob {
     pub mimetype: Option<String>,
     pub metadata: Option<DataChiffre>,
     pub cle: Option<InformationCle>,
+    pub path_cuuids: Option<Vec<String>>,
 
     // Champs video
     pub cle_conversion: Option<String>,
@@ -1033,6 +1054,7 @@ impl From<&str> for ReponseJob {
             mimetype: None,
             metadata: None,
             cle: None,
+            path_cuuids: None,
             cle_conversion: None,
             codec_video: None,
             codec_audio: None,
@@ -1067,6 +1089,21 @@ impl From<BackgroundJob> for ReponseJob {
         };
         let preset = match value.champs_optionnels.get("preset") {
             Some(inner) => match inner.as_str() {Some(s)=>Some(s.to_owned()), None=>None},
+            None => None
+        };
+        let path_cuuids = match value.champs_optionnels.get("path_cuuids") {
+            Some(inner) => match inner.as_array() {
+                Some(inner) => {
+                    let mut path_cuuids = Vec::new();
+                    for v in inner {
+                        if let Some(v) = v.as_str() {
+                            path_cuuids.push(v.to_owned());
+                        }
+                    }
+                    Some(path_cuuids)
+                },
+                None => None
+            },
             None => None
         };
 
@@ -1109,6 +1146,7 @@ impl From<BackgroundJob> for ReponseJob {
             mimetype,
             metadata: None,
             cle: None,
+            path_cuuids,
             cle_conversion,
             codec_video,
             codec_audio,
@@ -1247,6 +1285,7 @@ pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: 
     };
 
     let metadata = fichier_rep.metadata;
+    let path_cuuids = fichier_rep.path_cuuids;
 
     let mimetype = match fichier_rep.mimetype.as_ref() {
         Some(inner) => inner.as_str(),
@@ -1257,6 +1296,7 @@ pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: 
     reponse_job.metadata = Some(metadata);
     reponse_job.mimetype = Some(mimetype.to_string());
     reponse_job.cle = Some(cle);
+    reponse_job.path_cuuids = path_cuuids;
     debug!("Reponse job : {:?}", reponse_job);
 
     Ok(reponse_job)
