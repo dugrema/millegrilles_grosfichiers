@@ -531,10 +531,13 @@ async fn entretien_jobs_versions<J,G,M>(middleware: &M, gestionnaire: &G, job_ha
         for instance in version_mappee.visites.into_keys() {
             let mut champs_cles = HashMap::new();
             champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
-            champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
+            // champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
+            let mut parametres = HashMap::new();
+            // parametres.insert("mimetype".to_string(), Bson::String(mimetype_ref.to_string()));
+            parametres.insert("tuuid".to_string(), Bson::String(tuuid_ref.to_string()));
             if let Err(e) = job_handler.sauvegarder_job(
                 middleware, fuuid_ref, user_id,
-                Some(instance.to_string()), Some(champs_cles), None,
+                Some(instance.to_string()), None, Some(parametres),
                 false).await
             {
                 info!("entretien_jobs Erreur creation job : {:?}", e)

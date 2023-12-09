@@ -379,12 +379,14 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
 
             let mut champs_cles = HashMap::new();
             champs_cles.insert("mimetype".to_string(), mimetype);
+            let mut champs_parametres = HashMap::new();
+            champs_parametres.insert("tuuid".to_string(), Bson::String(doc_fuuid.tuuid.clone()));
 
             if ! image_traitee {
                 // Note : La job est uniquement creee si le format est une image
                 gestionnaire.image_job_handler.sauvegarder_job(
                     middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), Some(instance_id.clone()),
-                    Some(champs_cles.clone()), None, true
+                    Some(champs_cles.clone()), Some(champs_parametres.clone()), true
                 ).await?;
             }
 
@@ -392,7 +394,7 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
                 // Note : La job est uniquement creee si le format est une image
                 gestionnaire.video_job_handler.sauvegarder_job(
                     middleware, doc_fuuid.fuuid, doc_fuuid.user_id, Some(instance_id.clone()),
-                    Some(champs_cles), None, true
+                    Some(champs_cles), Some(champs_parametres), true
                 ).await?;
             }
 
