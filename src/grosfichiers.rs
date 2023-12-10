@@ -396,11 +396,12 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Stri
 
     // Activite recente des fichiers
     let options_recents = IndexOptions {
-        nom_index: Some(format!("fichiers_activite_recente")),
+        nom_index: Some(format!("fichiers_activite_recente_2")),
         unique: true
     };
     let champs_recents = vec!(
         ChampIndex {nom_champ: String::from(CHAMP_SUPPRIME), direction: -1},  // pour filtre
+        ChampIndex {nom_champ: String::from(CHAMP_SUPPRIME_INDIRECT), direction: -1},  // pour filtre
         ChampIndex {nom_champ: String::from(CHAMP_MODIFICATION), direction: -1},
         ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},  // Tri stable
     );

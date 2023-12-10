@@ -66,7 +66,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_TUUIDS => requete_verifier_acces_tuuids(middleware, message, gestionnaire).await,
             REQUETE_SYNC_COLLECTION => requete_sync_collection(middleware, message, gestionnaire).await,
-            REQUETE_SYNC_RECENTS => requete_sync_plusrecent(middleware, message, gestionnaire).await,
+            // REQUETE_SYNC_RECENTS => requete_sync_plusrecent(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CORBEILLE => requete_sync_corbeille(middleware, message, gestionnaire).await,
             REQUETE_JOBS_VIDEO => requete_jobs_video(middleware, message, gestionnaire).await,
             REQUETE_CHARGER_CONTACTS => requete_charger_contacts(middleware, message, gestionnaire).await,
@@ -89,7 +89,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_STREAM => requete_get_cles_stream(middleware, message, gestionnaire).await,
             REQUETE_SYNC_COLLECTION => requete_sync_collection(middleware, message, gestionnaire).await,
-            REQUETE_SYNC_RECENTS => requete_sync_plusrecent(middleware, message, gestionnaire).await,
+            //REQUETE_SYNC_RECENTS => requete_sync_plusrecent(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CORBEILLE => requete_sync_corbeille(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CUUIDS => requete_sync_cuuids(middleware, message, gestionnaire).await,
             _ => {
@@ -122,7 +122,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
             REQUETE_SYNC_COLLECTION => requete_sync_collection(middleware, message, gestionnaire).await,
-            REQUETE_SYNC_RECENTS => requete_sync_plusrecent(middleware, message, gestionnaire).await,
+            // REQUETE_SYNC_RECENTS => requete_sync_plusrecent(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CORBEILLE => requete_sync_corbeille(middleware, message, gestionnaire).await,
             REQUETE_JOBS_VIDEO => requete_jobs_video(middleware, message, gestionnaire).await,
             REQUETE_CHARGER_CONTACTS => requete_charger_contacts(middleware, message, gestionnaire).await,
@@ -860,9 +860,12 @@ async fn requete_get_corbeille<M>(middleware: &M, m: MessageValideAction, gestio
     let requete: RequetePlusRecente = m.message.get_msg().map_contenu()?;
     debug!("requete_get_corbeille cle parsed : {:?}", requete);
 
-    let user_id = m.get_user_id();
+    let user_id = match m.get_user_id() {
+        Some(inner) => inner,
+        None => Err(format!("grosfichiers.consommer_commande: User_id absent du certificat pour commande {:?}", m.correlation_id))?
+    };
     let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
-    if role_prive && user_id.is_some() {
+    if role_prive {
         // Ok
     } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
         // Ok
@@ -880,18 +883,21 @@ async fn requete_get_corbeille<M>(middleware: &M, m: MessageValideAction, gestio
     };
 
     let opts = FindOptions::builder()
-        .hint(Hint::Name(String::from("fichiers_activite_recente")))
+        .hint(Hint::Name(String::from("fichiers_activite_recente_2")))
         .sort(doc!{CHAMP_SUPPRIME: -1, CHAMP_MODIFICATION: -1, CHAMP_TUUID: 1})
         .limit(limit)
         .skip(skip)
         .build();
-    let mut filtre = doc!{CHAMP_SUPPRIME: true};
-    if user_id.is_some() {
-        filtre.insert("user_id", Bson::String(user_id.expect("user_id")));
-    }
+    let filtre = doc!{
+        CHAMP_USER_ID: &user_id,
+        "$or": [
+            {CHAMP_SUPPRIME: true},
+            {CHAMP_SUPPRIME_INDIRECT: true}
+        ]
+    };
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let mut curseur = collection.find(filtre, opts).await?;
+    let curseur = collection.find(filtre, opts).await?;
     let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
 
     let reponse = json!({ "fichiers": fichiers_mappes });
@@ -1737,6 +1743,8 @@ struct FichierSync {
     favoris: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
     supprime: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    supprime_indirect: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1857,88 +1865,88 @@ async fn requete_sync_collection<M>(middleware: &M, m: MessageValideAction, gest
     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
 }
 
-async fn requete_sync_plusrecent<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
-{
-    let uuid_transaction = m.correlation_id.clone();
-
-    debug!("requete_sync_plusrecent Message : {:?}", & m.message);
-    let requete: RequeteSyncIntervalle = m.message.get_msg().map_contenu()?;
-    debug!("requete_sync_plusrecent cle parsed : {:?}", requete);
-
-    let user_id = {
-        match m.message.get_user_id() {
-            Some(u) => u,
-            None => {
-                if m.verifier_exchanges(vec![L3Protege, L4Secure]) {
-                    match requete.user_id {
-                        Some(u) => u,
-                        None => {
-                            error!("requete_sync_plusrecent L3Protege/L4Secure user_id manquant");
-                            return Ok(None)
-                        }
-                    }
-                } else {
-                    error!("requetes.requete_sync_plusrecent Acces refuse, certificat n'est pas d'un exchange L2+ : {:?}", uuid_transaction);
-                    return Ok(None)
-                }
-            }
-        }
-    };
-
-    let limit = match requete.limit {
-        Some(l) => l,
-        None => 1000
-    };
-    let skip = match requete.skip {
-        Some(s) => s,
-        None => 0
-    };
-
-    let sort = doc! {CHAMP_CREATION: 1, CHAMP_TUUID: 1};
-    let projection = doc! {
-        CHAMP_TUUID: 1,
-        CHAMP_CREATION: 1,
-        CHAMP_MODIFICATION: 1,
-        CHAMP_FAVORIS: 1,
-        CHAMP_SUPPRIME: 1,
-    };
-    let opts = FindOptions::builder()
-        .projection(projection)
-        .sort(sort)
-        .skip(skip)
-        .limit(limit.clone())
-        .hint(Hint::Name("user_id_type_node".into()))
-        .build();
-    let date_debut = requete.debut.get_datetime();
-    let mut filtre = {
-        match requete.fin {
-            Some(f) => {
-                let date_fin = f.get_datetime();
-                doc!{"user_id": user_id, "$or":[{
-                    CHAMP_CREATION: {"$lte": date_fin, "$gte": date_debut},
-                    CHAMP_MODIFICATION: {"$lte": date_fin, "$gte": date_debut},
-                }]}
-            },
-            None => {
-                doc!{"user_id": user_id, "$or":[{
-                    CHAMP_CREATION: {"$gte": date_debut},
-                    CHAMP_MODIFICATION: {"$gte": date_debut},
-                }]}
-            }
-        }
-    };
-
-    debug!("requete_sync_plusrecent Requete fichiers debut {:?}, filtre : {:?}", date_debut, filtre);
-
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let mut fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
-    let complete = fichiers_confirmation.len() < limit as usize;
-
-    let reponse = ReponseRequeteSyncCollection { complete, liste: fichiers_confirmation };
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
-}
+// async fn requete_sync_plusrecent<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
+//     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+//     where M: GenerateurMessages + MongoDao + VerificateurMessage,
+// {
+//     let uuid_transaction = m.correlation_id.clone();
+//
+//     debug!("requete_sync_plusrecent Message : {:?}", & m.message);
+//     let requete: RequeteSyncIntervalle = m.message.get_msg().map_contenu()?;
+//     debug!("requete_sync_plusrecent cle parsed : {:?}", requete);
+//
+//     let user_id = {
+//         match m.message.get_user_id() {
+//             Some(u) => u,
+//             None => {
+//                 if m.verifier_exchanges(vec![L3Protege, L4Secure]) {
+//                     match requete.user_id {
+//                         Some(u) => u,
+//                         None => {
+//                             error!("requete_sync_plusrecent L3Protege/L4Secure user_id manquant");
+//                             return Ok(None)
+//                         }
+//                     }
+//                 } else {
+//                     error!("requetes.requete_sync_plusrecent Acces refuse, certificat n'est pas d'un exchange L2+ : {:?}", uuid_transaction);
+//                     return Ok(None)
+//                 }
+//             }
+//         }
+//     };
+//
+//     let limit = match requete.limit {
+//         Some(l) => l,
+//         None => 1000
+//     };
+//     let skip = match requete.skip {
+//         Some(s) => s,
+//         None => 0
+//     };
+//
+//     let sort = doc! {CHAMP_CREATION: 1, CHAMP_TUUID: 1};
+//     let projection = doc! {
+//         CHAMP_TUUID: 1,
+//         CHAMP_CREATION: 1,
+//         CHAMP_MODIFICATION: 1,
+//         CHAMP_FAVORIS: 1,
+//         CHAMP_SUPPRIME: 1,
+//     };
+//     let opts = FindOptions::builder()
+//         .projection(projection)
+//         .sort(sort)
+//         .skip(skip)
+//         .limit(limit.clone())
+//         .hint(Hint::Name("user_id_type_node".into()))
+//         .build();
+//     let date_debut = requete.debut.get_datetime();
+//     let mut filtre = {
+//         match requete.fin {
+//             Some(f) => {
+//                 let date_fin = f.get_datetime();
+//                 doc!{"user_id": user_id, "$or":[{
+//                     CHAMP_CREATION: {"$lte": date_fin, "$gte": date_debut},
+//                     CHAMP_MODIFICATION: {"$lte": date_fin, "$gte": date_debut},
+//                 }]}
+//             },
+//             None => {
+//                 doc!{"user_id": user_id, "$or":[{
+//                     CHAMP_CREATION: {"$gte": date_debut},
+//                     CHAMP_MODIFICATION: {"$gte": date_debut},
+//                 }]}
+//             }
+//         }
+//     };
+//
+//     debug!("requete_sync_plusrecent Requete fichiers debut {:?}, filtre : {:?}", date_debut, filtre);
+//
+//     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+//     let mut fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
+//     let complete = fichiers_confirmation.len() < limit as usize;
+//
+//     let reponse = ReponseRequeteSyncCollection { complete, liste: fichiers_confirmation };
+//     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+// }
 
 async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
@@ -1986,6 +1994,7 @@ async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValideAction, gesti
         CHAMP_MODIFICATION: 1,
         CHAMP_FAVORIS: 1,
         CHAMP_SUPPRIME: 1,
+        CHAMP_SUPPRIME_INDIRECT: 1,
     };
     let opts = FindOptions::builder()
         .projection(projection)
