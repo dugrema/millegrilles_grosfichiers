@@ -1882,11 +1882,11 @@ async fn commande_supprimer_orphelins<M>(middleware: &M, mut m: MessageValideAct
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
     where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 {
-    debug!("commande_supprimer_partage_usager Consommer commande : {:?}", & m.message);
+    debug!("commande_supprimer_orphelins Consommer commande : {:?}", & m.message);
     let commande: TransactionSupprimerOrphelins = m.message.get_msg().map_contenu()?;
 
     let resultat = trouver_orphelins_supprimer(middleware, &commande).await?;
-    debug!("commande_supprimer_partage_usager Versions supprimees : {:?}, fuuids a conserver : {:?}",
+    debug!("commande_supprimer_orphelins Versions supprimees : {:?}, fuuids a conserver : {:?}",
         resultat.versions_supprimees, resultat.fuuids_a_conserver);
 
     let mut fuuids_supprimes = 0;
@@ -1897,7 +1897,7 @@ async fn commande_supprimer_orphelins<M>(middleware: &M, mut m: MessageValideAct
     // Determiner si on repond immediatement ou si on procede vers la transaction
     if fuuids_supprimes > 0 {
         // On execute la transaction pour supprimer les fichiers dans la base de donnes
-        debug!("commande_supprimer_partage_usager Au moins une version supprimer (count: {}), executer la transaction", fuuids_supprimes);
+        debug!("commande_supprimer_orphelins Au moins une version supprimer (count: {}), executer la transaction", fuuids_supprimes);
         sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?;
     }
 

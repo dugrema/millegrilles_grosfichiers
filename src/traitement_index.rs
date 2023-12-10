@@ -33,7 +33,7 @@ use crate::traitement_jobs::{BackgroundJob, CommandeGetJob, get_prochaine_job_ve
 use crate::transactions::NodeFichierRepBorrowed;
 
 const EVENEMENT_INDEXATION_DISPONIBLE: &str = "jobIndexationDisponible";
-
+const REQUETE_LISTE_NOEUDS: &str = "listeNoeuds";
 
 #[derive(Clone, Debug)]
 pub struct IndexationJobHandler {}
@@ -605,6 +605,70 @@ pub async fn entretien_supprimer_fichiersrep<M>(middleware: &M)
 {
     debug!("entretien_supprimer_fichiersrep Debut");
 
+    // Emettre retrait de l'index et toggle le flag index de true -> false pour les fichiers supprimes
+    if let Err(e) = entretien_supprimer_fichiersrep_index(middleware).await {
+        error!("entretien_supprimer_fichiersrep Erreur entretien_supprimer_fichiersrep_index : {:?}", e)
+    }
+
+    // Retirer les visites expirees
+    if let Err(e) = entretien_supprimer_visites_expirees(middleware).await {
+        error!("entretien_supprimer_fichiersrep Erreur entretien_supprimer_visites_expirees : {:?}", e)
+    }
+
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct InstanceTopologie {
+    instance_id: String,
+}
+
+#[derive(Deserialize)]
+struct ReponseTopologieInstance {
+    pub resultats: Vec<InstanceTopologie>,
+}
+
+async fn entretien_supprimer_visites_expirees<M>(middleware: &M)
+    -> Result<(), Box<dyn Error>>
+    where M: MongoDao + GenerateurMessages
+{
+    debug!("entretien_supprimer_visites_expirees Debut");
+
+    let routage = RoutageMessageAction::builder(DOMAINE_TOPOLOGIE, REQUETE_LISTE_NOEUDS)
+        .exchanges(vec![Securite::L3Protege])
+        .build();
+    let requete = json!({});
+
+    let instances_topologie: ReponseTopologieInstance = match middleware.transmettre_requete(routage, &requete).await? {
+        TypeMessage::Valide(reponse) => reponse.message.parsed.map_contenu()?,
+        _ => Err(format!("Mauvais type reponse pour requete topologie"))?
+    };
+
+    let expiration_visite = Utc::now() - Duration::days(3);
+    let expiration_ts = (expiration_visite.timestamp());
+
+    let collection = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
+        NOM_COLLECTION_VERSIONS)?;
+    for instance in instances_topologie.resultats {
+        let filtre = doc! { format!("visites.{}", instance.instance_id): {"$lt": expiration_ts} };
+        let ops = doc! {
+            "$unset": {format!("visites.{}", instance.instance_id): true},
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        debug!("entretien_supprimer_visites_expirees Filtre : {:?}, Ops: {:?}", filtre, ops);
+        collection.update_many(filtre, ops, None).await?;
+    }
+
+    debug!("entretien_supprimer_visites_expirees Fin");
+    Ok(())
+}
+
+async fn entretien_supprimer_fichiersrep_index<M>(middleware: &M)
+    -> Result<(), Box<dyn Error>>
+    where M: MongoDao + GenerateurMessages
+{
+    debug!("entretien_supprimer_fichiersrep_index Debut");
+
     let filtre = doc!{
         CHAMP_FLAG_INDEX: true,
         "$or": [
@@ -627,7 +691,7 @@ pub async fn entretien_supprimer_fichiersrep<M>(middleware: &M)
     }
 
     if tuuids_supprimer.len() > 0 {
-        info!("entretien_supprimer_fichiersrep Supprimer indexation sur {} tuuids", tuuids_supprimer.len());
+        info!("entretien_supprimer_fichiersrep_index Supprimer indexation sur {} tuuids", tuuids_supprimer.len());
         let domaine: &str = RolesCertificats::SolrRelai.into();
         let routage = RoutageMessageAction::builder(domaine, "supprimerTuuids")
             .exchanges(vec![Securite::L4Secure])
@@ -645,7 +709,7 @@ pub async fn entretien_supprimer_fichiersrep<M>(middleware: &M)
         collection.update_many(filtre, ops, None).await?;
     }
 
-    debug!("entretien_supprimer_fichiersrep Fin");
+    debug!("entretien_supprimer_fichiersrep_index Fin");
     Ok(())
 }
 

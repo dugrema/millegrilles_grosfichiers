@@ -668,7 +668,7 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
     // }
 
     // Executer a intervalle regulier
-    //if minutes % 5 == 2 {
+    if minutes % 5 == 2 {
         debug!("Generer index et media manquants");
         // if let Err(e) = traiter_media_batch(middleware, MEDIA_IMAGE_BACTH_DEFAULT, false, None, None).await {
         //     warn!("Erreur traitement media batch : {:?}", e);
@@ -683,7 +683,7 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
         if let Err(e) = entretien_supprimer_fichiersrep(middleware).await {
             error!("Erreur suppression fichiers indexes et supprimes: {:?}", e);
         }
-    //}
+    }
 
     Ok(())
 }

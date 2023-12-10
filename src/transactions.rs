@@ -3250,7 +3250,7 @@ pub async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &Transacti
     };
     let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(
         NOM_COLLECTION_VERSIONS)?;
-    debug!("commande_supprimer_partage_usager Filtre requete orphelins : {:?}", filtre);
+    debug!("trouver_orphelins_supprimer Filtre requete orphelins : {:?}", filtre);
     let mut curseur = collection.find(filtre, None).await?;
     while curseur.advance().await? {
         let doc_mappe = curseur.deserialize_current()?;
@@ -3281,7 +3281,7 @@ pub async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &Transacti
         }
     }
 
-    debug!("commande_supprimer_partage_usager Versions supprimees : {:?}, fuuids a conserver : {:?}", versions_supprimees, fuuids_a_conserver);
+    debug!("trouver_orphelins_supprimer Versions supprimees : {:?}, fuuids a conserver : {:?}", versions_supprimees, fuuids_a_conserver);
     let resultat = ResultatVerifierOrphelins { versions_supprimees, fuuids_a_conserver };
     Ok(resultat)
 }
