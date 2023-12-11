@@ -662,6 +662,7 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
 
     let date_epoch = trigger.get_date();
     let minutes = date_epoch.get_datetime().minute();
+    let hours = date_epoch.get_datetime().hour();
 
     // if let Err(e) = traiter_indexation_batch(middleware, LIMITE_INDEXATION_BATCH).await {
     //     warn!("Erreur traitement indexation batch : {:?}", e);
@@ -679,7 +680,10 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
         gestionnaire.image_job_handler.entretien(middleware, gestionnaire, None).await;
         gestionnaire.video_job_handler.entretien(middleware, gestionnaire, None).await;
         gestionnaire.indexation_job_handler.entretien(middleware, gestionnaire, None).await;
+    }
 
+    // Faire la verification des visites expirees 1 fois par jour
+    if minutes == 2 && hours == 0 {
         if let Err(e) = entretien_supprimer_fichiersrep(middleware).await {
             error!("Erreur suppression fichiers indexes et supprimes: {:?}", e);
         }
