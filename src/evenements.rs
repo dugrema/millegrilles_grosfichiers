@@ -20,9 +20,11 @@ use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::time as tokio_time;
 use millegrilles_common_rust::tokio::time::{Duration as DurationTokio, timeout};
 use millegrilles_common_rust::tokio_stream::StreamExt;
+use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 
 use crate::grosfichiers_constantes::*;
+use crate::traitement_index::entretien_supprimer_fichiersrep;
 use crate::traitement_jobs::{JobHandler, JobHandlerFichiersRep, JobHandlerVersions};
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
@@ -30,7 +32,7 @@ const EXPIRATION_THROTTLING_EVENEMENT_CUUID_CONTENU: i64 = 1;
 
 pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValideAction)
     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao
+    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
 {
     debug!("consommer_evenement Consommer evenement : {:?}", &m.message);
 
@@ -49,6 +51,7 @@ pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireG
         EVENEMENT_FICHIERS_SYNCPRET => evenement_fichiers_syncpret(middleware, m).await,
         EVENEMENT_FICHIERS_VISITER_FUUIDS => evenement_visiter_fuuids(middleware, m).await,
         EVENEMENT_FICHIERS_CONSIGNE => evenement_fichier_consigne(middleware, gestionnaire, m).await,
+        EVENEMENT_FICHIERS_SYNC_PRIMAIRE => evenement_fichier_sync_primaire(middleware, gestionnaire, m).await,
         _ => Err(format!("grosfichiers.consommer_evenement: Mauvais type d'action pour un evenement : {}", m.action))?,
     }
 }
@@ -597,4 +600,33 @@ impl HandlerEvenements {
     //         tokio_time::sleep(DurationTokio::new(5, 0)).await;
     //     }
     // }
+}
+
+#[derive(Clone, Deserialize)]
+struct EvenementFichierSyncPrimaire { termine: Option<bool> }
+
+async fn evenement_fichier_sync_primaire<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValideAction)
+    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+{
+    if !m.verifier_exchanges(vec![L2Prive]) {
+        error!("evenement_fichier_sync_primaire Acces refuse, certificat n'est pas d'un exchange L2");
+        return Ok(None)
+    }
+    if !m.verifier_roles(vec![RolesCertificats::Fichiers]) {
+        error!("evenement_fichier_sync_primaire Acces refuse, certificat n'est pas de role fichiers");
+        return Ok(None)
+    }
+
+    debug!("evenements.evenement_fichier_sync_primaire Mapper EvenementVisiterFuuids a partir de {:?}", m.message);
+    let evenement: EvenementFichierSyncPrimaire = m.message.parsed.map_contenu()?;
+
+    if Some(true) == evenement.termine {
+        debug!("evenement_fichier_sync_primaire Declencher nettoyage apres sync primaire");
+        if let Err(e) = entretien_supprimer_fichiersrep(middleware, gestionnaire).await {
+            error!("evenement_fichier_sync_primaire Erreur suppression fichiers indexes et supprimes: {:?}", e);
+        }
+    }
+
+    Ok(None)
 }

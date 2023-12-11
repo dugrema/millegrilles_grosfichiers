@@ -115,6 +115,7 @@ pub const EVENEMENT_TRANSCODAGE_PROGRES: &str = "transcodageProgres";
 pub const EVENEMENT_FICHIERS_SYNCPRET: &str = "syncPret";
 pub const EVENEMENT_FICHIERS_VISITER_FUUIDS: &str = "visiterFuuids";
 pub const EVENEMENT_FICHIERS_CONSIGNE: &str = "consigne";
+pub const EVENEMENT_FICHIERS_SYNC_PRIMAIRE: &str = "syncPrimaire";
 pub const EVENEMENT_REINDEXER_CONSIGNATION: &str = "reindexerConsignation";
 pub const EVENEMENT_ANNULER_JOB_VIDEO: &str = "annulerJobVideo";
 
@@ -162,6 +163,7 @@ pub const CHAMP_TAILLE: &str = "taille";
 pub const CHAMP_ETAT_JOB: &str = "etat";
 pub const CHAMP_INSTANCES: &str = "instances";
 pub const CHAMP_DATE_MAJ: &str = "date_maj";
+pub const CHAMP_VISITES: &str = "visites";
 
 pub const ERREUR_MEDIA_TOOMANYRETRIES: i32 = 1;
 

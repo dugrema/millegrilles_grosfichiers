@@ -261,8 +261,8 @@ pub fn preparer_queues() -> Vec<QueueType> {
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_FICHIERS_SYNCPRET), exchange: Securite::L2Prive});
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_FICHIERS_VISITER_FUUIDS), exchange: Securite::L2Prive});
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_FICHIERS_CONSIGNE), exchange: Securite::L2Prive});
-
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.*.{}", DOMAINE_MEDIA_NOM, EVENEMENT_TRANSCODAGE_PROGRES), exchange: Securite::L2Prive});
+    rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_FICHIERS_SYNC_PRIMAIRE), exchange: Securite::L2Prive});
 
     let mut queues = Vec::new();
 
@@ -664,29 +664,12 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
     let minutes = date_epoch.get_datetime().minute();
     let hours = date_epoch.get_datetime().hour();
 
-    // if let Err(e) = traiter_indexation_batch(middleware, LIMITE_INDEXATION_BATCH).await {
-    //     warn!("Erreur traitement indexation batch : {:?}", e);
-    // }
-
     // Executer a intervalle regulier
     if minutes % 5 == 2 {
-        debug!("Generer index et media manquants");
-        // if let Err(e) = traiter_media_batch(middleware, MEDIA_IMAGE_BACTH_DEFAULT, false, None, None).await {
-        //     warn!("Erreur traitement media batch : {:?}", e);
-        // }
-        // if let Err(e) = entretien_video_jobs(middleware).await {
-        //     warn!("Erreur traitement media entretien_video_jobs : {:?}", e);
-        // }
+        debug!("traiter_cedule Generer index et media manquants");
         gestionnaire.image_job_handler.entretien(middleware, gestionnaire, None).await;
         gestionnaire.video_job_handler.entretien(middleware, gestionnaire, None).await;
         gestionnaire.indexation_job_handler.entretien(middleware, gestionnaire, None).await;
-    }
-
-    // Faire la verification des visites expirees 1 fois par jour
-    if minutes == 2 && hours == 0 {
-        if let Err(e) = entretien_supprimer_fichiersrep(middleware).await {
-            error!("Erreur suppression fichiers indexes et supprimes: {:?}", e);
-        }
     }
 
     Ok(())

@@ -17,6 +17,7 @@ use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMessage};
@@ -30,7 +31,7 @@ use millegrilles_common_rust::verificateur::VerificateurMessage;
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
 use crate::traitement_jobs::{BackgroundJob, CommandeGetJob, get_prochaine_job_versions, JobHandler, JobHandlerFichiersRep, JobHandlerVersions, ReponseJob};
-use crate::transactions::NodeFichierRepBorrowed;
+use crate::transactions::{NodeFichierRepBorrowed, TransactionSupprimerOrphelins};
 
 const EVENEMENT_INDEXATION_DISPONIBLE: &str = "jobIndexationDisponible";
 const REQUETE_LISTE_NOEUDS: &str = "listeNoeuds";
@@ -599,9 +600,9 @@ struct SupprimerIndexTuuids {
     tuuids: Vec<String>,
 }
 
-pub async fn entretien_supprimer_fichiersrep<M>(middleware: &M)
+pub async fn entretien_supprimer_fichiersrep<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers)
     -> Result<(), Box<dyn Error>>
-    where M: MongoDao + GenerateurMessages
+    where M: MongoDao + GenerateurMessages + ValidateurX509 + VerificateurMessage
 {
     debug!("entretien_supprimer_fichiersrep Debut");
 
@@ -613,6 +614,11 @@ pub async fn entretien_supprimer_fichiersrep<M>(middleware: &M)
     // Retirer les visites expirees
     if let Err(e) = entretien_supprimer_visites_expirees(middleware).await {
         error!("entretien_supprimer_fichiersrep Erreur entretien_supprimer_visites_expirees : {:?}", e)
+    }
+
+    // Retirer les fichiers supprimes et sans visites restantes.
+    if let Err(e) = entretien_retirer_supprimes_sans_visites(middleware, gestionnaire).await {
+        error!("entretien_supprimer_fichiersrep Erreur entretien_retirer_supprimes_sans_visites : {:?}", e)
     }
 
     Ok(())
@@ -811,3 +817,37 @@ async fn entretien_supprimer_fichiersrep_index<M>(middleware: &M)
 //
 // }
 
+async fn entretien_retirer_supprimes_sans_visites<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<(), Box<dyn Error>>
+    where M: MongoDao + GenerateurMessages + ValidateurX509 + VerificateurMessage
+{
+    debug!("entretien_retirer_supprimes_sans_visites Debut");
+
+    let filtre = doc! {
+        CHAMP_SUPPRIME: true,
+        "$or": [
+            {CHAMP_VISITES: doc!{}},
+            {CHAMP_VISITES: {"$exists": false}}
+        ]
+    };
+    let fuuids_supprimes = {
+        let mut fuuids_supprimes = Vec::new();
+        let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
+        let options = FindOptions::builder().limit(1000).build();
+        let mut curseur = collection.find(filtre, options).await?;
+        while curseur.advance().await? {
+            let row = curseur.deserialize_current()?;
+            debug!("Marquer {:?} comme retire (orphelin supprime)", row);
+            fuuids_supprimes.push(row.fuuid.to_owned());
+        }
+        fuuids_supprimes
+    };
+
+    debug!("entretien_retirer_supprimes_sans_visites Nouvelle transaction orphelins : {:?}", fuuids_supprimes);
+    let transaction = TransactionSupprimerOrphelins { fuuids: fuuids_supprimes };
+
+    sauvegarder_traiter_transaction_serializable(
+        middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_SUPPRIMER_ORPHELINS).await?;
+
+    Ok(())
+}
