@@ -425,6 +425,7 @@ async fn marquer_visites_fuuids<M>(
 
         let ops = doc! {
             "$set": {format!("visites.{}", instance_id): date_visite},
+            "$unset": {"visites.nouveau": true},
             "$currentDate": { CHAMP_MODIFICATION: true },
         };
 

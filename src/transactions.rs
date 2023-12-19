@@ -552,7 +552,10 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
 
     let fichier_version = match NodeFichierVersionOwned::from_nouvelle_version(
         &transaction_fichier, &tuuid, &user_id).await {
-        Ok(inner) => inner,
+        Ok(mut inner) => {
+            inner.visites.insert("nouveau".to_string(), DateEpochSeconds::now());
+            inner
+        },
         Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
     };
 
