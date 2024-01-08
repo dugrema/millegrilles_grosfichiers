@@ -665,12 +665,12 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
     let hours = date_epoch.get_datetime().hour();
 
     // Executer a intervalle regulier
-    if minutes % 5 == 2 {
+    // if minutes % 5 == 2 {
         debug!("traiter_cedule Generer index et media manquants");
         gestionnaire.image_job_handler.entretien(middleware, gestionnaire, None).await;
         gestionnaire.video_job_handler.entretien(middleware, gestionnaire, None).await;
         gestionnaire.indexation_job_handler.entretien(middleware, gestionnaire, None).await;
-    }
+    // }
 
     Ok(())
 }

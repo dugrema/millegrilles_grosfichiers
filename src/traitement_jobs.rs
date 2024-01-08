@@ -150,7 +150,7 @@ pub trait JobHandlerVersions: JobHandler {
     }
 
     async fn sauvegarder_job<M,S,U>(
-        &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,
+        &self, middleware: &M, fuuid: S, user_id: U, instances: Option<Vec<String>>,
         champs_cles: Option<HashMap<String, String>>,
         parametres: Option<HashMap<String, Bson>>,
         emettre_trigger: bool
@@ -159,7 +159,7 @@ pub trait JobHandlerVersions: JobHandler {
         where M: GenerateurMessages + MongoDao,
               S: AsRef<str> + Send, U: AsRef<str> + Send
     {
-        let instances = sauvegarder_job(middleware, self, fuuid, user_id, instance.clone(), champs_cles, parametres).await?;
+        let instances = sauvegarder_job(middleware, self, fuuid, user_id, instances.clone(), champs_cles, parametres).await?;
         if let Some(inner) = instances {
             if emettre_trigger {
                 for instance in inner.into_iter() {
@@ -212,7 +212,7 @@ pub trait JobHandlerFichiersRep: JobHandler {
     }
 
     async fn sauvegarder_job<M,S,U>(
-        &self, middleware: &M, tuuid: S, user_id: U, instance: Option<String>,
+        &self, middleware: &M, tuuid: S, user_id: U, instances: Option<Vec<String>>,
         champs_cles: Option<HashMap<String, String>>,
         parametres: Option<HashMap<String, Bson>>,
         emettre_trigger: bool
@@ -222,7 +222,7 @@ pub trait JobHandlerFichiersRep: JobHandler {
               S: AsRef<str> + Send, U: AsRef<str> + Send
     {
         let instances = sauvegarder_job_fichiersrep(
-            middleware, self, tuuid, user_id, instance.clone(),
+            middleware, self, tuuid, user_id, instances.clone(),
             champs_cles, parametres).await?;
         if let Some(inner) = instances {
             if emettre_trigger {
@@ -528,21 +528,22 @@ async fn entretien_jobs_versions<J,G,M>(middleware: &M, gestionnaire: &G, job_ha
         // }
 
         // Creer ou mettre a jour la job
-        for instance in version_mappee.visites.into_keys() {
-            let mut champs_cles = HashMap::new();
-            champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
-            // champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
-            let mut parametres = HashMap::new();
-            // parametres.insert("mimetype".to_string(), Bson::String(mimetype_ref.to_string()));
-            parametres.insert("tuuid".to_string(), Bson::String(tuuid_ref.to_string()));
-            if let Err(e) = job_handler.sauvegarder_job(
-                middleware, fuuid_ref, user_id,
-                Some(instance.to_string()), None, Some(parametres),
-                false).await
-            {
-                info!("entretien_jobs Erreur creation job : {:?}", e)
-            }
+        //for instance in version_mappee.visites.into_keys() {
+        let instances = version_mappee.visites.into_keys().map(|s| s.to_owned()).collect::<Vec<String>>();
+        let mut champs_cles = HashMap::new();
+        champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
+        // champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
+        let mut parametres = HashMap::new();
+        // parametres.insert("mimetype".to_string(), Bson::String(mimetype_ref.to_string()));
+        parametres.insert("tuuid".to_string(), Bson::String(tuuid_ref.to_string()));
+        if let Err(e) = job_handler.sauvegarder_job(
+            middleware, fuuid_ref, user_id,
+            Some(instances), None, Some(parametres),
+            false).await
+        {
+            info!("entretien_jobs Erreur creation job : {:?}", e)
         }
+        //}
     }
 
     // Cleanup des jobs avec retry excessifs. Ces jobs sont orphelines (e.g. la correspondante dans
@@ -684,28 +685,28 @@ async fn entretien_jobs_fichiersrep<J,G,M>(middleware: &M, gestionnaire: &G, job
                 };
 
                 // Creer ou mettre a jour la job
-                for instance in visites {
-                    let mut champs_cles = HashMap::new();
-                    champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
-                    // champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
-                    let mut champs_parametres = HashMap::new();
-                    champs_parametres.insert("fuuid".to_string(), Bson::String(fuuid_ref.to_string()));
-                    match version_mappee.path_cuuids.as_ref() {
-                        Some(inner) => {
-                            let array_cuuids: Vec<Bson> = inner.iter().map(|v| Bson::String(v.to_string())).collect();
-                            champs_parametres.insert("path_cuuids".to_string(), Bson::Array(array_cuuids));
-                        },
-                        None => ()
-                    }
-
-                    if let Err(e) = job_handler.sauvegarder_job(
-                        middleware, tuuid_ref, user_id,
-                        Some(instance), Some(champs_cles), Some(champs_parametres),
-                        false).await
-                    {
-                        info!("entretien_jobs Erreur creation job : {:?}", e)
-                    }
+                //for instance in visites {
+                let mut champs_cles = HashMap::new();
+                champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
+                // champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
+                let mut champs_parametres = HashMap::new();
+                champs_parametres.insert("fuuid".to_string(), Bson::String(fuuid_ref.to_string()));
+                match version_mappee.path_cuuids.as_ref() {
+                    Some(inner) => {
+                        let array_cuuids: Vec<Bson> = inner.iter().map(|v| Bson::String(v.to_string())).collect();
+                        champs_parametres.insert("path_cuuids".to_string(), Bson::Array(array_cuuids));
+                    },
+                    None => ()
                 }
+
+                if let Err(e) = job_handler.sauvegarder_job(
+                    middleware, tuuid_ref, user_id,
+                    Some(visites), Some(champs_cles), Some(champs_parametres),
+                    false).await
+                {
+                    info!("entretien_jobs Erreur creation job : {:?}", e)
+                }
+                //}
             },
             _ => {
                 // Repertoire
@@ -763,7 +764,7 @@ async fn entretien_jobs_fichiersrep<J,G,M>(middleware: &M, gestionnaire: &G, job
 
 pub async fn sauvegarder_job<M,J,S,U>(
     middleware: &M, job_handler: &J,
-    fuuid: S, user_id: U, instance: Option<String>,
+    fuuid: S, user_id: U, instances: Option<Vec<String>>,
     champs_cles: Option<HashMap<String, String>>,
     parametres: Option<HashMap<String, Bson>>
 )
@@ -807,8 +808,8 @@ pub async fn sauvegarder_job<M,J,S,U>(
         }
     }
 
-    let instances = match instance {
-        Some(inner) => vec![inner],
+    let instances = match instances {
+        Some(inner) => inner,
         None => {
             // Tenter de charger les visites pour le fichier
             let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
@@ -867,7 +868,7 @@ pub async fn sauvegarder_job<M,J,S,U>(
 
 pub async fn sauvegarder_job_fichiersrep<M,J,S,U>(
     middleware: &M, job_handler: &J,
-    tuuid: S, user_id: U, instance: Option<String>,
+    tuuid: S, user_id: U, instances: Option<Vec<String>>,
     champs_cles: Option<HashMap<String, String>>,
     parametres: Option<HashMap<String, Bson>>
 )
@@ -922,8 +923,8 @@ pub async fn sauvegarder_job_fichiersrep<M,J,S,U>(
         }
     }
 
-    let instances = match instance {
-        Some(inner) => Some(vec![inner]),
+    let instances = match instances {
+        Some(inner) => Some(inner),
         None => {
             match fuuid {
                 Some(fuuid) => {

@@ -1180,16 +1180,16 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, 
                 champs_cles.insert("mimetype".to_string(), mimetype);
 
                 // Prendre une instance au hasard si present
-                let instance = match fichier.visites {
+                let instances = match fichier.visites {
                     Some(visites) => {
-                        visites.into_keys().next()
+                        Some(visites.into_keys().collect::<Vec<String>>())
                     },
                     None => None
                 };
 
                 gestionnaire.image_job_handler.sauvegarder_job(
                     middleware, fuuid, &user_id,
-                    instance, Some(champs_cles), None, true).await?;
+                    instances, Some(champs_cles), None, true).await?;
             }
         }
 

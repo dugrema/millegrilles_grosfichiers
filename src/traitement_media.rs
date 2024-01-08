@@ -83,7 +83,7 @@ impl JobHandler for ImageJobHandler {
 impl JobHandlerVersions for ImageJobHandler {
 
     async fn sauvegarder_job<M, S, U>(
-        &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,
+        &self, middleware: &M, fuuid: S, user_id: U, instances: Option<Vec<String>>,
         mut champs_cles: Option<HashMap<String, String>>,
         parametres: Option<HashMap<String, Bson>>,
         emettre_trigger: bool,
@@ -91,30 +91,50 @@ impl JobHandlerVersions for ImageJobHandler {
         -> Result<(), Box<dyn Error>>
         where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send
     {
-        // Tester le mimetype pour savoir si la job s'applique
-        let mimetype = match champs_cles.as_ref() {
-            Some(inner) => {
-                match inner.get("mimetype") {
-                    Some(inner) => inner,
-                    None => {
-                        debug!("sauvegarder_job Mimetype absent, skip sauvegarder job image");
-                        return Ok(())
-                    }
-                }
+        let fuuid = fuuid.as_ref();
+        let user_id = user_id.as_ref();
+
+        // Trouver le mimetype
+        let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
+        let filtre = doc!{CHAMP_FUUID: fuuid, CHAMP_USER_ID: user_id};
+        let mut curseur = collection.find(filtre, None).await?;
+        let mimetype = match curseur.advance().await? {
+            true => {
+                let row = curseur.deserialize_current()?;
+                row.mimetype.to_owned()
             },
-            None => {
+            false => {
                 debug!("sauvegarder_job Mimetype absent, skip sauvegarder job image");
                 return Ok(())
             }
         };
 
-        if job_image_supportee(mimetype) {
-            debug!("sauvegarder_job image type {}", mimetype);
-            sauvegarder_job(middleware, self, fuuid, user_id, instance.clone(), champs_cles, parametres).await?;
+        // let mimetype = match champs_cles.as_ref() {
+        //     Some(inner) => {
+        //         match inner.get("mimetype") {
+        //             Some(inner) => inner,
+        //             None => {
+        //                 debug!("sauvegarder_job Mimetype absent, skip sauvegarder job image");
+        //                 return Ok(())
+        //             }
+        //         }
+        //     },
+        //     None => {
+        //         debug!("sauvegarder_job Mimetype absent, skip sauvegarder job image");
+        //         return Ok(())
+        //     }
+        // };
 
-            if let Some(inner) = instance {
+        // Tester le mimetype pour savoir si la job s'applique
+        if job_image_supportee(&mimetype) {
+            debug!("sauvegarder_job image type {} instances {:?}", mimetype, instances);
+            sauvegarder_job(middleware, self, fuuid, user_id, instances.clone(), champs_cles, parametres).await?;
+
+            if let Some(inner) = instances {
                 if emettre_trigger {
-                    self.emettre_trigger(middleware, inner).await;
+                    for instance in inner {
+                        self.emettre_trigger(middleware, instance).await;
+                    }
                 }
             }
         }
@@ -178,7 +198,7 @@ impl JobHandler for VideoJobHandler {
 impl JobHandlerVersions for VideoJobHandler {
 
     async fn sauvegarder_job<M, S, U>(
-        &self, middleware: &M, fuuid: S, user_id: U, instance: Option<String>,
+        &self, middleware: &M, fuuid: S, user_id: U, instances: Option<Vec<String>>,
         mut champs_cles: Option<HashMap<String, String>>,
         parametres: Option<HashMap<String, Bson>>,
         emettre_trigger: bool,
@@ -186,29 +206,45 @@ impl JobHandlerVersions for VideoJobHandler {
         -> Result<(), Box<dyn Error>>
         where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send
     {
+        let fuuid = fuuid.as_ref();
+        let user_id = user_id.as_ref();
 
-        // Tester le mimetype pour savoir si la job s'applique
-        let mimetype = match champs_cles.as_ref() {
-            Some(inner) => {
-                match inner.get("mimetype") {
-                    Some(inner) => inner,
-                    None => {
-                        debug!("sauvegarder_job Mimetype absent, skip sauvegarder job video");
-                        return Ok(())
-                    }
-                }
+        // Trouver le mimetype
+        let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
+        let filtre = doc!{CHAMP_FUUID: fuuid, CHAMP_USER_ID: user_id};
+        let mut curseur = collection.find(filtre, None).await?;
+        let mimetype = match curseur.advance().await? {
+            true => {
+                let row = curseur.deserialize_current()?;
+                row.mimetype.to_owned()
             },
-            None => {
-                debug!("sauvegarder_job Mimetype absent, skip sauvegarder job video");
+            false => {
+                debug!("sauvegarder_job Mimetype absent, skip sauvegarder job image");
                 return Ok(())
             }
         };
 
-        if ! job_video_supportee(mimetype) {
+        // let mimetype = match champs_cles.as_ref() {
+        //     Some(inner) => {
+        //         match inner.get("mimetype") {
+        //             Some(inner) => inner,
+        //             None => {
+        //                 debug!("sauvegarder_job Mimetype absent, skip sauvegarder job video");
+        //                 return Ok(())
+        //             }
+        //         }
+        //     },
+        //     None => {
+        //         debug!("sauvegarder_job Mimetype absent, skip sauvegarder job video");
+        //         return Ok(())
+        //     }
+        // };
+
+        // Tester le mimetype pour savoir si la job s'applique
+        if ! job_video_supportee(&mimetype) {
             debug!("sauvegarder_job video, type {} non supporte", mimetype);
             return Ok(())
         }
-
 
         let mut champs_cles = match champs_cles {
             Some(inner) => inner,
@@ -249,11 +285,13 @@ impl JobHandlerVersions for VideoJobHandler {
         parametres.insert("preset".to_string(), Bson::String("medium".to_string()));
         parametres.insert("fallback".to_string(), Bson::Boolean(true));
 
-        sauvegarder_job(middleware, self, fuuid, user_id, instance.clone(), Some(champs_cles), Some(parametres)).await?;
+        sauvegarder_job(middleware, self, fuuid, user_id, instances.clone(), Some(champs_cles), Some(parametres)).await?;
 
-        if let Some(inner) = instance {
+        if let Some(inner) = instances {
             if emettre_trigger {
-                self.emettre_trigger(middleware, inner).await;
+                for instance in inner {
+                    self.emettre_trigger(middleware, instance).await;
+                }
             }
         }
 
