@@ -1720,8 +1720,8 @@ struct RequeteSyncCollection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RequeteSyncIntervalle {
     user_id: Option<String>,
-    debut: DateEpochSeconds,
-    fin: Option<DateEpochSeconds>,
+    // debut: DateEpochSeconds,
+    // fin: Option<DateEpochSeconds>,
     skip: Option<u64>,
     limit: Option<i64>,
 }
@@ -1978,14 +1978,8 @@ async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValideAction, gesti
         }
     };
 
-    let limit = match requete.limit {
-        Some(l) => l,
-        None => 1000
-    };
-    let skip = match requete.skip {
-        Some(s) => s,
-        None => 0
-    };
+    let limit = requete.limit.unwrap_or_else(|| 1000);
+    let skip = requete.skip.unwrap_or_else(|| 0);
 
     let sort = doc! {CHAMP_CREATION: 1, CHAMP_TUUID: 1};
     let projection = doc! {
@@ -2003,12 +1997,11 @@ async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValideAction, gesti
         .limit(limit.clone())
         // .hint(Hint::Name("path_cuuids".into()))
         .build();
-    let date_debut = requete.debut.get_datetime();
-    let mut filtre = doc! {"user_id": user_id, "supprime": true};
+    // let date_debut = requete.debut.get_datetime();
+    let filtre = doc! {"user_id": user_id, "supprime": true};
 
-    debug!("requete_sync_corbeille Requete fichiers debut {:?}, filtre : {:?}", date_debut, filtre);
+    debug!("requete_sync_corbeille Requete fichiers filtre : {:?}", filtre);
 
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let mut fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
     let complete = fichiers_confirmation.len() < limit as usize;
 
