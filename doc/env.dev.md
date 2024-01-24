@@ -17,7 +17,8 @@ Il est aussi possible de les exposer avec la commande :
 CAFILE=/var/opt/millegrilles/configuration/pki.millegrille.cert
 CERTFILE=/var/opt/millegrilles/secrets/pki.grosfichiers_backend.cert
 KEYFILE=/var/opt/millegrilles/secrets/pki.grosfichiers_backend.cle
-MG_MONGO_HOST=localhost;MG_MQ_HOST=localhost
+MG_MONGO_HOST=localhost
+MG_MQ_HOST=localhost
 MG_REDIS_PASSWORD_FILE=/var/opt/millegrilles/secrets/passwd.redis.txt
 MG_REDIS_URL=rediss://client_rust@localhost:6379#insecure
 RUST_LOG=warn,millegrilles_grosfichiers=info,millegrilles_grosfichiers::traitement_jobs=debug,millegrilles_grosfichiers::traitement_media=debug
