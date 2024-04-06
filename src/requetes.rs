@@ -45,7 +45,7 @@ const CONST_LIMITE_NOMBRE_SOUS_REPERTOIRES: u64 = 10_000;
 pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestionnaire: &GestionnaireGrosFichiers) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
-    debug!("Consommer requete : {:?}", &message.message);
+    debug!("Consommer requete : {:?}", &message.type_message);
 
     let user_id = message.certificat.get_user_id()?;
     let role_prive = message.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
