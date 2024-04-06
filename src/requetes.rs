@@ -28,6 +28,7 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::Transaction;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
+use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
@@ -789,12 +790,9 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
 
             debug!("Transmettre requete permission dechiffrage cle : {:?}", requete);
             let reponse = middleware.transmettre_requete(routage, &requete).await?;
-            let info_dechiffrage = if let TypeMessage::Valide(reponse) = reponse {
+            let info_dechiffrage = if let Some(TypeMessage::Valide(reponse)) = reponse {
                 debug!("Reponse dechiffrage : {:?}", reponse);
-                let mut reponse_dechiffrage: ReponseDechiffrage = {
-                    let reponse_ref = reponse.message.parse()?;
-                    reponse_ref.contenu()?.deserialize()?
-                };
+                let mut reponse_dechiffrage: ReponseDechiffrage = deser_message_buffer!(reponse.message);
                 let cle = match reponse_dechiffrage.cles.remove(fuuid) {
                     Some(inner) => inner,
                     None => Err(format!("requetes.get_information_fichier_stream Cle fuuid {} manquante", fuuid))?
@@ -2143,13 +2141,19 @@ async fn map_user_ids_nom_usager<M,U>(middleware: &M, user_ids_in: &Vec<U>) -> R
 
     let requete = json!({"liste_userids": user_ids});
     let reponse = match middleware.transmettre_requete(routage, &requete).await? {
-        TypeMessage::Valide(inner) => {
-            let reponse_ref = inner.message.parse()?;
-            let reponse: ReponseUsagers = reponse_ref.contenu()?.deserialize()?;
-            reponse
+        Some(inner) => match inner {
+            TypeMessage::Valide(inner) => {
+                let reponse_ref = inner.message.parse()?;
+                let reponse: ReponseUsagers = reponse_ref.contenu()?.deserialize()?;
+                reponse
+            },
+            _ => {
+                debug!("requete_charger_contacts Mauvais type de reponse");
+                Err(format!("requetes.map_user_ids_nom_usager Erreur chargement liste usagers"))?
+            }
         },
-        _ => {
-            debug!("requete_charger_contacts Mauvais type de reponse");
+        None => {
+            debug!("requete_charger_contacts Aucune reponse");
             Err(format!("requetes.map_user_ids_nom_usager Erreur chargement liste usagers"))?
         }
     };

@@ -14,6 +14,7 @@ use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOn
 use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::serde_json::{json, Value};
 use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
 
 use serde::{Deserialize, Serialize};
@@ -1355,9 +1356,8 @@ pub async fn get_cle_job_indexation<M,S>(middleware: &M, fuuid: S, certificat: &
     };
 
     debug!("get_cle_job_indexation Transmettre requete permission dechiffrage cle : {:?}", permission);
-    let cle = if let TypeMessage::Valide(reponse) = middleware.transmettre_requete(routage, &permission).await? {
-        let message_ref = reponse.message.parse()?;
-        let reponse: ReponseDechiffrageCles = message_ref.contenu()?.deserialize()?;
+    let cle = if let Some(TypeMessage::Valide(reponse)) = middleware.transmettre_requete(routage, &permission).await? {
+        let reponse: ReponseDechiffrageCles = deser_message_buffer!(reponse.message);
         if reponse.acces.as_str() != "1.permis" {
             Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : acces refuse ({}) a cle {}", reponse.acces, fuuid))?
         }

@@ -636,11 +636,14 @@ async fn entretien_supprimer_visites_expirees<M>(middleware: &M)
     let requete = json!({});
 
     let instances_topologie: ReponseTopologieInstance = match middleware.transmettre_requete(routage, &requete).await? {
-        TypeMessage::Valide(reponse) => {
-            let reponse_ref = reponse.message.parse()?;
-            reponse_ref.contenu()?.deserialize()?
+        Some(inner) => match inner {
+            TypeMessage::Valide(reponse) => {
+                let reponse_ref = reponse.message.parse()?;
+                reponse_ref.contenu()?.deserialize()?
+            },
+            _ => Err(format!("Mauvais type reponse pour requete topologie"))?
         },
-        _ => Err(format!("Mauvais type reponse pour requete topologie"))?
+        None => Err(format!("Aucune reponse pour requete topologie"))?
     };
 
     let expiration_visite = Utc::now() - Duration::days(3);

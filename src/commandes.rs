@@ -1840,42 +1840,52 @@ async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, ges
         let requete = json!({ "noms_usagers": [commande.nom_usager] });
         match middleware.transmettre_requete(routage, &requete).await {
             Ok(inner) => match inner {
-                TypeMessage::Valide(r) => {
-                    let reponse_mappee: ReponseChargerUserIdParNomUsager = {
-                        let reponse_ref = r.message.parse()?;
-                        reponse_ref.contenu()?.deserialize()?
-                    };
-                    match reponse_mappee.usagers {
-                        Some(mut inner) => {
-                            match inner.remove(commande.nom_usager.as_str()) {
-                                Some(inner) => match inner {
-                                    Some(inner) => inner,
+                Some(inner) => match inner {
+                    TypeMessage::Valide(r) => {
+                        let reponse_mappee: ReponseChargerUserIdParNomUsager = {
+                            let reponse_ref = r.message.parse()?;
+                            reponse_ref.contenu()?.deserialize()?
+                        };
+                        match reponse_mappee.usagers {
+                            Some(mut inner) => {
+                                match inner.remove(commande.nom_usager.as_str()) {
+                                    Some(inner) => match inner {
+                                        Some(inner) => inner,
+                                        None => {
+                                            debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (usager inconnu - 1), SKIP");
+                                            ;
+                                            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                                            return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
+                                        }
+                                    },
                                     None => {
-                                        debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (usager inconnu - 1), SKIP");;
+                                        debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (usager inconnu - 2), SKIP");
+                                        ;
                                         // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
                                         return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                                     }
-                                },
-                                None => {
-                                    debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (usager inconnu - 2), SKIP");;
-                                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
-                                    return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                                 }
+                            },
+                            None => {
+                                debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (reponse sans liste usagers), SKIP");
+                                ;
+                                // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                                return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                             }
-                        },
-                        None => {
-                            debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (reponse sans liste usagers), SKIP");;
-                            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
-                            return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                         }
+                    },
+                    _ => {
+                        debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (mauvais type reponse), SKIP");
+                        ;
+                        // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                        return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                     }
                 },
-                _ => {
-                    debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (mauvais type reponse), SKIP");;
-                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                None => {
+                    debug!("commande_ajouter_contact_local Aucune reponse pour chargement user_id pour contact, SKIP");;
                     return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                 }
-            },
+        },
             Err(e) => {
                 debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact, SKIP : {:?}", e);;
                 // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
