@@ -15,22 +15,23 @@ use millegrilles_common_rust::{chrono, chrono::{DateTime, Utc}};
 use millegrilles_common_rust::chrono::Timelike;
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
-use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, sauvegarder_traiter_transaction};
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, convertir_bson_deserializable, convertir_to_bson, filtrer_doc_id, IndexOptions, MongoDao};
 use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::mongodb::options::{CountOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
-use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio::time::{Duration, sleep};
 use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction, TransactionImpl};
-use millegrilles_common_rust::verificateur::VerificateurMessage;
+use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction};
+use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::recepteur_messages::MessageValide;
 
 use crate::commandes::consommer_commande;
 use crate::evenements::{consommer_evenement, HandlerEvenements};
@@ -53,8 +54,10 @@ pub struct GestionnaireGrosFichiers {
 
 #[async_trait]
 impl TraiterTransaction for GestionnaireGrosFichiers {
-    async fn appliquer_transaction<M>(&self, middleware: &M, transaction: TransactionImpl) -> Result<Option<MessageMilleGrille>, String>
-        where M: ValidateurX509 + GenerateurMessages + MongoDao
+    async fn appliquer_transaction<M,T>(&self, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+        where
+            M: ValidateurX509 + GenerateurMessages + MongoDao,
+            T: TryInto<TransactionValide> + Send
     {
         aiguillage_transaction(self, middleware, transaction).await
     }
@@ -89,23 +92,31 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
         true
     }
 
-    async fn preparer_database<M>(&self, middleware: &M) -> Result<(), String> where M: MongoDao + ConfigMessages {
+    async fn preparer_database<M>(&self, middleware: &M) -> Result<(), CommonError> where M: MongoDao + ConfigMessages {
         preparer_index_mongodb_custom(middleware).await
     }
 
-    async fn consommer_requete<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
+    async fn consommer_requete<M>(&self, middleware: &M, message: MessageValide)
+        -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError> where M: Middleware + 'static
+    {
         consommer_requete(middleware, message, &self).await
     }
 
-    async fn consommer_commande<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
+    async fn consommer_commande<M>(&self, middleware: &M, message: MessageValide)
+        -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError> where M: Middleware + 'static
+    {
         consommer_commande(middleware, message, &self).await
     }
 
-    async fn consommer_transaction<M>(&self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
+    async fn consommer_transaction<M>(&self, middleware: &M, message: MessageValide)
+        -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError> where M: Middleware + 'static
+    {
         consommer_transaction(self, middleware, message).await
     }
 
-    async fn consommer_evenement<M>(self: &'static Self, middleware: &M, message: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>> where M: Middleware + 'static {
+    async fn consommer_evenement<M>(self: &'static Self, middleware: &M, message: MessageValide)
+        -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError> where M: Middleware + 'static
+    {
         consommer_evenement(middleware, self, message).await
     }
 
@@ -114,15 +125,17 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
     }
 
     async fn traiter_cedule<M>(self: &'static Self, middleware: &M, trigger: &MessageCedule)
-        -> Result<(), Box<dyn Error>>
+        -> Result<(), CommonError>
         where M: Middleware + 'static
     {
         traiter_cedule(self, middleware, trigger).await
     }
 
     async fn aiguillage_transaction<M, T>(&self, middleware: &M, transaction: T)
-        -> Result<Option<MessageMilleGrille>, String>
-        where M: ValidateurX509 + GenerateurMessages + MongoDao, T: Transaction
+        -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+        where
+            M: ValidateurX509 + GenerateurMessages + MongoDao,
+            T: TryInto<TransactionValide> + Send
     {
         aiguillage_transaction(self, middleware, transaction).await
     }
@@ -130,7 +143,7 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
 
 // #[async_trait]
 // impl ElasticSearchDao for GestionnaireGrosFichiers {
-//     async fn es_preparer(&self) -> Result<(), String> {
+//     async fn es_preparer(&self) -> Result<(), CommonError> {
 //         self.index_dao.es_preparer().await
 //     }
 //
@@ -139,20 +152,20 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
 //     }
 //
 //     async fn es_indexer<S, T>(&self, nom_index: S, id_doc: T, info_doc: InfoDocumentIndexation)
-//         -> Result<(), String>
+//         -> Result<(), CommonError>
 //         where S: AsRef<str> + Send, T: AsRef<str> + Send
 //     {
 //         self.index_dao.es_indexer(nom_index, id_doc, info_doc).await
 //     }
 //
 //     async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresRecherche)
-//         -> Result<ResultatRecherche, String>
+//         -> Result<ResultatRecherche, CommonError>
 //         where S: AsRef<str> + Send
 //     {
 //         self.index_dao.es_rechercher(nom_index, params).await
 //     }
 //
-//     async fn es_reset_index(&self) -> Result<(), String> { self.index_dao.es_reset_index().await }
+//     async fn es_reset_index(&self) -> Result<(), CommonError> { self.index_dao.es_reset_index().await }
 // }
 
 pub fn preparer_queues() -> Vec<QueueType> {
@@ -329,7 +342,7 @@ pub fn preparer_queues() -> Vec<QueueType> {
 }
 
 /// Creer index MongoDB
-pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), String>
+pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), CommonError>
     where M: MongoDao + ConfigMessages
 {
     // Index fuuids pour fichiers (liste par tuuid)
@@ -647,7 +660,7 @@ pub async fn entretien<M>(_gestionnaire: &GestionnaireGrosFichiers, _middleware:
 }
 
 pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, trigger: &MessageCedule)
-    -> Result<(), Box<dyn Error>>
+    -> Result<(), CommonError>
     where M: Middleware + 'static
 {
     debug!("Traiter cedule {}", DOMAINE_NOM);
@@ -661,7 +674,7 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
     // let intervalle_entretien_index_media = chrono::Duration::minutes(5);
 
     let date_epoch = trigger.get_date();
-    let minutes = date_epoch.get_datetime().minute();
+    let minutes = date_epoch.minute();
     // let hours = date_epoch.get_datetime().hour();
 
     // Executer a intervalle regulier
@@ -676,7 +689,7 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
 }
 
 pub async fn emettre_evenement_maj_fichier<M, S, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, tuuid: S, action: T)
-    -> Result<(), Box<dyn Error>>
+    -> Result<(), CommonError>
 where
     M: GenerateurMessages + MongoDao,
     S: AsRef<str>,
@@ -720,7 +733,7 @@ where
     Ok(())
 }
 
-pub async fn emettre_evenement_maj_collection<M, S>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, tuuid: S) -> Result<(), String>
+pub async fn emettre_evenement_maj_collection<M, S>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, tuuid: S) -> Result<(), CommonError>
 where
     M: GenerateurMessages + MongoDao,
     S: AsRef<str>
@@ -741,8 +754,7 @@ where
                 Ok(inner) => inner,
                 Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_collection Erreur mapper_fichier_db : {:?}", e))?
             };
-            let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_MAJ_COLLECTION)
-                .exchanges(vec![Securite::L2Prive])
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_MAJ_COLLECTION, vec![Securite::L2Prive])
                 .partition(tuuid_str)
                 .build();
             middleware.emettre_evenement(routage, &fichier_mappe).await?;
@@ -796,7 +808,7 @@ impl EvenementContenuCollection {
     }
 
     /// Combine deux instances de EvenementContenuCollection
-    pub fn merge(&mut self, mut other: Self) -> Result<(), String> {
+    pub fn merge(&mut self, mut other: Self) -> Result<(), CommonError> {
         if self.cuuid.as_str() != other.cuuid.as_str() {
             Err(format!("EvenementContenuCollection.merge cuuid mismatch"))?
         }
@@ -846,7 +858,7 @@ impl EvenementContenuCollection {
 }
 
 pub async fn emettre_evenement_contenu_collection<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, evenement: EvenementContenuCollection)
-    -> Result<(), String>
+    -> Result<(), CommonError>
 where
     M: GenerateurMessages + MongoDao
 {
@@ -858,8 +870,8 @@ where
     // Si on recoit None, l'evenement a ete conserve pour re-emission plus tard.
     if let Some(inner) = gestionnaire.evenements_handler.verifier_evenement_cuuid_contenu(evenement)? {
         let routage = {
-            let mut routage_builder = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_MAJ_CONTENU_COLLECTION)
-                .exchanges(vec![Securite::L2Prive]);
+            let mut routage_builder = RoutageMessageAction::builder(
+                DOMAINE_NOM, EVENEMENT_MAJ_CONTENU_COLLECTION, vec![Securite::L2Prive]);
             routage_builder = routage_builder.partition(inner.cuuid.clone());
             routage_builder.build()
         };

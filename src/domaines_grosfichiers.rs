@@ -12,8 +12,9 @@ use millegrilles_common_rust::futures::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::middleware::Middleware;
 use millegrilles_common_rust::middleware_db::{MiddlewareDb, preparer_middleware_db};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
 use millegrilles_common_rust::mongo_dao::MongoDao;
-use millegrilles_common_rust::rabbitmq_dao::{Callback, EventMq, QueueType};
+use millegrilles_common_rust::rabbitmq_dao::{Callback, EventMq, QueueType, TypeMessageOut};
 use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::tokio::{sync::{mpsc, mpsc::{Receiver, Sender}}, time::{Duration as DurationTokio, timeout}};
 use millegrilles_common_rust::tokio::spawn;
@@ -161,7 +162,7 @@ async fn thread_entretien_evenements<M>(middleware: Arc<M>, gestionnaire: Arc<Ge
 }
 
 async fn entretien_grosfichiers<M>(middleware: Arc<M>, gestionnaire_arc: Arc<GestionnaireGrosFichiers>)
-    where M: Middleware + 'static
+    where M: Middleware + CleChiffrageHandler + 'static
 {
     let mut certificat_emis = false;
 
@@ -213,14 +214,12 @@ async fn entretien_grosfichiers<M>(middleware: Arc<M>, gestionnaire_arc: Arc<Ges
         debug!("domaines_grosfichiers.entretien  Execution task d'entretien Core {:?}", maintenant);
 
         if prochain_chargement_certificats_maitredescles < maintenant {
-            let enveloppe_privee = middleware.get_enveloppe_privee();
-            let cert_prive = enveloppe_privee.enveloppe.clone();
-            match middleware.charger_certificats_chiffrage(middleware.as_ref()).await {
-                Ok(()) => {
-                    prochain_chargement_certificats_maitredescles = maintenant + intervalle_chargement_certificats_maitredescles;
-                    debug!("Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_maitredescles);
-                },
-                Err(e) => warn!("Erreur chargement certificats de maitre des cles : {:?}", e)
+            let public_keys = middleware.get_publickeys_chiffrage();
+            if public_keys.len() > 0 {
+                prochain_chargement_certificats_maitredescles = maintenant + intervalle_chargement_certificats_maitredescles;
+                debug!("Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_maitredescles);
+            } else {
+                warn!("Erreur chargement certificats de maitre des cles, aucunes cles recues")
             }
         }
 
@@ -287,61 +286,68 @@ async fn entretien_grosfichiers<M>(middleware: Arc<M>, gestionnaire_arc: Arc<Ges
     info!("domaines_grosfichiers.entretien : Fin thread");
 }
 
-async fn consommer(
-    _middleware: Arc<impl ValidateurX509 + GenerateurMessages + MongoDao>,
-    mut rx: Receiver<TypeMessage>,
-    map_senders: HashMap<String, Sender<TypeMessage>>
-) {
-    info!("domaines_grosfichiers.consommer : Debut thread, mapping : {:?}", map_senders.keys());
-
-    while let Some(message) = rx.recv().await {
-        match &message {
-            TypeMessage::Valide(m) => {
-                warn!("domaines_grosfichiers.consommer: Message valide sans routing key/action : {:?}", m.message);
-            },
-            TypeMessage::ValideAction(m) => {
-                let contenu = &m.message;
-                let rk = m.routing_key.as_str();
-                let action = m.action.as_str();
-                let domaine = m.domaine.as_str();
-                let nom_q = m.q.as_str();
-                info!("domaines_grosfichiers.consommer: Traiter message valide (action: {}, rk: {}, q: {})", action, rk, nom_q);
-                debug!("domaines_grosfichiers.consommer: Traiter message valide contenu {:?}", contenu);
-
-                // Tenter de mapper avec le nom de la Q (ne fonctionnera pas pour la Q de reponse)
-                let sender = match map_senders.get(nom_q) {
-                    Some(sender) => {
-                        debug!("domaines_grosfichiers.consommer Mapping message avec nom_q: {}", nom_q);
-                        sender
-                    },
-                    None => {
-                        match map_senders.get(domaine) {
-                            Some(sender) => {
-                                debug!("domaines_grosfichiers.consommer Mapping message avec domaine: {}", domaine);
-                                sender
-                            },
-                            None => {
-                                error!("domaines_grosfichiers.consommer Message de queue ({}) et domaine ({}) inconnu, on le drop", nom_q, domaine);
-                                continue  // On skip
-                            },
-                        }
-                    }
-                };
-
-                match sender.send(message).await {
-                    Ok(()) => (),
-                    Err(e) => {
-                        error!("domaines_grosfichiers.consommer Erreur consommer message {:?}", e)
-                    }
-                }
-            },
-            TypeMessage::Certificat(_) => (),  // Rien a faire
-            TypeMessage::Regeneration => (),   // Rien a faire
-        }
-    }
-
-    info!("domaines_grosfichiers.consommer: Fin thread : {:?}", map_senders.keys());
-}
+// async fn consommer(
+//     _middleware: Arc<impl ValidateurX509 + GenerateurMessages + MongoDao>,
+//     mut rx: Receiver<TypeMessage>,
+//     map_senders: HashMap<String, Sender<TypeMessage>>
+// ) {
+//     info!("domaines_grosfichiers.consommer : Debut thread, mapping : {:?}", map_senders.keys());
+//
+//     while let Some(message) = rx.recv().await {
+//         match &message {
+//             TypeMessage::Valide(m) => {
+//                 match m.type_message {
+//                     TypeMessageOut::Requete(r) |
+//                     TypeMessageOut::Commande(r) |
+//                     TypeMessageOut::Transaction(_) => {
+//
+//                     }
+//                     TypeMessageOut::Reponse(_) => {}
+//                     TypeMessageOut::Evenement(_) => {}
+//                 }
+//
+//                 let contenu = &m.message;
+//                 let rk = m.routing_key.as_str();
+//                 let action = m.action.as_str();
+//                 let domaine = m.domaine.as_str();
+//                 let nom_q = m.q.as_str();
+//                 info!("domaines_grosfichiers.consommer: Traiter message valide (action: {}, rk: {}, q: {})", action, rk, nom_q);
+//                 debug!("domaines_grosfichiers.consommer: Traiter message valide contenu {:?}", contenu);
+//
+//                 // Tenter de mapper avec le nom de la Q (ne fonctionnera pas pour la Q de reponse)
+//                 let sender = match map_senders.get(nom_q) {
+//                     Some(sender) => {
+//                         debug!("domaines_grosfichiers.consommer Mapping message avec nom_q: {}", nom_q);
+//                         sender
+//                     },
+//                     None => {
+//                         match map_senders.get(domaine) {
+//                             Some(sender) => {
+//                                 debug!("domaines_grosfichiers.consommer Mapping message avec domaine: {}", domaine);
+//                                 sender
+//                             },
+//                             None => {
+//                                 error!("domaines_grosfichiers.consommer Message de queue ({}) et domaine ({}) inconnu, on le drop", nom_q, domaine);
+//                                 continue  // On skip
+//                             },
+//                         }
+//                     }
+//                 };
+//
+//                 match sender.send(message).await {
+//                     Ok(()) => (),
+//                     Err(e) => {
+//                         error!("domaines_grosfichiers.consommer Erreur consommer message {:?}", e)
+//                     }
+//                 }
+//             },
+//             TypeMessage::Certificat(_) => (),  // Rien a faire
+//             TypeMessage::Regeneration => (),   // Rien a faire
+//         }
+//     }
+//
+//     info!("domaines_grosfichiers.consommer: Fin thread : {:?}", map_senders.keys());
+// }
 
 // #[cfg(test)]
 // mod test_integration {

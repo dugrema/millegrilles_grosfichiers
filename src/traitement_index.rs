@@ -1,32 +1,28 @@
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
-use std::error::Error;
 use std::ops::Deref;
 use std::sync::Mutex;
 
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
 use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{DateTime, doc, Document};
-use millegrilles_common_rust::certificats::{EnveloppeCertificat, ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::bson::{doc, Document};
+use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::{InformationCle, ReponseDechiffrageCles};
-use millegrilles_common_rust::chrono::{Duration, Utc};
+use millegrilles_common_rust::chrono::{DateTime, Duration, Utc};
 use millegrilles_common_rust::common_messages::RequeteDechiffrage;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
-use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
-use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMessage};
-use millegrilles_common_rust::reqwest;
-use millegrilles_common_rust::reqwest::Url;
+use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
-use millegrilles_common_rust::serde_json::{Map, Value};
-use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::verificateur::VerificateurMessage;
+use millegrilles_common_rust::serde_json::Value;
+use millegrilles_common_rust::error::Error as CommonError;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
@@ -49,9 +45,9 @@ impl JobHandler for IndexationJobHandler {
     fn get_action_evenement(&self) -> &str { EVENEMENT_INDEXATION_DISPONIBLE }
 
     async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, job: BackgroundJob, erreur: S)
-        -> Result<(), Box<dyn Error>>
+        -> Result<(), CommonError>
         where
-            M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage,
+            M: ValidateurX509 + GenerateurMessages + MongoDao,
             G: GestionnaireDomaine,
             S: ToString + Send
     {
@@ -72,7 +68,7 @@ impl JobHandler for IndexationJobHandler {
 impl JobHandlerFichiersRep for IndexationJobHandler {}
 
 // /// Set le flag indexe a true pour le fuuid (version)
-// pub async fn set_flag_indexe<M,S,T>(middleware: &M, fuuid: S, user_id: T) -> Result<(), Box<dyn Error>>
+// pub async fn set_flag_indexe<M,S,T>(middleware: &M, fuuid: S, user_id: T) -> Result<(), CommonError>
 //     where
 //         M: MongoDao,
 //         S: AsRef<str>,
@@ -100,9 +96,9 @@ impl JobHandlerFichiersRep for IndexationJobHandler {}
 //     Ok(())
 // }
 
-pub async fn reset_flag_indexe<M,G>(middleware: &M, gestionnaire: &G, job_handler: &IndexationJobHandler) -> Result<(), Box<dyn Error>>
+pub async fn reset_flag_indexe<M,G>(middleware: &M, gestionnaire: &G, job_handler: &IndexationJobHandler) -> Result<(), CommonError>
     where
-        M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage,
+        M: GenerateurMessages + MongoDao + ValidateurX509,
         G: GestionnaireDomaine
 {
     debug!("reset_flag_indexe Reset flags pour tous les fichiers");
@@ -126,8 +122,7 @@ pub async fn reset_flag_indexe<M,G>(middleware: &M, gestionnaire: &G, job_handle
     job_handler.entretien(middleware, gestionnaire, Some(LIMITE_INDEXATION_BATCH)).await;
 
     // Emettre un evenement pour indiquer que de nouvelles jobs sont disponibles
-    let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_REINDEXER_CONSIGNATION)
-        .exchanges(vec![Securite::L4Secure])
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_REINDEXER_CONSIGNATION, vec![Securite::L4Secure])
         .build();
     middleware.emettre_evenement(routage, &json!({})).await?;
 
@@ -135,7 +130,7 @@ pub async fn reset_flag_indexe<M,G>(middleware: &M, gestionnaire: &G, job_handle
 }
 
 // // Set le flag indexe a true pour le fuuid (version)
-// pub async fn ajout_job_indexation<M,S,T,U,V>(middleware: &M, tuuid: T, fuuid: S, user_id: U, mimetype: V) -> Result<(), Box<dyn Error>>
+// pub async fn ajout_job_indexation<M,S,T,U,V>(middleware: &M, tuuid: T, fuuid: S, user_id: U, mimetype: V) -> Result<(), CommonError>
 //     where
 //         M: MongoDao,
 //         S: AsRef<str>,
@@ -204,7 +199,7 @@ pub struct InfoDocumentIndexation {
 pub struct DocumentIndexation {
     nom: Option<String>,    // Nom du fichier
     mimetype: String,
-    date_v_courante: Option<DateEpochSeconds>,
+    date_v_courante: Option<DateTime<Utc>>,
 
     // Champs qui proviennent du fichierRep (courant uniquement)
     titre: Option<HashMap<String, String>>,          // Dictionnaire combine
@@ -262,25 +257,25 @@ impl TryFrom<DBFichierVersionDetail> for DocumentIndexation {
 
 // #[async_trait]
 // pub trait ElasticSearchDao {
-//     async fn es_preparer(&self) -> Result<(), String>;
+//     async fn es_preparer(&self) -> Result<(), CommonError>;
 //
 //     /// Retourne true si le serveur est pret (accessible, index generes)
 //     fn es_est_pret(&self) -> bool;
 //
 //     async fn es_indexer<S, T>(&self, nom_index: S, id_doc: T, info_doc: InfoDocumentIndexation)
-//         -> Result<(), String>
+//         -> Result<(), CommonError>
 //         where S: AsRef<str> + Send, T: AsRef<str> + Send;
 //
 //     async fn es_rechercher<S>(&self, nom_index: S, params: &ParametresRecherche)
-//         -> Result<ResultatRecherche, String>
+//         -> Result<ResultatRecherche, CommonError>
 //         where S: AsRef<str> + Send;
 //
-//     async fn es_reset_index(&self) -> Result<(), String>;
+//     async fn es_reset_index(&self) -> Result<(), CommonError>;
 //
 // }
 
 // pub async fn traiter_indexation_batch<M>(middleware: &M, limite: i64)
-//     -> Result<(), Box<dyn Error>>
+//     -> Result<(), CommonError>
 //     where M: GenerateurMessages + MongoDao
 // {
 //     debug!("traiter_indexation_batch limite {}", limite);
@@ -543,35 +538,31 @@ pub fn index_grosfichiers() -> Value {
     })
 }
 
-pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
-    debug!("commande_indexation_get_job Consommer commande : {:?}", & m.message);
-    let commande: CommandeIndexationGetJob = m.message.get_msg().map_contenu()?;
+    debug!("commande_indexation_get_job Consommer commande : {:?}", m.type_message);
+    let message_ref = m.message.parse()?;
+    let commande: CommandeIndexationGetJob = message_ref.contenu()?.deserialize()?;
 
     // Verifier autorisation
-    if ! m.verifier_exchanges(vec![Securite::L4Secure]) {
+    if ! m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
         info!("commande_indexation_get_job Exchange n'est pas de niveau 4");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
+        return Ok(Some(middleware.build_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}))?.0))
     }
 
-    if ! m.verifier_roles(vec![RolesCertificats::SolrRelai]) {
+    if ! m.certificat.verifier_roles(vec![RolesCertificats::SolrRelai])? {
         info!("commande_indexation_get_job Role n'est pas solrrelai");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre solrrelai)"}), None)?))
+        return Ok(Some(middleware.build_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre solrrelai)"}))?.0))
     }
-
-    let certificat = match m.message.certificat {
-        Some(inner) => inner,
-        None => Err(format!("commandes.commande_indexation_get_job Certificat absent du message"))?
-    };
 
     let commande_get_job = CommandeGetJob { instance_id: commande.instance_id, fallback: None };
     let reponse_prochaine_job = gestionnaire.indexation_job_handler.get_prochaine_job(
-        middleware, certificat.as_ref(), commande_get_job).await?;
+        middleware, m.certificat.as_ref(), commande_get_job).await?;
 
     debug!("commande_indexation_get_job Prochaine job : {:?}", reponse_prochaine_job);
-    Ok(Some(middleware.formatter_reponse(reponse_prochaine_job, None)?))
+    Ok(Some(middleware.build_reponse(reponse_prochaine_job)?.0))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -601,8 +592,8 @@ struct SupprimerIndexTuuids {
 }
 
 pub async fn entretien_supprimer_fichiersrep<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<(), Box<dyn Error>>
-    where M: MongoDao + GenerateurMessages + ValidateurX509 + VerificateurMessage
+    -> Result<(), CommonError>
+    where M: MongoDao + GenerateurMessages + ValidateurX509
 {
     debug!("entretien_supprimer_fichiersrep Debut");
 
@@ -635,18 +626,20 @@ struct ReponseTopologieInstance {
 }
 
 async fn entretien_supprimer_visites_expirees<M>(middleware: &M)
-    -> Result<(), Box<dyn Error>>
+    -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages
 {
     debug!("entretien_supprimer_visites_expirees Debut");
 
-    let routage = RoutageMessageAction::builder(DOMAINE_TOPOLOGIE, REQUETE_LISTE_NOEUDS)
-        .exchanges(vec![Securite::L3Protege])
+    let routage = RoutageMessageAction::builder(DOMAINE_TOPOLOGIE, REQUETE_LISTE_NOEUDS, vec![Securite::L3Protege])
         .build();
     let requete = json!({});
 
     let instances_topologie: ReponseTopologieInstance = match middleware.transmettre_requete(routage, &requete).await? {
-        TypeMessage::Valide(reponse) => reponse.message.parsed.map_contenu()?,
+        TypeMessage::Valide(reponse) => {
+            let reponse_ref = reponse.message.parse()?;
+            reponse_ref.contenu()?.deserialize()?
+        },
         _ => Err(format!("Mauvais type reponse pour requete topologie"))?
     };
 
@@ -670,7 +663,7 @@ async fn entretien_supprimer_visites_expirees<M>(middleware: &M)
 }
 
 async fn entretien_supprimer_fichiersrep_index<M>(middleware: &M)
-    -> Result<(), Box<dyn Error>>
+    -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages
 {
     debug!("entretien_supprimer_fichiersrep_index Debut");
@@ -699,12 +692,11 @@ async fn entretien_supprimer_fichiersrep_index<M>(middleware: &M)
     if tuuids_supprimer.len() > 0 {
         info!("entretien_supprimer_fichiersrep_index Supprimer indexation sur {} tuuids", tuuids_supprimer.len());
         let domaine: &str = RolesCertificats::SolrRelai.into();
-        let routage = RoutageMessageAction::builder(domaine, "supprimerTuuids")
-            .exchanges(vec![Securite::L4Secure])
+        let routage = RoutageMessageAction::builder(domaine, "supprimerTuuids", vec![Securite::L4Secure])
             .timeout_blocking(30_000)
             .build();
         let commande = SupprimerIndexTuuids { tuuids: tuuids_supprimer.clone() };
-        middleware.transmettre_commande(routage, &commande, true).await?;
+        middleware.transmettre_commande(routage, &commande).await?;
 
         // Marquer tuuids comme non indexes
         let filtre = doc!{ CHAMP_TUUID: {"$in": tuuids_supprimer} };
@@ -720,7 +712,7 @@ async fn entretien_supprimer_fichiersrep_index<M>(middleware: &M)
 }
 
 // pub async fn traiter_index_manquant<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, limite: i64)
-//     -> Result<Vec<String>, Box<dyn Error>>
+//     -> Result<Vec<String>, CommonError>
 //     where M: GenerateurMessages + MongoDao + ValidateurX509
 // {
 //     // if ! gestionnaire.es_est_pret() {
@@ -818,8 +810,8 @@ async fn entretien_supprimer_fichiersrep_index<M>(middleware: &M)
 // }
 
 async fn entretien_retirer_supprimes_sans_visites<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<(), Box<dyn Error>>
-    where M: MongoDao + GenerateurMessages + ValidateurX509 + VerificateurMessage
+    -> Result<(), CommonError>
+    where M: MongoDao + GenerateurMessages + ValidateurX509
 {
     debug!("entretien_retirer_supprimes_sans_visites Debut");
 

@@ -1,8 +1,7 @@
 use std::collections::HashMap;
-use millegrilles_common_rust::bson::{Bson, DateTime, Document};
+use millegrilles_common_rust::bson::{Bson, Document};
 use millegrilles_common_rust::chiffrage_cle::InformationCle;
-use millegrilles_common_rust::chrono::Utc;
-use millegrilles_common_rust::formatteur_messages::DateEpochSeconds;
+use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::messages_generiques::CommandeUsager;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
@@ -249,8 +248,8 @@ pub struct FichierDetail {
     pub fuuid_v_courante: Option<String>,
     pub version_courante: Option<DBFichierVersionDetail>,
     pub favoris: Option<bool>,
-    pub date_creation: Option<DateEpochSeconds>,
-    pub derniere_modification: Option<DateEpochSeconds>,
+    pub date_creation: Option<DateTime<Utc>>,
+    pub derniere_modification: Option<DateTime<Utc>>,
     pub supprime: Option<bool>,
     pub archive: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
@@ -258,7 +257,7 @@ pub struct FichierDetail {
     // #[serde(skip_serializing_if="Option::is_none")]
     // pub supprime_cuuids_path: Option<Vec<String>>,
     #[serde(skip_serializing_if="Option::is_none")]
-    pub visites: Option<HashMap<String, DateEpochSeconds>>,
+    pub visites: Option<HashMap<String, DateTime<Utc>>>,
 
     /// Breadcrumbs pour chaque cuuid du fichier
     #[serde(skip_serializing_if="Option::is_none")]
@@ -293,7 +292,7 @@ pub struct DBFichierVersionDetail {
     pub mimetype: String,
     pub taille: usize,
     #[serde(rename="dateFichier")]
-    pub date_fichier: Option<DateEpochSeconds>,
+    pub date_fichier: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub height: Option<u32>,
     #[serde(skip_serializing_if="Option::is_none")]
@@ -674,7 +673,7 @@ pub struct NodeFichierVersionBorrowed<'a> {
     pub fuuids_reclames: Vec<&'a str>,
 
     pub supprime: bool,
-    pub visites: HashMap<&'a str, DateEpochSeconds>,
+    pub visites: HashMap<&'a str, DateTime<Utc>>,
 
     // Champs optionnels media
     #[serde(skip_serializing_if="Option::is_none")]

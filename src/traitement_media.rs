@@ -1,32 +1,27 @@
 use std::collections::HashMap;
-use std::convert::{TryFrom, TryInto};
-use std::error::Error;
-use std::sync::Arc;
 
 use log::{debug, error, warn};
-use millegrilles_common_rust::{serde_json, serde_json::json};
+use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{Bson, doc, Document};
+use millegrilles_common_rust::bson::{Bson, doc};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chrono::{Duration, Utc};
+use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::fichiers::is_mimetype_video;
-use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::messages_generiques::CommandeUsager;
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable};
-use millegrilles_common_rust::middleware_db::MiddlewareDb;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
-use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint};
-use millegrilles_common_rust::recepteur_messages::MessageValideAction;
+use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::verificateur::VerificateurMessage;
+use millegrilles_common_rust::error::Error as CommonError;
+
 use crate::grosfichiers::GestionnaireGrosFichiers;
 
 use crate::grosfichiers_constantes::*;
-use crate::requetes::mapper_fichier_db;
 use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job};
 
 const EVENEMENT_IMAGE_DISPONIBLE: &str = "jobImageDisponible";
@@ -50,9 +45,9 @@ impl JobHandler for ImageJobHandler {
     fn get_action_evenement(&self) -> &str { EVENEMENT_IMAGE_DISPONIBLE }
 
     async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, job: BackgroundJob, erreur: S)
-        -> Result<(), Box<dyn Error>>
+        -> Result<(), CommonError>
         where
-            M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage,
+            M: ValidateurX509 + GenerateurMessages + MongoDao,
             G: GestionnaireDomaine,
             S: ToString + Send
     {
@@ -88,7 +83,7 @@ impl JobHandlerVersions for ImageJobHandler {
         parametres: Option<HashMap<String, Bson>>,
         emettre_trigger: bool,
     )
-        -> Result<(), Box<dyn Error>>
+        -> Result<(), CommonError>
         where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send
     {
         let fuuid = fuuid.as_ref();
@@ -157,9 +152,9 @@ impl JobHandler for VideoJobHandler {
     fn get_action_evenement(&self) -> &str { EVENEMENT_VIDEO_DISPONIBLE }
 
     async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, job: BackgroundJob, erreur: S)
-        -> Result<(), Box<dyn Error>>
+        -> Result<(), CommonError>
         where
-            M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage,
+            M: ValidateurX509 + GenerateurMessages + MongoDao,
             G: GestionnaireDomaine,
             S: ToString + Send
     {
@@ -203,7 +198,7 @@ impl JobHandlerVersions for VideoJobHandler {
         parametres: Option<HashMap<String, Bson>>,
         emettre_trigger: bool,
     )
-        -> Result<(), Box<dyn Error>>
+        -> Result<(), CommonError>
         where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send
     {
         let fuuid = fuuid.as_ref();
@@ -304,7 +299,7 @@ impl JobHandlerVersions for VideoJobHandler {
 struct JobCles {
     fuuid: String,
     cle_conversion: String,
-    visites: Option<HashMap<String, DateEpochSeconds>>,
+    visites: Option<HashMap<String, DateTime<Utc>>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -323,22 +318,23 @@ struct RequeteJobsVideo {
     toutes_jobs: Option<bool>,
 }
 
-pub async fn requete_jobs_video<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage
+pub async fn requete_jobs_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_jobs_video Message : {:?}", & m.message);
-    let requete: RequeteJobsVideo = m.message.get_msg().map_contenu()?;
+    debug!("requete_jobs_video Message : {:?}", & m.type_message);
+    let message_ref = m.message.parse()?;
+    let requete: RequeteJobsVideo = message_ref.contenu()?.deserialize()?;
 
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
 
     let mut filtre = doc! {};
 
     if role_prive && user_id.is_some() {
         // Ok
         filtre.insert("user_id", Bson::String(user_id.expect("user_id")));
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
         let inserer_userid = match requete.toutes_jobs {
             Some(b) => ! b,  // Ne pas ajouter le filtre user_id - chercher toutes les jobs
@@ -351,7 +347,7 @@ pub async fn requete_jobs_video<M>(middleware: &M, m: MessageValideAction, gesti
             filtre.insert("user_id", Bson::String(user_id.expect("user_id")));
         }
     } else {
-        Err(format!("grosfichiers.requete_jobs_video: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.requete_jobs_video: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     debug!("requete_jobs_video Filtre {:?}", filtre);
@@ -366,7 +362,7 @@ pub async fn requete_jobs_video<M>(middleware: &M, m: MessageValideAction, gesti
     }
 
     let reponse = json!({ "jobs":  jobs });
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -375,15 +371,18 @@ struct CommandeSupprimerJobImage {
     fuuid: String,
 }
 
-pub async fn commande_supprimer_job_image<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+pub async fn commande_supprimer_job_image<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_supprimer_job_video Consommer commande : {:?}", & m.message);
-    let commande: CommandeSupprimerJobImage = m.message.get_msg().map_contenu()?;
+    debug!("commande_supprimer_job_video Consommer commande : {:?}", & m.type_message);
+    let commande: CommandeSupprimerJobImage = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     let fuuid = &commande.fuuid;
-    if ! m.verifier_roles(vec![RolesCertificats::Media]) && m.verifier_exchanges(vec![Securite::L4Secure]) {
+    if ! m.certificat.verifier_roles(vec![RolesCertificats::Media])? && m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
         Err(format!("traitement_media.commande_supprimer_job_video Certificat n'a pas le role prive ni delegation proprietaire"))?;
     }
     let user_id = &commande.user_id;
@@ -406,7 +405,7 @@ pub async fn commande_supprimer_job_image<M>(middleware: &M, m: MessageValideAct
 
     gestionnaire.image_job_handler.set_flag(middleware, fuuid, Some(user_id), None, true).await?;
 
-    Ok(middleware.reponse_ok()?)
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -425,21 +424,24 @@ impl<'a> CommandeUsager<'a> for CommandeSupprimerJobVideo {
     }
 }
 
-pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_supprimer_job_video Consommer commande : {:?}", & m.message);
-    let commande: CommandeSupprimerJobVideo = m.message.get_msg().map_contenu()?;
+    debug!("commande_supprimer_job_video Consommer commande : {:?}", & m.type_message);
+    let commande: CommandeSupprimerJobVideo = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     let fuuid = &commande.fuuid;
-    let user_id = if m.verifier_roles(vec![RolesCertificats::Media]) && m.verifier_exchanges(vec![Securite::L4Secure]) {
+    let user_id = if m.certificat.verifier_roles(vec![RolesCertificats::Media])? && m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
         match commande.user_id.as_ref() {
             Some(inner) => inner.to_owned(),
             None => Err(format!("traitement_media.commande_supprimer_job_video User_id manquant de la commande"))?
         }
-    } else if m.verifier_roles(vec![RolesCertificats::ComptePrive]) || m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        match m.get_user_id() {
+    } else if m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])? || m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+        match m.certificat.get_user_id()? {
             Some(u) => u,
             None => Err(format!("traitement_media.commande_supprimer_job_video User_id manquant du certificat"))?
         }
@@ -449,8 +451,7 @@ pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAct
 
     {
         // Emettre evenement annulerJobVideo pour media, collections
-        let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_ANNULER_JOB_VIDEO)
-            .exchanges(vec![Securite::L2Prive])
+        let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_ANNULER_JOB_VIDEO, vec![Securite::L2Prive])
             .build();
 
         let evenement_arreter_job = CommandeSupprimerJobVideo {
@@ -487,13 +488,12 @@ pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValideAct
         "cle_conversion": commande.cle_conversion,
         "fuuid": fuuid,
     });
-    let routage = RoutageMessageAction::builder(DOMAINE_NOM, "jobSupprimee")
-        .exchanges(vec![Securite::L2Prive])
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM, "jobSupprimee", vec![Securite::L2Prive])
         .partition(user_id)
         .build();
     middleware.emettre_evenement(routage, &evenement).await?;
 
-    Ok(middleware.reponse_ok()?)
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 fn job_image_supportee<S>(mimetype: S) -> bool

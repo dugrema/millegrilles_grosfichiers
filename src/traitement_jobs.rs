@@ -1,25 +1,21 @@
 use std::collections::HashMap;
-use std::error::Error;
-use std::time::Duration as std_Duration;
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{Bson, DateTime, doc};
-use millegrilles_common_rust::certificats::{EnveloppeCertificat, ValidateurX509};
+use millegrilles_common_rust::certificats::ValidateurX509;
 use millegrilles_common_rust::chiffrage_cle::{InformationCle, ReponseDechiffrageCles};
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::common_messages::RequeteDechiffrage;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
-use millegrilles_common_rust::formatteur_messages::MessageMilleGrille;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
-use millegrilles_common_rust::middleware_db::MiddlewareDb;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
-use millegrilles_common_rust::mongodb::options::{DeleteOptions, FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::serde_json::{json, Value};
-use millegrilles_common_rust::tokio::time::sleep;
-use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::verificateur::VerificateurMessage;
+use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
+
 use serde::{Deserialize, Serialize};
 
 use crate::grosfichiers_constantes::*;
@@ -46,16 +42,16 @@ pub trait JobHandler: Clone + Sized + Sync {
 
     /// Marque une job comme terminee avec erreur irrecuperable.
     async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, job: BackgroundJob, erreur: S)
-        -> Result<(), Box<dyn Error>>
+        -> Result<(), CommonError>
         where
-            M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage,
+            M: ValidateurX509 + GenerateurMessages + MongoDao,
             G: GestionnaireDomaine,
             S: ToString + Send;
 
     /// Emettre un evenement de job disponible.
     /// 1 evenement emis pour chaque instance avec au moins 1 job de disponible.
     async fn emettre_evenements_job<M>(&self, middleware: &M)
-        where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+        where M: GenerateurMessages + MongoDao + ValidateurX509
     {
         let visites = match trouver_jobs_instances(middleware, self).await {
             Ok(visites) => match visites {
@@ -81,8 +77,7 @@ pub trait JobHandler: Clone + Sized + Sync {
     where M: GenerateurMessages, I: AsRef<str> + Send {
         let instance = instance.as_ref();
 
-        let routage = RoutageMessageAction::builder(DOMAINE_NOM, self.get_action_evenement())
-            .exchanges(vec![Securite::L2Prive])
+        let routage = RoutageMessageAction::builder(DOMAINE_NOM, self.get_action_evenement(), vec![Securite::L2Prive])
             .partition(instance)
             .build();
 
@@ -99,7 +94,7 @@ pub trait JobHandler: Clone + Sized + Sync {
     //     parametres: Option<HashMap<String, Bson>>,
     //     emettre_trigger: bool
     // )
-    //     -> Result<(), Box<dyn Error>>
+    //     -> Result<(), CommonError>
     //     where M: GenerateurMessages + MongoDao,
     //           S: AsRef<str> + Send, U: AsRef<str> + Send
     // {
@@ -119,13 +114,13 @@ pub trait JobHandler: Clone + Sized + Sync {
     //     &self, middleware: &M, fuuid: S, user_id: Option<U>,
     //     cles_supplementaires: Option<HashMap<String, String>>,
     //     valeur: bool
-    // ) -> Result<(), Box<dyn Error>>
+    // ) -> Result<(), CommonError>
     // where M: MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send {
     //     set_flag(middleware, self, fuuid, user_id, cles_supplementaires, valeur).await
     // }
 
     // async fn get_prochaine_job<M>(&self, middleware: &M, certificat: &EnveloppeCertificat, commande: CommandeGetJob)
-    //     -> Result<ReponseJob, Box<dyn Error>>
+    //     -> Result<ReponseJob, CommonError>
     //     where M: GenerateurMessages + MongoDao
     // {
     //     get_prochaine_job_versions(middleware, self.get_nom_collection(), certificat, commande).await
@@ -144,7 +139,7 @@ pub trait JobHandlerVersions: JobHandler {
         &self, middleware: &M, fuuid: S, user_id: Option<U>,
         cles_supplementaires: Option<HashMap<String, String>>,
         valeur: bool
-    ) -> Result<(), Box<dyn Error>>
+    ) -> Result<(), CommonError>
     where M: MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send {
         set_flag_versions(middleware, self, fuuid, user_id, cles_supplementaires, valeur).await
     }
@@ -155,7 +150,7 @@ pub trait JobHandlerVersions: JobHandler {
         parametres: Option<HashMap<String, Bson>>,
         emettre_trigger: bool
     )
-        -> Result<(), Box<dyn Error>>
+        -> Result<(), CommonError>
         where M: GenerateurMessages + MongoDao,
               S: AsRef<str> + Send, U: AsRef<str> + Send
     {
@@ -171,7 +166,7 @@ pub trait JobHandlerVersions: JobHandler {
     }
 
     async fn get_prochaine_job<M>(&self, middleware: &M, certificat: &EnveloppeCertificat, commande: CommandeGetJob)
-        -> Result<ReponseJob, Box<dyn Error>>
+        -> Result<ReponseJob, CommonError>
         where M: GenerateurMessages + MongoDao
     {
         get_prochaine_job_versions(middleware, self.get_nom_collection(), certificat, commande).await
@@ -180,7 +175,7 @@ pub trait JobHandlerVersions: JobHandler {
     /// Doit etre invoque regulierement pour generer nouvelles jobs, expirer vieilles, etc.
     async fn entretien<M,G>(&self, middleware: &M, gestionnaire: &G, limite_batch: Option<i64>)
         where
-            M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage,
+            M: GenerateurMessages + MongoDao + ValidateurX509,
             G: GestionnaireDomaine
     {
         debug!("entretien Cycle entretien JobHandler {}", self.get_nom_flag());
@@ -194,7 +189,7 @@ pub trait JobHandlerVersions: JobHandler {
             error!("traitement_jobs.JobHandler.entretien {} Erreur sur ajouter_jobs_manquantes : {:?}", self.get_nom_flag(), e);
         }
 
-        /// Emettre des triggers au besoin.
+        // Emettre des triggers au besoin.
         self.emettre_evenements_job(middleware).await;
     }
 }
@@ -206,7 +201,7 @@ pub trait JobHandlerFichiersRep: JobHandler {
         &self, middleware: &M, tuuid: S, user_id: Option<U>,
         cles_supplementaires: Option<HashMap<String, String>>,
         valeur: bool
-    ) -> Result<(), Box<dyn Error>>
+    ) -> Result<(), CommonError>
     where M: MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send {
         set_flag_fichiersrep(middleware, self, tuuid, user_id, cles_supplementaires, valeur).await
     }
@@ -217,7 +212,7 @@ pub trait JobHandlerFichiersRep: JobHandler {
         parametres: Option<HashMap<String, Bson>>,
         emettre_trigger: bool
     )
-        -> Result<(), Box<dyn Error>>
+        -> Result<(), CommonError>
         where M: GenerateurMessages + MongoDao,
               S: AsRef<str> + Send, U: AsRef<str> + Send
     {
@@ -235,7 +230,7 @@ pub trait JobHandlerFichiersRep: JobHandler {
     }
 
     async fn get_prochaine_job<M>(&self, middleware: &M, certificat: &EnveloppeCertificat, commande: CommandeGetJob)
-        -> Result<ReponseJob, Box<dyn Error>>
+        -> Result<ReponseJob, CommonError>
         where M: GenerateurMessages + MongoDao
     {
         get_prochaine_job_fichiersrep(middleware, self.get_nom_collection(), certificat, commande).await
@@ -244,7 +239,7 @@ pub trait JobHandlerFichiersRep: JobHandler {
     /// Doit etre invoque regulierement pour generer nouvelles jobs, expirer vieilles, etc.
     async fn entretien<M,G>(&self, middleware: &M, gestionnaire: &G, limite_batch: Option<i64>)
         where
-            M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage,
+            M: GenerateurMessages + MongoDao + ValidateurX509,
             G: GestionnaireDomaine
     {
         debug!("entretien Cycle entretien JobHandler {}", self.get_nom_flag());
@@ -258,7 +253,7 @@ pub trait JobHandlerFichiersRep: JobHandler {
             error!("traitement_jobs.JobHandler.entretien {} Erreur sur ajouter_jobs_manquantes : {:?}", self.get_nom_flag(), e);
         }
 
-        /// Emettre des triggers au besoin.
+        // Emettre des triggers au besoin.
         self.emettre_evenements_job(middleware).await;
     }
 }
@@ -270,11 +265,11 @@ struct DocJob {
 
 /// Emet un trigger media image si au moins une job media est due.
 pub async fn trouver_jobs_instances<J,M>(middleware: &M, job_handler: &J)
-    -> Result<Option<Vec<String>>, Box<dyn Error>>
+    -> Result<Option<Vec<String>>, CommonError>
     where M: MongoDao, J: JobHandler
 {
     let doc_job: Option<DocJob> = {
-        let mut filtre = doc! {
+        let filtre = doc! {
             CHAMP_ETAT_JOB: VIDEO_CONVERSION_ETAT_PENDING
         };
         let options = FindOneOptions::builder().projection(doc! {"instances": true}).build();
@@ -300,7 +295,7 @@ async fn set_flag_versions<M,J,S,U>(
     middleware: &M, job_handler: &J, fuuid: S, user_id: Option<U>,
     cles_supplementaires: Option<HashMap<String, String>>,
     valeur: bool
-) -> Result<(), Box<dyn Error>>
+) -> Result<(), CommonError>
     where M: MongoDao, J: JobHandler, S: AsRef<str> + Send, U: AsRef<str> + Send
 {
     let fuuid = fuuid.as_ref();
@@ -363,7 +358,7 @@ async fn set_flag_fichiersrep<M,J,S,U>(
     middleware: &M, job_handler: &J, tuuid: S, user_id: Option<U>,
     cles_supplementaires: Option<HashMap<String, String>>,
     valeur: bool
-) -> Result<(), Box<dyn Error>>
+) -> Result<(), CommonError>
     where M: MongoDao, J: JobHandler, S: AsRef<str> + Send, U: AsRef<str> + Send
 {
     let tuuid = tuuid.as_ref();
@@ -436,9 +431,9 @@ struct RowVersionsIds {
     visites: Option<HashMap<String, i64>>,
 }
 
-async fn entretien_jobs_versions<J,G,M>(middleware: &M, gestionnaire: &G, job_handler: &J, limite_batch: i64) -> Result<(), Box<dyn Error>>
+async fn entretien_jobs_versions<J,G,M>(middleware: &M, gestionnaire: &G, job_handler: &J, limite_batch: i64) -> Result<(), CommonError>
     where
-        M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage,
+        M: GenerateurMessages + MongoDao + ValidateurX509,
         G: GestionnaireDomaine,
         J: JobHandler + JobHandlerVersions
 {
@@ -576,9 +571,9 @@ async fn entretien_jobs_versions<J,G,M>(middleware: &M, gestionnaire: &G, job_ha
     Ok(())
 }
 
-async fn entretien_jobs_fichiersrep<J,G,M>(middleware: &M, gestionnaire: &G, job_handler: &J, limite_batch: i64) -> Result<(), Box<dyn Error>>
+async fn entretien_jobs_fichiersrep<J,G,M>(middleware: &M, gestionnaire: &G, job_handler: &J, limite_batch: i64) -> Result<(), CommonError>
     where
-        M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage,
+        M: GenerateurMessages + MongoDao + ValidateurX509,
         G: GestionnaireDomaine,
         J: JobHandler + JobHandlerFichiersRep
 {
@@ -768,7 +763,7 @@ pub async fn sauvegarder_job<M,J,S,U>(
     champs_cles: Option<HashMap<String, String>>,
     parametres: Option<HashMap<String, Bson>>
 )
-    -> Result<Option<Vec<String>>, Box<dyn Error>>
+    -> Result<Option<Vec<String>>, CommonError>
     where M: MongoDao, J: JobHandler,
           S: AsRef<str> + Send, U: AsRef<str> + Send
 {
@@ -872,7 +867,7 @@ pub async fn sauvegarder_job_fichiersrep<M,J,S,U>(
     champs_cles: Option<HashMap<String, String>>,
     parametres: Option<HashMap<String, Bson>>
 )
-    -> Result<Option<Vec<String>>, Box<dyn Error>>
+    -> Result<Option<Vec<String>>, CommonError>
     where M: MongoDao, J: JobHandler,
           S: AsRef<str> + Send, U: AsRef<str> + Send
 {
@@ -1164,7 +1159,7 @@ impl From<BackgroundJob> for ReponseJob {
 }
 
 pub async fn get_prochaine_job_versions<M,S>(middleware: &M, nom_collection: S, certificat: &EnveloppeCertificat, commande: CommandeGetJob)
-    -> Result<ReponseJob, Box<dyn Error>>
+    -> Result<ReponseJob, CommonError>
     where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send
 {
     let nom_collection = nom_collection.as_ref();
@@ -1186,7 +1181,7 @@ pub async fn get_prochaine_job_versions<M,S>(middleware: &M, nom_collection: S, 
     };
 
     // Recuperer les metadonnees et information de version
-    let mut filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_FUUID: &fuuid };
+    let filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_FUUID: &fuuid };
     let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(
         NOM_COLLECTION_VERSIONS)?;
     let fichier_version = match collection_versions.find_one(filtre, None).await? {
@@ -1215,7 +1210,7 @@ pub async fn get_prochaine_job_versions<M,S>(middleware: &M, nom_collection: S, 
 }
 
 pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: S, certificat: &EnveloppeCertificat, commande: CommandeGetJob)
-    -> Result<ReponseJob, Box<dyn Error>>
+    -> Result<ReponseJob, CommonError>
     where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send
 {
     let nom_collection = nom_collection.as_ref();
@@ -1246,7 +1241,7 @@ pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: 
 
     // Recuperer les metadonnees et information de version
     let (fichier_rep, cle) = {
-        let mut filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: &tuuid };
+        let filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: &tuuid };
         let collection_rep = middleware.get_collection_typed::<NodeFichierRepOwned>(
             NOM_COLLECTION_FICHIERS_REP)?;
 
@@ -1263,7 +1258,7 @@ pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: 
                     Some(inner) => inner.to_owned(),
                     None => {
                         match fichier_rep.fuuids_versions.as_ref() {
-                            Some(mut inner) => match inner.get(0) {
+                            Some(inner) => match inner.get(0) {
                                 Some(inner) => inner.to_owned(),
                                 None => Err(format!("traitement_jobs.get_prochaine_job Aucun fuuid courant pour tuuid {}", tuuid))?
                             },
@@ -1309,7 +1304,7 @@ pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: 
 /// Trouver prochaine job
 /// Inclue les jobs avec too many retries
 pub async fn trouver_prochaine_job_traitement<M,S>(middleware: &M, nom_collection: S, commande: &CommandeGetJob)
-                                                   -> Result<Option<BackgroundJob>, Box<dyn Error>>
+                                                   -> Result<Option<BackgroundJob>, CommonError>
     where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send
 {
     let collection = middleware.get_collection(nom_collection.as_ref())?;
@@ -1366,22 +1361,22 @@ pub async fn trouver_prochaine_job_traitement<M,S>(middleware: &M, nom_collectio
 }
 
 pub async fn get_cle_job_indexation<M,S>(middleware: &M, fuuid: S, certificat: &EnveloppeCertificat)
-    -> Result<InformationCle, Box<dyn Error>>
+    -> Result<InformationCle, CommonError>
     where
         M: GenerateurMessages + MongoDao,
         S: AsRef<str>
 {
     let fuuid = fuuid.as_ref();
 
-    let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE)
-        .exchanges(vec![Securite::L4Secure])
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE, vec![Securite::L4Secure])
         .build();
 
     // Utiliser certificat du message client (requete) pour demande de rechiffrage
-    let pem_rechiffrage: Vec<String> = {
-        let fp_certs = certificat.get_pem_vec();
-        fp_certs.into_iter().map(|cert| cert.pem).collect()
-    };
+    let pem_rechiffrage = certificat.chaine_pem()?;
+    // let pem_rechiffrage: Vec<String> = {
+    //     let fp_certs = certificat.get_pem_vec();
+    //     fp_certs.into_iter().map(|cert| cert.pem).collect()
+    // };
 
     let permission = RequeteDechiffrage {
         domaine: DOMAINE_NOM.to_string(),
@@ -1391,7 +1386,8 @@ pub async fn get_cle_job_indexation<M,S>(middleware: &M, fuuid: S, certificat: &
 
     debug!("get_cle_job_indexation Transmettre requete permission dechiffrage cle : {:?}", permission);
     let cle = if let TypeMessage::Valide(reponse) = middleware.transmettre_requete(routage, &permission).await? {
-        let reponse: ReponseDechiffrageCles = reponse.message.parsed.map_contenu()?;
+        let message_ref = reponse.message.parse()?;
+        let reponse: ReponseDechiffrageCles = message_ref.contenu()?.deserialize()?;
         if reponse.acces.as_str() != "1.permis" {
             Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : acces refuse ({}) a cle {}", reponse.acces, fuuid))?
         }

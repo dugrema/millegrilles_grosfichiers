@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use log::{debug, error, warn};
@@ -8,19 +7,21 @@ use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{Bson, doc, Document};
 
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chrono::Utc;
+use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::L2Prive;
-use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint};
-use millegrilles_common_rust::recepteur_messages::MessageValideAction;
+use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::time as tokio_time;
 use millegrilles_common_rust::tokio::time::{Duration as DurationTokio, timeout};
 use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::verificateur::VerificateurMessage;
+use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
+
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 
 use crate::grosfichiers_constantes::*;
@@ -30,19 +31,26 @@ use crate::traitement_jobs::{JobHandler, JobHandlerFichiersRep, JobHandlerVersio
 const LIMITE_FUUIDS_BATCH: usize = 10000;
 const EXPIRATION_THROTTLING_EVENEMENT_CUUID_CONTENU: i64 = 1;
 
-pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValideAction)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
+pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
-    debug!("consommer_evenement Consommer evenement : {:?}", &m.message);
+    debug!("consommer_evenement Consommer evenement : {:?}", &m.type_message);
 
     // Autorisation : doit etre de niveau 3.protege ou 4.secure
-    match m.verifier_exchanges(vec![Securite::L2Prive]) {
+    match m.certificat.verifier_exchanges(vec![Securite::L2Prive])? {
         true => Ok(()),
         false => Err(format!("grosfichiers.consommer_evenement: Exchange evenement invalide (pas 2.prive)")),
     }?;
 
-    match m.action.as_str() {
+    let action = {
+        match &m.type_message {
+            TypeMessageOut::Evenement(r) => r.action.clone(),
+            _ => Err(CommonError::Str("evenements.consommer_evenement Mauvais type de message (pas evenement)"))?
+        }
+    };
+
+    match action.as_str() {
         // EVENEMENT_CONFIRMER_ETAT_FUUIDS => {
         //     evenement_confirmer_etat_fuuids(middleware, m).await?;
         //     Ok(None)
@@ -52,27 +60,26 @@ pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireG
         EVENEMENT_FICHIERS_VISITER_FUUIDS => evenement_visiter_fuuids(middleware, m).await,
         EVENEMENT_FICHIERS_CONSIGNE => evenement_fichier_consigne(middleware, gestionnaire, m).await,
         EVENEMENT_FICHIERS_SYNC_PRIMAIRE => evenement_fichier_sync_primaire(middleware, gestionnaire, m).await,
-        _ => Err(format!("grosfichiers.consommer_evenement: Mauvais type d'action pour un evenement : {}", m.action))?,
+        _ => Err(format!("grosfichiers.consommer_evenement: Mauvais type d'action pour un evenement : {}", action))?,
     }
 }
 
-async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValideAction)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao,
 {
-    let uuid_transaction = m.correlation_id.clone();
-
-    if !m.verifier_exchanges(vec![L2Prive]) {
-        error!("evenement_transcodage_progres Acces refuse, certificat n'est pas d'un exchange L2 : {:?}", uuid_transaction);
+    if !m.certificat.verifier_exchanges(vec![L2Prive])? {
+        error!("evenement_transcodage_progres Acces refuse, certificat n'est pas d'un exchange L2 : {:?}", m.type_message);
         return Ok(None)
     }
-    if !m.verifier_roles(vec![RolesCertificats::Media]) {
+    if !m.certificat.verifier_roles(vec![RolesCertificats::Media])? {
         error!("evenement_transcodage_progres Acces refuse, certificat n'est pas de role media");
         return Ok(None)
     }
 
-    debug!("evenement_transcodage_progres Message : {:?}", & m.message);
-    let evenement: EvenementTranscodageProgres = m.message.get_msg().map_contenu()?;
+    debug!("evenement_transcodage_progres Message : {:?}", & m.type_message);
+    let message_ref = m.message.parse()?;
+    let evenement: EvenementTranscodageProgres = message_ref.contenu()?.deserialize()?;
     debug!("evenement_transcodage_progres parsed : {:?}", evenement);
 
     let height = match evenement.height {
@@ -114,7 +121,7 @@ async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValideAction
 }
 
 async fn transmettre_fuuids_fichiers<M>(middleware: &M, fuuids: &Vec<String>, archive: bool, termine: bool, total: Option<i64>)
-    -> Result<(), Box<dyn Error>>
+    -> Result<(), CommonError>
     where M: GenerateurMessages + MongoDao,
 {
     let confirmation = doc! {
@@ -123,10 +130,10 @@ async fn transmettre_fuuids_fichiers<M>(middleware: &M, fuuids: &Vec<String>, ar
         "termine": termine,
         "total": total,
     };
-    let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, COMMANDE_ACTIVITE_FUUIDS)
-        .exchanges(vec![L2Prive])
+    let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, COMMANDE_ACTIVITE_FUUIDS, vec![L2Prive])
+        .blocking(false)
         .build();
-    middleware.transmettre_commande(routage, &confirmation, false).await?;
+    middleware.transmettre_commande(routage, &confirmation).await?;
     Ok(())
 }
 
@@ -137,26 +144,33 @@ struct RowFichiersSyncpret<'a> {
     archive: Option<bool>,
 }
 
-pub async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValideAction)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+pub async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
-    if !m.verifier_exchanges(vec![L2Prive]) {
+    if !m.certificat.verifier_exchanges(vec![L2Prive])? {
         error!("evenement_fichiers_syncpret Acces refuse, certificat n'est pas d'un exchange L2");
         return Ok(None)
     }
-    if !m.verifier_roles(vec![RolesCertificats::Fichiers]) {
+    if !m.certificat.verifier_roles(vec![RolesCertificats::Fichiers])? {
         error!("evenement_transcodage_progres Acces refuse, certificat n'est pas de role fichiers");
         return Ok(None)
     }
 
     // Repondre immediatement pour declencher sync
     {
-        let reponse = json!({ "ok": true });
-        let reponse = middleware.formatter_reponse(reponse, None)?;
-        let (reply_q, correlation_id) = m.get_reply_info()?;
-        let routage = RoutageMessageReponse::new(reply_q, correlation_id);
-        middleware.repondre(routage, reponse).await?;
+        match m.type_message {
+            TypeMessageOut::Evenement(r) => {
+                let reponse = json!({ "ok": true });
+                if let Some(correlation_id) = r.correlation_id.as_ref() {
+                    if let Some(reply_q) = r.reply_to.as_ref() {
+                        let routage = RoutageMessageReponse::new(reply_q, correlation_id);
+                        middleware.repondre(routage, reponse).await?;
+                    }
+                }
+            },
+            _ => error!("evenement_fichiers_syncpret Mauvais type message, devrait etre evenement")
+        }
     }
 
     let collection = middleware.get_collection_typed::<RowFichiersSyncpret>(NOM_COLLECTION_VERSIONS)?;
@@ -252,32 +266,28 @@ struct ConfirmationEtatFuuid {
 #[derive(Clone, Deserialize)]
 struct EvenementVisiterFuuids { fuuids: Vec<String> }
 
-async fn evenement_visiter_fuuids<M>(middleware: &M, m: MessageValideAction)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn evenement_visiter_fuuids<M>(middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
-    if !m.verifier_exchanges(vec![L2Prive]) {
+    if !m.certificat.verifier_exchanges(vec![L2Prive])? {
         error!("evenement_visiter_fuuids Acces refuse, certificat n'est pas d'un exchange L2");
         return Ok(None)
     }
-    if !m.verifier_roles(vec![RolesCertificats::Fichiers]) {
+    if !m.certificat.verifier_roles(vec![RolesCertificats::Fichiers])? {
         error!("evenement_visiter_fuuids Acces refuse, certificat n'est pas de role fichiers");
         return Ok(None)
     }
 
-    debug!("evenements.evenement_visiter_fuuids Mapper EvenementVisiterFuuids a partir de {:?}", m.message);
-    let evenement: EvenementVisiterFuuids = m.message.parsed.map_contenu()?;
-    let date_visite = &m.message.parsed.estampille;
+    debug!("evenements.evenement_visiter_fuuids Mapper EvenementVisiterFuuids a partir de {:?}", m.type_message);
+    let message_ref = m.message.parse()?;
+    let evenement: EvenementVisiterFuuids = message_ref.contenu()?.deserialize()?;
+    let date_visite = &message_ref.estampille;
 
     // Recuperer instance_id
-    let instance_id = match m.message.certificat.as_ref() {
-        Some(inner) => {
-            match inner.subject()?.get("commonName") {
-                Some(inner) => inner.clone(),
-                None => Err(format!("evenements.evenement_visiter_fuuids Certificat sans commonName"))?
-            }
-        },
-        None => Err(format!("evenements.evenement_visiter_fuuids Certificat sans commonName"))?
+    let instance_id = match m.certificat.subject()?.get("commonName") {
+        Some(inner) => inner.to_owned(),
+        None => Err(CommonError::Str("evenements.evenement_visiter_fuuids Certificat sans commonName"))?
     };
 
     debug!("evenement_visiter_fuuids  Visiter {} fuuids de l'instance {}", evenement.fuuids.len(), instance_id);
@@ -302,32 +312,28 @@ struct DocumentFichierDetailIds {
     visites: Option<HashMap<String, u32>>,
 }
 
-async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValideAction)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
-    if !m.verifier_exchanges(vec![L2Prive]) {
+    if !m.certificat.verifier_exchanges(vec![L2Prive])? {
         error!("evenement_fichier_consigne Acces refuse, certificat n'est pas d'un exchange L2");
         return Ok(None)
     }
-    if !m.verifier_roles(vec![RolesCertificats::Fichiers]) {
+    if !m.certificat.verifier_roles(vec![RolesCertificats::Fichiers])? {
         error!("evenement_fichier_consigne Acces refuse, certificat n'est pas de role fichiers");
         return Ok(None)
     }
 
-    debug!("evenements.evenement_fichier_consigne Mapper EvenementVisiterFuuids a partir de {:?}", m.message);
-    let evenement: EvenementFichierConsigne = m.message.parsed.map_contenu()?;
-    let date_visite = &m.message.parsed.estampille;
+    debug!("evenements.evenement_fichier_consigne Mapper EvenementVisiterFuuids a partir de {:?}", m.type_message);
+    let message_ref = m.message.parse()?;
+    let evenement: EvenementFichierConsigne = message_ref.contenu()?.deserialize()?;
+    let date_visite = &message_ref.estampille;
 
     // Recuperer instance_id
-    let instance_id = match m.message.certificat.as_ref() {
-        Some(inner) => {
-            match inner.subject()?.get("commonName") {
-                Some(inner) => inner.clone(),
-                None => Err(format!("evenements.evenement_visiter_fuuids Certificat sans commonName"))?
-            }
-        },
-        None => Err(format!("evenements.evenement_visiter_fuuids Certificat sans commonName"))?
+    let instance_id = match m.certificat.subject()?.get("commonName") {
+        Some(inner) => inner.clone(),
+        None => Err(CommonError::Str("evenements.evenement_visiter_fuuids Certificat sans commonName"))?
     };
 
     // Marquer la visite courante
@@ -409,8 +415,8 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
 }
 
 async fn marquer_visites_fuuids<M>(
-    middleware: &M, fuuids: &Vec<String>, date_visite: &DateEpochSeconds, instance_id: String)
-    -> Result<(), Box<dyn Error>>
+    middleware: &M, fuuids: &Vec<String>, date_visite: &DateTime<Utc>, instance_id: String)
+    -> Result<(), CommonError>
     where M: MongoDao
 {
     debug!("marquer_visites_fuuids  Visiter {} fuuids de l'instance {}", fuuids.len(), instance_id);
@@ -488,7 +494,7 @@ impl HandlerEvenements {
         }
     }
 
-    fn extraire_liste_expires(val: &Mutex<HashMap<String, EvenementHolder>>) -> Result<Option<Vec<EvenementHolder>>, String>
+    fn extraire_liste_expires(val: &Mutex<HashMap<String, EvenementHolder>>) -> Result<Option<Vec<EvenementHolder>>, CommonError>
     {
         let mut lock = match val.lock() {
             Ok(inner) => inner,
@@ -523,7 +529,7 @@ impl HandlerEvenements {
         return Ok(Some(holders))
     }
 
-    pub async fn emettre_cuuid_content_expires<M>(&self, middleware: &M, gestionnaire: &GestionnaireGrosFichiers) -> Result<(), Box<dyn Error>>
+    pub async fn emettre_cuuid_content_expires<M>(&self, middleware: &M, gestionnaire: &GestionnaireGrosFichiers) -> Result<(), CommonError>
         where M: MongoDao + GenerateurMessages
     {
         if let Some(evenements_expires) = HandlerEvenements::extraire_liste_expires(
@@ -547,7 +553,7 @@ impl HandlerEvenements {
 
     /// Insere une entree pour throttling d'evenement sur une collection (cuuid)
     /// Retourne false si la collection n'est pas presentement en throttling
-    pub fn verifier_evenement_cuuid_contenu(&self, evenement: EvenementContenuCollection) -> Result<Option<EvenementContenuCollection>, String>
+    pub fn verifier_evenement_cuuid_contenu(&self, evenement: EvenementContenuCollection) -> Result<Option<EvenementContenuCollection>, CommonError>
     {
         let mut lock = match self.events_cuuid_content_expiration.lock() {
             Ok(inner) => inner,
@@ -606,21 +612,22 @@ impl HandlerEvenements {
 #[derive(Clone, Deserialize)]
 struct EvenementFichierSyncPrimaire { termine: Option<bool> }
 
-async fn evenement_fichier_sync_primaire<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValideAction)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn evenement_fichier_sync_primaire<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    if !m.verifier_exchanges(vec![L2Prive]) {
+    if !m.certificat.verifier_exchanges(vec![L2Prive])? {
         error!("evenement_fichier_sync_primaire Acces refuse, certificat n'est pas d'un exchange L2");
         return Ok(None)
     }
-    if !m.verifier_roles(vec![RolesCertificats::Fichiers]) {
+    if !m.certificat.verifier_roles(vec![RolesCertificats::Fichiers])? {
         error!("evenement_fichier_sync_primaire Acces refuse, certificat n'est pas de role fichiers");
         return Ok(None)
     }
 
-    debug!("evenements.evenement_fichier_sync_primaire Mapper EvenementVisiterFuuids a partir de {:?}", m.message);
-    let evenement: EvenementFichierSyncPrimaire = m.message.parsed.map_contenu()?;
+    debug!("evenements.evenement_fichier_sync_primaire Mapper EvenementVisiterFuuids a partir de {:?}", m.type_message);
+    let message_ref = m.message.parse()?;
+    let evenement: EvenementFichierSyncPrimaire = message_ref.contenu()?.deserialize()?;
 
     if Some(true) == evenement.termine {
         debug!("evenement_fichier_sync_primaire Declencher nettoyage apres sync primaire");

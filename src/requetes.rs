@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
 use std::convert::{TryFrom, TryInto};
 use std::ops::Deref;
 
@@ -9,26 +8,27 @@ use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{Bson, doc, Document};
 use millegrilles_common_rust::bson::serde_helpers::deserialize_chrono_datetime_from_bson_datetime;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage::FormatChiffrage;
-use millegrilles_common_rust::chrono::{Date, DateTime, Utc};
+use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::common_messages::{InformationDechiffrage, ReponseDechiffrage, RequeteDechiffrage};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
-use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::jwt_handler::{generer_jwt, verify_jwt};
 use millegrilles_common_rust::messages_generiques::CommandeDechiffrerCle;
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, filtrer_doc_id, MongoDao};
 use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::mongodb::options::{FindOptions, Hint, UpdateOptions};
-use millegrilles_common_rust::recepteur_messages::{MessageValideAction, TypeMessage};
+use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::redis::Commands;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::Transaction;
-use millegrilles_common_rust::verificateur::VerificateurMessage;
+use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
+use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
@@ -40,22 +40,32 @@ const CONST_LIMITE_TAILLE_ZIP: u64 = 1024 * 1024 * 1024 * 100;   // Limite 100 G
 const CONST_LIMITE_NOMBRE_ZIP: u64 = 1_000;
 const CONST_LIMITE_NOMBRE_SOUS_REPERTOIRES: u64 = 10_000;
 
-pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
+pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestionnaire: &GestionnaireGrosFichiers) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
     debug!("Consommer requete : {:?}", &message.message);
 
-    let user_id = message.get_user_id();
-    let role_prive = message.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = message.certificat.get_user_id()?;
+    let role_prive = message.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
 
-    let domaine = message.domaine.as_str();
-    if domaine != DOMAINE_NOM {
-        error!("Message requete/domaine inconnu : '{}'. Message dropped.", message.domaine);
+    let (domaine, action) = match &message.type_message {
+        TypeMessageOut::Requete(r) => {
+            (r.domaine.clone(), r.action.clone())
+        }
+        _ => {
+            error!("Message requete/domaine inconnu : {:?}. Message dropped.", message.type_message);
+            return Ok(None)
+        }
+    };
+
+    // let domaine = message.domaine.as_str();
+    if domaine.as_str() != DOMAINE_NOM {
+        error!("Message requete/domaine inconnu : '{}'. Message dropped.", domaine);
         return Ok(None)
     }
 
     if role_prive && user_id.is_some() {
-        match message.action.as_str() {
+        match action.as_str() {
             REQUETE_ACTIVITE_RECENTE => requete_activite_recente(middleware, message, gestionnaire).await,
             REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
@@ -78,12 +88,12 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_SOUS_REPERTOIRES => requete_sous_repertoires(middleware, message, gestionnaire).await,
             REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
             _ => {
-                error!("Message requete/action inconnue (1): '{}'. Message dropped.", message.action);
+                error!("Message requete/action inconnue (1): '{}'. Message dropped.", action);
                 Ok(None)
             }
         }
-    } else if message.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
-        match message.action.as_str() {
+    } else if message.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
+        match action.as_str() {
             REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
@@ -93,12 +103,12 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_SYNC_CORBEILLE => requete_sync_corbeille(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CUUIDS => requete_sync_cuuids(middleware, message, gestionnaire).await,
             _ => {
-                error!("Message requete/action inconnue pour exchanges 3.protege/4.secure : '{}'. Message dropped.", message.action);
+                error!("Message requete/action inconnue pour exchanges 3.protege/4.secure : '{}'. Message dropped.", action);
                 Ok(None)
             }
         }
-    } else if message.verifier_exchanges(vec![Securite::L2Prive]) {
-        match message.action.as_str() {
+    } else if message.certificat.verifier_exchanges(vec![Securite::L2Prive])? {
+        match action.as_str() {
             REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
@@ -107,12 +117,12 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_STREAM => requete_get_cles_stream(middleware, message, gestionnaire).await,
             _ => {
-                error!("Message requete/action inconnue pour exchange 2.prive : '{}'. Message dropped.", message.action);
+                error!("Message requete/action inconnue pour exchange 2.prive : '{}'. Message dropped.", action);
                 Ok(None)
             }
         }
-    } else if message.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-        match message.action.as_str() {
+    } else if message.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+        match action.as_str() {
             REQUETE_ACTIVITE_RECENTE => requete_activite_recente(middleware, message, gestionnaire).await,
             REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
@@ -134,7 +144,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
             REQUETE_SOUS_REPERTOIRES => requete_sous_repertoires(middleware, message, gestionnaire).await,
             REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
             _ => {
-                error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", message.action);
+                error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", action);
                 Ok(None)
             }
         }
@@ -144,17 +154,20 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValideAction, 
 
 }
 
-async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_activite_recente<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_activite_recente Message : {:?}", & m.message);
-    let requete: RequetePlusRecente = m.message.get_msg().map_contenu()?;
-    debug!("requete_activite_recente cle parsed : {:?}", requete);
+    debug!("requete_activite_recente Message : {:?}", & m.type_message);
+    let requete: RequetePlusRecente = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
-    let user_id = m.get_user_id();
+    let user_id = m.certificat.get_user_id()?;
     if user_id.is_none() {
-        return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "msg": "Access denied"}), None)?))
+        // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "msg": "Access denied"}), None)?))
+        return Ok(Some(middleware.reponse_err(None, None, Some("Access denied"))?))
     }
 
     let limit = match requete.limit {
@@ -179,10 +192,10 @@ async fn requete_activite_recente<M>(middleware: &M, m: MessageValideAction, ges
     let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
 
     let reponse = json!({ "fichiers": fichiers_mappes });
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn mapper_fichiers_curseur(mut curseur: Cursor<Document>) -> Result<Value, Box<dyn Error>> {
+async fn mapper_fichiers_curseur(mut curseur: Cursor<Document>) -> Result<Value, CommonError> {
     let mut fichiers_mappes = Vec::new();
 
     while let Some(fresult) = curseur.next().await {
@@ -201,33 +214,33 @@ struct RequetePlusRecente {
     skip: Option<u64>,
 }
 
-pub fn mapper_fichier_db(fichier: Document) -> Result<FichierDetail, Box<dyn Error>> {
+pub fn mapper_fichier_db(fichier: Document) -> Result<FichierDetail, CommonError> {
     let date_creation = fichier.get_datetime(CHAMP_CREATION)?.clone();
     let date_modification = fichier.get_datetime(CHAMP_MODIFICATION)?.clone();
     debug!("Ficher charge : {:?}", fichier);
     let mut fichier_mappe: FichierDetail = convertir_bson_deserializable(fichier)?;
-    fichier_mappe.date_creation = Some(DateEpochSeconds::from(date_creation.to_chrono()));
-    fichier_mappe.derniere_modification = Some(DateEpochSeconds::from(date_modification.to_chrono()));
+    fichier_mappe.date_creation = Some(date_creation.to_chrono());
+    fichier_mappe.derniere_modification = Some(date_modification.to_chrono());
     debug!("Fichier mappe : {:?}", fichier_mappe);
     Ok(fichier_mappe)
 }
 
-async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_favoris<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_favoris Message : {:?}", & m.message);
+    debug!("requete_favoris Message : {:?}", & m.type_message);
     //let requete: RequeteDechiffrage = m.message.get_msg().map_contenu(None)?;
     // debug!("requete_compter_cles_non_dechiffrables cle parsed : {:?}", requete);
 
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive && user_id.is_some() {
         // Ok
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     let projection = doc! {CHAMP_NOM: true, CHAMP_TITRE: true, CHAMP_SECURITE: true, CHAMP_TUUID: true, "_mg-creation": true};
@@ -248,7 +261,7 @@ async fn requete_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire
     };
 
     let reponse = json!({ "favoris": favoris_mappes });
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -257,8 +270,8 @@ struct Favoris {
     tuuid: String,
     securite: Option<String>,
     // #[serde(rename(deserialize = "_mg-creation"))]
-    // date_creation: Option<DateEpochSeconds>,
-    // titre: Option<HashMap<String, String>>,
+    // date_creation: Option<DateTime<Utc>>,
+    // titre: Option<HashMap<String, CommonError>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -287,12 +300,12 @@ pub struct ReponseFichierRepVersion {
     pub version_courante: Option<NodeFichierVersionOwned>,
 
     #[serde(skip_serializing_if="Option::is_none")]
-    pub derniere_modification: Option<DateEpochSeconds>,
+    pub derniere_modification: Option<DateTime<Utc>>,
 }
 
 impl From<NodeFichierRepOwned> for ReponseFichierRepVersion {
     fn from(mut value: NodeFichierRepOwned) -> Self {
-        value.map_date_modification();
+        // value.map_date_modification();
         Self {
             tuuid: value.tuuid,
             user_id: value.user_id,
@@ -314,25 +327,27 @@ struct ReponseDocumentsParTuuid {
     fichiers: Vec<ReponseFichierRepVersion>
 }
 
-async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_documents_par_tuuid Message : {:?}", & m.message);
-    let requete: RequeteDocumentsParTuuids = m.message.get_msg().map_contenu()?;
-    debug!("requete_documents_par_tuuid cle parsed : {:?}", requete);
-
-    let user_id = match m.get_user_id() {
-        Some(inner) => inner,
-        None => Err(format!("requetes.requete_documents_par_tuuid: User_id manquant pour message {:?}", m.correlation_id))?
+    debug!("requete_documents_par_tuuid Message : {:?}", & m.type_message);
+    let requete: RequeteDocumentsParTuuids = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
     };
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(format!("requetes.requete_documents_par_tuuid: User_id manquant pour message {:?}", m.type_message))?
+    };
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive {
         // Ok
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("requetes.requete_documents_par_tuuid: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("requetes.requete_documents_par_tuuid: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     let (user_id, filtre) = if let Some(true) = requete.partage {
@@ -402,7 +417,7 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
     {
         while let Some(r) = curseur.next().await {
             let mut row = r?;
-            row.map_date_modification();
+            // row.map_date_modification();
             let type_node = TypeNode::try_from(row.type_node.as_str())?;
             match type_node {
                 TypeNode::Fichier => {
@@ -448,29 +463,31 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValideAction, 
         }
     }
 
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn requete_documents_par_fuuid<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_documents_par_fuuid<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_documents_par_fuuid Message : {:?}", & m.message);
-    let requete: RequeteDocumentsParFuuids = m.message.get_msg().map_contenu()?;
-    debug!("requete_documents_par_fuuid cle parsed : {:?}", requete);
+    debug!("requete_documents_par_fuuid Message : {:?}", & m.type_message);
+    let requete: RequeteDocumentsParFuuids = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     todo!("requete_documents_par_fuuid fixme");
 
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive && user_id.is_some() {
         // Ok
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
-    } else if m.verifier_exchanges(vec![Securite::L2Prive]) {
+    } else if m.certificat.verifier_exchanges(vec![Securite::L2Prive])? {
         // Ok
     } else {
-        Err(format!("grosfichiers.requete_documents_par_fuuid: Autorisation invalide pour requete {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.requete_documents_par_fuuid: Autorisation invalide pour requete {:?}", m.type_message))?
     }
 
     let mut filtre = doc! { CHAMP_FUUIDS: {"$in": &requete.fuuids_documents} };
@@ -482,7 +499,7 @@ async fn requete_documents_par_fuuid<M>(middleware: &M, m: MessageValideAction, 
     let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
 
     let reponse = json!({ "fichiers":  fichiers_mappes });
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 #[derive(Serialize)]
@@ -507,23 +524,28 @@ struct ReponseVerifierAccesTuuids {
 }
 
 /// Requete pour verifier si un contact_id ou user_id a acces aux tuuids listes.
-async fn requete_verifier_acces_tuuids<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_verifier_acces_tuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_verifier_acces_tuuids Message : {:?}", & m.message);
-    let requete: RequeteVerifierAccesTuuids = m.message.get_msg().map_contenu()?;
+    debug!("requete_verifier_acces_tuuids Message : {:?}", & m.type_message);
+    let requete: RequeteVerifierAccesTuuids = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(u) => u,
         None => {
-            if ! m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
-                return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "acces refuse"}), None)?))
+            if ! m.certificat.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])? {
+                // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "acces refuse"}), None)?))
+                return Ok(Some(middleware.reponse_err(None, None, Some("acces refuse"))?))
             }
             match requete.user_id.as_ref() {
                 Some(u) => u.to_owned(),
                 None => {
-                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User_id manquant"}), None)?))
+                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User_id manquant"}), None)?))
+                    return Ok(Some(middleware.reponse_err(None, None, Some("User_id manquant"))?))
                 }
             }
         }
@@ -538,7 +560,8 @@ async fn requete_verifier_acces_tuuids<M>(middleware: &M, m: MessageValideAction
             let contact = match collection.find_one(filtre, None).await? {
                 Some(inner) => inner,
                 None => {
-                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "contact_id et user_id mismatch ou manquant"}), None)?))
+                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "contact_id et user_id mismatch ou manquant"}), None)?))
+                    return Ok(Some(middleware.reponse_err(None, None, Some("contact_id et user_id mismatch ou manquant"))?))
                 }
             };
             // Ok, le contact est valide. Retourner user_id de l'usager qui a fait le partage.
@@ -559,27 +582,31 @@ async fn requete_verifier_acces_tuuids<M>(middleware: &M, m: MessageValideAction
         acces_tous,
         user_id,
     };
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_verifier_acces_fuuids Message : {:?}", & m.message);
-    let requete: RequeteVerifierAccesFuuids = m.message.get_msg().map_contenu()?;
-    debug!("requete_verifier_acces_fuuids cle parsed : {:?}", requete);
+    debug!("requete_verifier_acces_fuuids Message : {:?}", & m.type_message);
+    let requete: RequeteVerifierAccesFuuids = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(u) => u,
         None => {
-            if ! m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
-                return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "acces refuse"}), None)?))
+            if ! m.certificat.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])? {
+                // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "acces refuse"}), None)?))
+                return Ok(Some(middleware.reponse_err(None, None, Some("acces refuse"))?))
             }
             match requete.user_id.as_ref() {
                 Some(u) => u.to_owned(),
                 None => {
-                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User_id manquant"}), None)?))
+                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User_id manquant"}), None)?))
+                    return Ok(Some(middleware.reponse_err(None, None, Some("User_id manquant"))?))
                 }
             }
         }
@@ -593,7 +620,8 @@ async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValideAction
             let contact = match collection.find_one(filtre, None).await? {
                 Some(inner) => inner,
                 None => {
-                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "contact_id et user_id mismatch ou manquant"}), None)?))
+                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "contact_id et user_id mismatch ou manquant"}), None)?))
+                    return Ok(Some(middleware.reponse_err(None, None, Some("contact_id et user_id mismatch ou manquant"))?))
                 }
             };
             // Ok, le contact est valide. Retourner user_id de l'usager qui a fait le partage.
@@ -612,7 +640,7 @@ async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValideAction
         acces_tous,
         user_id,
     };
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 #[derive(Serialize)]
@@ -622,17 +650,22 @@ struct ReponseCreerJwtStreaming {
     jwt_token: Option<String>,
 }
 
-async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_verifier_acces_fuuids Message : {:?}", & m.message);
-    let requete: RequeteGenererJwtStreaming = m.message.get_msg().map_contenu()?;
-    debug!("requete_verifier_acces_fuuids cle parsed : {:?}", requete);
+    debug!("requete_verifier_acces_fuuids Message : {:?}", & m.type_message);
+    let requete: RequeteGenererJwtStreaming = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(u) => u,
-        None => return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User_id manquant"}), None)?))
+        None => {
+            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User_id manquant"}), None)?))
+            return Ok(Some(middleware.reponse_err(None, None, Some("User_id manquant"))?))
+        }
     };
 
     let user_id = match requete.contact_id.as_ref() {
@@ -643,7 +676,8 @@ async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValideAction, 
             let contact = match collection.find_one(filtre, None).await? {
                 Some(inner) => inner,
                 None => {
-                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "contact_id et user_id mismatch ou manquant"}), None)?))
+                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "contact_id et user_id mismatch ou manquant"}), None)?))
+                    return Ok(Some(middleware.reponse_err(None, None, Some("contact_id et user_id mismatch ou manquant"))?))
                 }
             };
             // Ok, le contact est valide. Retourner user_id de l'usager qui a fait le partage.
@@ -661,7 +695,8 @@ async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValideAction, 
     let resultat = verifier_acces_usager(middleware, &user_id, &fuuids).await?;
     if resultat.len() != fuuids.len() {
         warn!("requete_verifier_acces_fuuids Mismatch, l'usager n'a pas acces aux fuuids demandes");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces aux fichiers est refuse"}), None)?))
+        // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces aux fichiers est refuse"}), None)?))
+        return Ok(Some(middleware.reponse_err(None, None, Some("Acces aux fichiers est refuse"))?))
     }
 
     // L'acces aux fuuids est OK. Charger l'information de dechiffrage.
@@ -674,7 +709,7 @@ async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValideAction, 
         err: None,
         jwt_token: Some(jwt_token)
     };
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 struct InformationFichierStream {
@@ -683,7 +718,7 @@ struct InformationFichierStream {
 }
 
 async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuuid: S, fuuid_ref_in: Option<R>)
-    -> Result<InformationFichierStream, Box<dyn Error>>
+    -> Result<InformationFichierStream, CommonError>
     where
         M: GenerateurMessages + MongoDao,
         U: AsRef<str>, S: AsRef<str>, R: AsRef<str>
@@ -747,15 +782,17 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
                 liste_hachage_bytes: vec![fuuid.to_string()],
                 certificat_rechiffrage: None,
             };
-            let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE)
-                .exchanges(vec![Securite::L4Secure])
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE, vec![Securite::L4Secure])
                 .build();
 
             debug!("Transmettre requete permission dechiffrage cle : {:?}", requete);
             let reponse = middleware.transmettre_requete(routage, &requete).await?;
             let info_dechiffrage = if let TypeMessage::Valide(reponse) = reponse {
                 debug!("Reponse dechiffrage : {:?}", reponse);
-                let mut reponse_dechiffrage: ReponseDechiffrage = reponse.message.get_msg().map_contenu()?;
+                let mut reponse_dechiffrage: ReponseDechiffrage = {
+                    let reponse_ref = reponse.message.parse()?;
+                    reponse_ref.contenu()?.deserialize()?
+                };
                 let cle = match reponse_dechiffrage.cles.remove(fuuid) {
                     Some(inner) => inner,
                     None => Err(format!("requetes.get_information_fichier_stream Cle fuuid {} manquante", fuuid))?
@@ -780,24 +817,27 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
     Ok(resultat)
 }
 
-async fn requete_contenu_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_contenu_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
     todo!("requete_contenu_collection Fix me ou obsolete?");
 
-    debug!("requete_contenu_collection Message : {:?}", & m.message);
-    let requete: RequeteContenuCollection = m.message.get_msg().map_contenu()?;
-    debug!("requete_contenu_collection cle parsed : {:?}", requete);
+    debug!("requete_contenu_collection Message : {:?}", & m.type_message);
+    let (message_id, requete) = {
+        let message_ref = m.message.parse()?;
+        let requete: RequeteContenuCollection = message_ref.contenu()?.deserialize()?;
+        (message_ref.id.to_owned(), requete)
+    };
 
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive && user_id.is_some() {
         // Ok
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", message_id))?
     }
 
     let skip = match requete.skip { Some(s) => s, None => 0 };
@@ -810,7 +850,10 @@ async fn requete_contenu_collection<M>(middleware: &M, m: MessageValideAction, g
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let mut doc_info_collection = match collection.find_one(filtre_collection, None).await? {
         Some(c) => c,
-        None => return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Collection introuvable"}), None)?))
+        None => {
+            // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Collection introuvable"}), None)?))
+            return Ok(Some(middleware.reponse_err(None, None, Some("Collection introuvable"))?))
+        }
     };
     filtrer_doc_id(&mut doc_info_collection);
 
@@ -849,28 +892,30 @@ async fn requete_contenu_collection<M>(middleware: &M, m: MessageValideAction, g
         "documents": fichiers_reps,
     });
 
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn requete_get_corbeille<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_get_corbeille<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_get_corbeille Message : {:?}", & m.message);
-    let requete: RequetePlusRecente = m.message.get_msg().map_contenu()?;
-    debug!("requete_get_corbeille cle parsed : {:?}", requete);
-
-    let user_id = match m.get_user_id() {
-        Some(inner) => inner,
-        None => Err(format!("grosfichiers.consommer_commande: User_id absent du certificat pour commande {:?}", m.correlation_id))?
+    debug!("requete_get_corbeille Message : {:?}", & m.type_message);
+    let requete: RequetePlusRecente = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
     };
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(format!("grosfichiers.consommer_commande: User_id absent du certificat pour commande {:?}", m.type_message))?
+    };
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive {
         // Ok
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     let limit = match requete.limit {
@@ -901,7 +946,7 @@ async fn requete_get_corbeille<M>(middleware: &M, m: MessageValideAction, gestio
     let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
 
     let reponse = json!({ "fichiers": fichiers_mappes });
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 #[derive(Deserialize)]
@@ -911,7 +956,7 @@ struct RowPartageContactOwned {
     user_id: String,
 }
 
-async fn get_contacts_user<M,U>(middleware: &M, user_id: U) -> Result<Vec<RowPartageContactOwned>, Box<dyn Error>>
+async fn get_contacts_user<M,U>(middleware: &M, user_id: U) -> Result<Vec<RowPartageContactOwned>, CommonError>
     where M: MongoDao, U: AsRef<str>
 {
     let user_id = user_id.as_ref();
@@ -949,7 +994,7 @@ struct RowPartageCollection<'a> {
     user_id: &'a str,
 }
 
-async fn get_tuuids_partages_user<M,U>(middleware: &M, user_id: U) -> Result<Vec<String>, Box<dyn Error>>
+async fn get_tuuids_partages_user<M,U>(middleware: &M, user_id: U) -> Result<Vec<String>, CommonError>
     where M: MongoDao, U: AsRef<str>
 {
     let mut tuuids_partages = Vec::new();
@@ -978,13 +1023,15 @@ async fn get_tuuids_partages_user<M,U>(middleware: &M, user_id: U) -> Result<Vec
     Ok(tuuids_partages)
 }
 
-async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-                                      -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+                                      -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_get_cles_fichiers Message : {:?}", &m.message);
-    let requete: ParametresGetPermission = m.message.get_msg().map_contenu()?;
-    debug!("requete_get_cles_fichiers cle parsed : {:?}", requete);
+    debug!("requete_get_cles_fichiers Message : {:?}", &m.type_message);
+    let requete: ParametresGetPermission = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     // Faire une requete pour confirmer que l'usager a acces aux fuuids
     let mut filtre_and = vec![
@@ -1000,7 +1047,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
         filtre.insert("tuuid".to_string(), doc!{"$in": tuuids});
     }
 
-    if let Some(user_id) = m.get_user_id() {
+    if let Some(user_id) = m.certificat.get_user_id()? {
         if Some(true) == requete.partage {
             // Requete de cles sur partage - permettre de charger les tuuids de tous les partages
             let tuuids_partages = get_tuuids_partages_user(middleware, user_id.as_str()).await?;
@@ -1011,9 +1058,9 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
         } else {
            filtre.insert(CHAMP_USER_ID, user_id);
         }
-    } else if m.verifier_exchanges(vec![Securite::L4Secure]) && m.verifier_roles(vec![RolesCertificats::Media]) {
+    } else if m.certificat.verifier_exchanges(vec![Securite::L4Secure])? && m.certificat.verifier_roles(vec![RolesCertificats::Media])? {
         // Ok, aucunes limitations
-    } else if m.verifier_exchanges(vec![Securite::L2Prive]) && m.verifier_roles(vec![RolesCertificats::Stream]) {
+    } else if m.certificat.verifier_exchanges(vec![Securite::L2Prive])? && m.certificat.verifier_roles(vec![RolesCertificats::Stream])? {
         // filtre.insert(CHAMP_MIMETYPE, doc! {"mimetype": {"$regex": "video\\/"}} );
         filtre.insert(CHAMP_MIMETYPE, doc! {
             "mimetype": {
@@ -1027,23 +1074,18 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
             }
         });
     } else {
-        return Ok(Some(middleware.formatter_reponse(
-            json!({"err": true, "message": "user_id n'est pas dans le certificat/certificat n'est pas de role media/stream"}),
-            None)?)
-        )
+        return Ok(Some(middleware.reponse_err(None, None, Some("user_id n'est pas dans le certificat/certificat n'est pas de role media/stream"))?))
+        // return Ok(Some(middleware.formatter_reponse(
+        //     json!({"err": true, "message": "user_id n'est pas dans le certificat/certificat n'est pas de role media/stream"}),
+        //     None)?)
+        // )
     }
 
     // Ajouter section $and au filtre suite au ajouts pour le partage
     filtre.insert("$and", filtre_and);
 
     // Utiliser certificat du message client (requete) pour demande de rechiffrage
-    let pem_rechiffrage: Vec<String> = match &m.message.certificat {
-        Some(c) => {
-            let fp_certs = c.get_pem_vec();
-            fp_certs.into_iter().map(|cert| cert.pem).collect()
-        },
-        None => Err(format!(""))?
-    };
+    let pem_rechiffrage = m.certificat.chaine_pem()?;
 
     debug!("requete_get_cles_fichiers Filtre : {:?}", serde_json::to_string(&filtre)?);
     let projection = doc! { CHAMP_FUUIDS_VERSIONS: true, CHAMP_TUUID: true, CHAMP_METADATA: true };
@@ -1078,7 +1120,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
 
     if hachage_bytes_demandes.len() > 0 {
         warn!("requete_get_cles_fichiers Acces cles suivantes refuse pour user_id {:?} (partage: {:?}) : {:?}\nFiltre: {:?}",
-            m.get_user_id(), requete.partage, hachage_bytes_demandes, serde_json::to_string(&filtre));
+            m.certificat.get_user_id()?, requete.partage, hachage_bytes_demandes, serde_json::to_string(&filtre));
     }
 
     let permission = RequeteDechiffrage {
@@ -1088,16 +1130,25 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     };
 
     // Emettre requete de rechiffrage de cle, reponse acheminee directement au demandeur
-    let reply_to = match m.reply_q {
-        Some(r) => r,
-        None => Err(format!("requetes.requete_get_permission Pas de reply q pour message"))?
+    let (reply_to, correlation_id) = match &m.type_message {
+        TypeMessageOut::Requete(r) => {
+            let reply_to = match r.reply_to.as_ref() {
+                Some(inner) => inner.as_str(),
+                None => Err(CommonError::Str("requetes.requete_get_permission Reply_to manquant"))?
+            };
+            let correlation_id = match r.correlation_id.as_ref() {
+                Some(inner) => inner.as_str(),
+                None => Err(CommonError::Str("requetes.requete_get_permission Correlation_id manquant"))?
+            };
+            (reply_to, correlation_id)
+        }
+        _ => {
+            Err(CommonError::Str("requetes.requete_get_permission Mauvais type message, doit etre requete"))?
+        }
     };
-    let correlation_id = match m.correlation_id {
-        Some(r) => r,
-        None => Err(format!("requetes.requete_get_permission Pas de correlation_id pour message"))?
-    };
-    let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE)
-        .exchanges(vec![Securite::L4Secure])
+
+    let routage = RoutageMessageAction::builder(
+        DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE, vec![Securite::L4Secure])
         .reply_to(reply_to)
         .correlation_id(correlation_id)
         .blocking(false)
@@ -1110,24 +1161,28 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValideAction, ge
     Ok(None)  // Aucune reponse a transmettre, c'est le maitre des cles qui va repondre
 }
 
-async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-                                    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509
+async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+                                    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("requete_get_cles_stream Message : {:?}", &m.message);
-    let requete: ParametresGetClesStream = m.message.get_msg().map_contenu()?;
-    debug!("requete_get_cles_stream cle parsed : {:?}", requete);
+    debug!("requete_get_cles_stream Message : {:?}", &m.type_message);
+    let requete: ParametresGetClesStream = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
-    if ! m.verifier_roles(vec![RolesCertificats::Stream]) {
-        let reponse = json!({"err": true, "message": "certificat doit etre de role stream"});
-        return Ok(Some(middleware.formatter_reponse(reponse, None)?));
+    if ! m.certificat.verifier_roles(vec![RolesCertificats::Stream])? {
+        // let reponse = json!({"err": true, "message": "certificat doit etre de role stream"});
+        // return Ok(Some(middleware.formatter_reponse(reponse, None)?));
+        return Ok(Some(middleware.reponse_err(None, None, Some("certificat doit etre de role stream"))?))
     }
 
     let jwt_token = match requete.jwt {
         Some(inner) => inner,
         None => {
-            let reponse = json!({"ok": false, "err": true, "message": "jwt absent"});
-            return Ok(Some(middleware.formatter_reponse(reponse, None)?));
+            // let reponse = json!({"ok": false, "err": true, "message": "jwt absent"});
+            // return Ok(Some(middleware.formatter_reponse(reponse, None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some("jwt absent"))?))
         }
     };
 
@@ -1136,15 +1191,17 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gest
     let user_id = match resultat_jwt.user_id {
         Some(inner) => inner,
         None => {
-            let reponse = json!({"ok": false, "err": true, "message": "jwt invalide - user_id manquant"});
-            return Ok(Some(middleware.formatter_reponse(reponse, None)?));
+            // let reponse = json!({"ok": false, "err": true, "message": "jwt invalide - user_id manquant"});
+            // return Ok(Some(middleware.formatter_reponse(reponse, None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some("jwt invalide - user_id manquant"))?))
         }
     };
     let fuuid = match resultat_jwt.fuuid {
         Some(inner) => inner,
         None => {
-            let reponse = json!({"ok": false, "err": true, "message": "jwt invalide - subject (sub) manquant"});
-            return Ok(Some(middleware.formatter_reponse(reponse, None)?));
+            // let reponse = json!({"ok": false, "err": true, "message": "jwt invalide - subject (sub) manquant"});
+            // return Ok(Some(middleware.formatter_reponse(reponse, None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some("jwt invalide - subject (sub) manquant"))?))
         }
     };
 
@@ -1169,13 +1226,7 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gest
     };
 
     // Utiliser certificat du message client (requete) pour demande de rechiffrage
-    let pem_rechiffrage: Vec<String> = match &m.message.certificat {
-        Some(c) => {
-            let fp_certs = c.get_pem_vec();
-            fp_certs.into_iter().map(|cert| cert.pem).collect()
-        },
-        None => Err(format!(""))?
-    };
+    let pem_rechiffrage = m.certificat.chaine_pem()?;
 
     debug!("requete_get_cles_stream Filtre : {:?}", filtre);
     let projection = doc! { CHAMP_FUUID: true, CHAMP_FUUIDS: true, CHAMP_METADATA: true };
@@ -1220,16 +1271,25 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gest
     // });
 
     // Emettre requete de rechiffrage de cle, reponse acheminee directement au demandeur
-    let reply_to = match m.reply_q {
-        Some(r) => r,
-        None => Err(format!("requetes.requete_get_cles_stream Pas de reply q pour message"))?
+    let (reply_to, correlation_id) = match &m.type_message {
+        TypeMessageOut::Requete(r) => {
+            let reply_to = match r.reply_to.as_ref() {
+                Some(inner) => inner.as_str(),
+                None => Err(CommonError::Str("requetes.requete_recherche_index Reply_to manquant"))?
+            };
+            let correlation_id = match r.correlation_id.as_ref() {
+                Some(inner) => inner.as_str(),
+                None => Err(CommonError::Str("requetes.requete_recherche_index Correlation_id manquant"))?
+            };
+            (reply_to, correlation_id)
+        }
+        _ => {
+            Err(CommonError::Str("requetes.requete_recherche_index Mauvais type message, doit etre requete"))?
+        }
     };
-    let correlation_id = match m.correlation_id {
-        Some(r) => r,
-        None => Err(format!("requetes.requete_get_cles_stream Pas de correlation_id pour message"))?
-    };
-    let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE)
-        .exchanges(vec![Securite::L4Secure])
+
+    let routage = RoutageMessageAction::builder(
+        DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE, vec![Securite::L4Secure])
         .reply_to(reply_to)
         .correlation_id(correlation_id)
         .blocking(false)
@@ -1243,7 +1303,7 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValideAction, gest
 }
 
 async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHitsDetail>, user_id: Option<String>)
-    -> Result<Vec<ResultatDocumentRecherche>, Box<dyn Error>>
+    -> Result<Vec<ResultatDocumentRecherche>, CommonError>
     where M: MongoDao
 {
     // Generer liste de tous les fichiers par version
@@ -1359,9 +1419,9 @@ struct ResultatDocumentRecherche {
     nom_version: Option<String>,
     taille: u64,
     mimetype: String,
-    date_creation: Option<DateEpochSeconds>,
-    date_modification: Option<DateEpochSeconds>,
-    date_version: Option<DateEpochSeconds>,
+    date_creation: Option<DateTime<Utc>>,
+    date_modification: Option<DateTime<Utc>>,
+    date_version: Option<DateTime<Utc>>,
     titre: Option<HashMap<String, String>>,
     description: Option<HashMap<String, String>>,
 
@@ -1376,7 +1436,7 @@ struct ResultatDocumentRecherche {
 }
 
 impl ResultatDocumentRecherche {
-    fn new(value: DBFichierVersionDetail, resultat: &ResultatHitsDetail) -> Result<Self, Box<dyn Error>> {
+    fn new(value: DBFichierVersionDetail, resultat: &ResultatHitsDetail) -> Result<Self, CommonError> {
 
         let (thumb_hachage_bytes, thumb_data) = match value.images {
             Some(mut images) => {
@@ -1416,7 +1476,7 @@ impl ResultatDocumentRecherche {
         })
     }
 
-    fn new_fichier(value: FichierDetail, resultat: &ResultatHitsDetail) -> Result<Self, Box<dyn Error>> {
+    fn new_fichier(value: FichierDetail, resultat: &ResultatHitsDetail) -> Result<Self, CommonError> {
 
         let (thumb_hachage_bytes, thumb_data, mimetype, taille) = match &value.version_courante {
             Some(v) => {
@@ -1529,20 +1589,20 @@ struct ResultatDocsVersionsFuuidsBorrow<'a> {
     metadata: Option<DataChiffreBorrow<'a>>,
 }
 
-async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    let uuid_transaction = m.correlation_id.clone();
-
-    if ! m.verifier_exchanges(vec![L2Prive, L3Protege, L4Secure]) {
-        error!("requetes.requete_confirmer_etat_fuuids Acces refuse, certificat n'est pas d'un exchange L2+ : {:?}", uuid_transaction);
+    if ! m.certificat.verifier_exchanges(vec![L2Prive, L3Protege, L4Secure])? {
+        error!("requetes.requete_confirmer_etat_fuuids Acces refuse, certificat n'est pas d'un exchange L2+ : {:?}", m.type_message);
         return Ok(None)
     }
 
-    debug!("requete_confirmer_etat_fuuids Message : {:?}", & m.message);
-    let requete: RequeteConfirmerEtatFuuids = m.message.get_msg().map_contenu()?;
-    debug!("requete_confirmer_etat_fuuids cle parsed : {:?}", requete);
+    debug!("requete_confirmer_etat_fuuids Message : {:?}", & m.type_message);
+    let requete: RequeteConfirmerEtatFuuids = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     let mut fuuids = HashSet::new();
     for fuuid in &requete.fuuids {
@@ -1583,12 +1643,12 @@ async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValideAction
 
     let confirmation = ReponseConfirmerEtatFuuids { fichiers: fichiers_confirmation };
     let reponse = json!({ "confirmation": confirmation });
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 pub async fn verifier_acces_usager<M,S,T,V>(middleware: &M, user_id_in: S, fuuids_in: V)
-    -> Result<Vec<String>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+    -> Result<Vec<String>, CommonError>
+    where M: GenerateurMessages + MongoDao,
           S: AsRef<str>,
           T: AsRef<str>,
           V: AsRef<Vec<T>>
@@ -1634,7 +1694,7 @@ pub async fn verifier_acces_usager<M,S,T,V>(middleware: &M, user_id_in: S, fuuid
 }
 
 pub async fn verifier_acces_usager_tuuids<M,S,T,V>(middleware: &M, user_id_in: S, tuuids_in: V)
-    -> Result<Vec<String>, Box<dyn Error>>
+    -> Result<Vec<String>, CommonError>
     where M: GenerateurMessages + MongoDao,
           S: AsRef<str>,
           T: AsRef<str>,
@@ -1720,8 +1780,8 @@ struct RequeteSyncCollection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RequeteSyncIntervalle {
     user_id: Option<String>,
-    // debut: DateEpochSeconds,
-    // fin: Option<DateEpochSeconds>,
+    // debut: DateTime<Utc>,
+    // fin: Option<DateTime<Utc>>,
     skip: Option<u64>,
     limit: Option<i64>,
 }
@@ -1738,7 +1798,7 @@ struct FichierSync {
     tuuid: String,
     #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
     map_derniere_modification: DateTime<Utc>,
-    derniere_modification: Option<DateEpochSeconds>,
+    derniere_modification: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if="Option::is_none")]
     favoris: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
@@ -1752,7 +1812,7 @@ struct CuuidsSync {
     tuuid: String,
     #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
     map_derniere_modification: DateTime<Utc>,
-    derniere_modification: Option<DateEpochSeconds>,
+    derniere_modification: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if="Option::is_none")]
     favoris: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
@@ -1769,21 +1829,21 @@ struct ReponseRequeteSyncCollection {
     liste: Vec<FichierSync>
 }
 
-async fn requete_sync_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_sync_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    let uuid_transaction = m.correlation_id.clone();
-
-    debug!("requete_confirmer_etat_fuuids Message : {:?}", & m.message);
-    let requete: RequeteSyncCollection = m.message.get_msg().map_contenu()?;
-    debug!("requete_confirmer_etat_fuuids cle parsed : {:?}", requete);
+    debug!("requete_confirmer_etat_fuuids Message : {:?}", & m.type_message);
+    let requete: RequeteSyncCollection = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     let user_id = {
-        match m.message.get_user_id() {
+        match m.certificat.get_user_id()? {
             Some(u) => u,
             None => {
-                if m.verifier_exchanges(vec![L3Protege, L4Secure]) {
+                if m.certificat.verifier_exchanges(vec![L3Protege, L4Secure])? {
                     match requete.user_id {
                         Some(u) => u,
                         None => {
@@ -1792,7 +1852,7 @@ async fn requete_sync_collection<M>(middleware: &M, m: MessageValideAction, gest
                         }
                     }
                 } else {
-                    error!("requetes.requete_confirmer_etat_fuuids Acces refuse, certificat n'est pas d'un exchange L2+ : {:?}", uuid_transaction);
+                    error!("requetes.requete_confirmer_etat_fuuids Acces refuse, certificat n'est pas d'un exchange L2+ : {:?}", m.type_message);
                     return Ok(None)
                 }
             }
@@ -1808,7 +1868,7 @@ async fn requete_sync_collection<M>(middleware: &M, m: MessageValideAction, gest
                 inner.user_id   // User id du proprietaire des fichiers
             },
             None => {
-                error!("requetes.requete_confirmer_etat_fuuids Acces refuse, mauvais contact_id : {:?}", uuid_transaction);
+                error!("requetes.requete_confirmer_etat_fuuids Acces refuse, mauvais contact_id : {:?}", m.type_message);
                 return Ok(None)
             }
         }
@@ -1862,107 +1922,24 @@ async fn requete_sync_collection<M>(middleware: &M, m: MessageValideAction, gest
     let complete = fichiers_confirmation.len() < limit as usize;
 
     let reponse = ReponseRequeteSyncCollection { complete, liste: fichiers_confirmation };
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-// async fn requete_sync_plusrecent<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-//     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-//     where M: GenerateurMessages + MongoDao + VerificateurMessage,
-// {
-//     let uuid_transaction = m.correlation_id.clone();
-//
-//     debug!("requete_sync_plusrecent Message : {:?}", & m.message);
-//     let requete: RequeteSyncIntervalle = m.message.get_msg().map_contenu()?;
-//     debug!("requete_sync_plusrecent cle parsed : {:?}", requete);
-//
-//     let user_id = {
-//         match m.message.get_user_id() {
-//             Some(u) => u,
-//             None => {
-//                 if m.verifier_exchanges(vec![L3Protege, L4Secure]) {
-//                     match requete.user_id {
-//                         Some(u) => u,
-//                         None => {
-//                             error!("requete_sync_plusrecent L3Protege/L4Secure user_id manquant");
-//                             return Ok(None)
-//                         }
-//                     }
-//                 } else {
-//                     error!("requetes.requete_sync_plusrecent Acces refuse, certificat n'est pas d'un exchange L2+ : {:?}", uuid_transaction);
-//                     return Ok(None)
-//                 }
-//             }
-//         }
-//     };
-//
-//     let limit = match requete.limit {
-//         Some(l) => l,
-//         None => 1000
-//     };
-//     let skip = match requete.skip {
-//         Some(s) => s,
-//         None => 0
-//     };
-//
-//     let sort = doc! {CHAMP_CREATION: 1, CHAMP_TUUID: 1};
-//     let projection = doc! {
-//         CHAMP_TUUID: 1,
-//         CHAMP_CREATION: 1,
-//         CHAMP_MODIFICATION: 1,
-//         CHAMP_FAVORIS: 1,
-//         CHAMP_SUPPRIME: 1,
-//     };
-//     let opts = FindOptions::builder()
-//         .projection(projection)
-//         .sort(sort)
-//         .skip(skip)
-//         .limit(limit.clone())
-//         .hint(Hint::Name("user_id_type_node".into()))
-//         .build();
-//     let date_debut = requete.debut.get_datetime();
-//     let mut filtre = {
-//         match requete.fin {
-//             Some(f) => {
-//                 let date_fin = f.get_datetime();
-//                 doc!{"user_id": user_id, "$or":[{
-//                     CHAMP_CREATION: {"$lte": date_fin, "$gte": date_debut},
-//                     CHAMP_MODIFICATION: {"$lte": date_fin, "$gte": date_debut},
-//                 }]}
-//             },
-//             None => {
-//                 doc!{"user_id": user_id, "$or":[{
-//                     CHAMP_CREATION: {"$gte": date_debut},
-//                     CHAMP_MODIFICATION: {"$gte": date_debut},
-//                 }]}
-//             }
-//         }
-//     };
-//
-//     debug!("requete_sync_plusrecent Requete fichiers debut {:?}, filtre : {:?}", date_debut, filtre);
-//
-//     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-//     let mut fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
-//     let complete = fichiers_confirmation.len() < limit as usize;
-//
-//     let reponse = ReponseRequeteSyncCollection { complete, liste: fichiers_confirmation };
-//     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
-// }
-
-async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    let uuid_transaction = m.correlation_id.clone();
-
-    debug!("requete_sync_corbeille Message : {:?}", & m.message);
-    let requete: RequeteSyncIntervalle = m.message.get_msg().map_contenu()?;
-    debug!("requete_sync_corbeille cle parsed : {:?}", requete);
+    debug!("requete_sync_corbeille Message : {:?}", & m.type_message);
+    let requete: RequeteSyncIntervalle = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     let user_id = {
-        match m.message.get_user_id() {
+        match m.certificat.get_user_id()? {
             Some(u) => u,
             None => {
-                if m.verifier_exchanges(vec![L3Protege, L4Secure]) {
+                if m.certificat.verifier_exchanges(vec![L3Protege, L4Secure])? {
                     match requete.user_id {
                         Some(u) => u,
                         None => {
@@ -1971,7 +1948,7 @@ async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValideAction, gesti
                         }
                     }
                 } else {
-                    error!("requetes.requete_sync_corbeille Acces refuse, certificat n'est pas d'un exchange L2+ : {:?}", uuid_transaction);
+                    error!("requetes.requete_sync_corbeille Acces refuse, certificat n'est pas d'un exchange L2+ : {:?}", m.type_message);
                     return Ok(None)
                 }
             }
@@ -2006,7 +1983,7 @@ async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValideAction, gesti
     let complete = fichiers_confirmation.len() < limit as usize;
 
     let reponse = ReponseRequeteSyncCollection { complete, liste: fichiers_confirmation };
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2015,33 +1992,22 @@ struct ReponseRequeteSyncCuuids {
     liste: Vec<CuuidsSync>
 }
 
-async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage,
+async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    let uuid_transaction = m.correlation_id.clone();
+    let certificat = m.certificat.as_ref();
 
-    match m.message.certificat.as_ref() {
-        Some(inner) => {
-            if let Some(domaines) = inner.get_domaines()? {
-                if ! domaines.contains(&String::from("GrosFichiers")) {
-                    error!("requete_sync_cuuids Permission refusee (domaines cert != GrosFichiers)");
-                    return Ok(None)
-                }
-            } else {
-                error!("requete_sync_cuuids Permission refusee (domaines cert None)");
-                return Ok(None)
-            }
-        },
-        None => {
-            error!("requete_sync_cuuids Permission refusee (certificat non charge)");
-            return Ok(None)
-        }
+    if ! certificat.verifier_domaines(vec!["GrosFichiers".to_string()])? {
+        error!("requete_sync_cuuids Permission refusee (domaines cert != GrosFichiers)");
+        return Ok(None)
     }
 
-    debug!("requete_sync_cuuids Message : {:?}", & m.message);
-    let requete: RequeteSyncCuuids = m.message.get_msg().map_contenu()?;
-    debug!("requete_sync_cuuids cle parsed : {:?}", requete);
+    debug!("requete_sync_cuuids Message : {:?}", & m.type_message);
+    let requete: RequeteSyncCuuids = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     let limit = match requete.limit {
         Some(l) => l,
@@ -2085,10 +2051,10 @@ async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValideAction, gestionn
     let complete = fichiers_confirmation.len() < limit as usize;
 
     let reponse = ReponseRequeteSyncCuuids { complete, liste: fichiers_confirmation };
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn find_sync_fichiers<M>(middleware: &M, filtre: Document, opts: FindOptions) -> Result<Vec<FichierSync>, Box<dyn Error>>
+async fn find_sync_fichiers<M>(middleware: &M, filtre: Document, opts: FindOptions) -> Result<Vec<FichierSync>, CommonError>
     where M: MongoDao
 {
     let collection = middleware.get_collection_typed::<FichierSync>(NOM_COLLECTION_FICHIERS_REP)?;
@@ -2099,14 +2065,14 @@ async fn find_sync_fichiers<M>(middleware: &M, filtre: Document, opts: FindOptio
     while curseur.advance().await? {
         let mut row = curseur.deserialize_current()?;
         // let mut record: FichierSync = convertir_bson_deserializable(d?)?;
-        row.derniere_modification = Some(DateEpochSeconds::from(row.map_derniere_modification.clone()));
+        row.derniere_modification = Some(row.map_derniere_modification.clone());
         fichiers_confirmation.push(row);
     }
 
     Ok(fichiers_confirmation)
 }
 
-async fn find_sync_cuuids<M>(middleware: &M, filtre: Document, opts: FindOptions) -> Result<Vec<CuuidsSync>, Box<dyn Error>>
+async fn find_sync_cuuids<M>(middleware: &M, filtre: Document, opts: FindOptions) -> Result<Vec<CuuidsSync>, CommonError>
     where M: MongoDao
 {
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
@@ -2115,7 +2081,7 @@ async fn find_sync_cuuids<M>(middleware: &M, filtre: Document, opts: FindOptions
     let mut cuuids_confirmation = Vec::new();
     while let Some(d) = curseur.next().await {
         let mut record: CuuidsSync = convertir_bson_deserializable(d?)?;
-        record.derniere_modification = Some(DateEpochSeconds::from(record.map_derniere_modification.clone()));
+        record.derniere_modification = Some(record.map_derniere_modification.clone());
         cuuids_confirmation.push(record);
     }
 
@@ -2156,20 +2122,20 @@ struct ReponseContacts {
     contacts: Vec<ReponseContact>,
 }
 
-async fn map_user_ids_nom_usager<M,U>(middleware: &M, user_ids_in: &Vec<U>) -> Result<Vec<ReponseUsager>, Box<dyn Error>>
+async fn map_user_ids_nom_usager<M,U>(middleware: &M, user_ids_in: &Vec<U>) -> Result<Vec<ReponseUsager>, CommonError>
     where M: GenerateurMessages, U: AsRef<str>
 {
     let user_ids: Vec<&str> = user_ids_in.iter().map(|s| s.as_ref()).collect();
     debug!("map_user_ids_nom_usager Pour user_ids {:?}", user_ids);
 
-    let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCOMPTES, "getListeUsagers")
-        .exchanges(vec![Securite::L3Protege])
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCOMPTES, "getListeUsagers", vec![Securite::L3Protege])
         .build();
 
     let requete = json!({"liste_userids": user_ids});
     let reponse = match middleware.transmettre_requete(routage, &requete).await? {
         TypeMessage::Valide(inner) => {
-            let reponse: ReponseUsagers = inner.message.parsed.map_contenu()?;
+            let reponse_ref = inner.message.parse()?;
+            let reponse: ReponseUsagers = reponse_ref.contenu()?.deserialize()?;
             reponse
         },
         _ => {
@@ -2181,21 +2147,26 @@ async fn map_user_ids_nom_usager<M,U>(middleware: &M, user_ids_in: &Vec<U>) -> R
     Ok(reponse.usagers)
 }
 
-async fn requete_charger_contacts<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn requete_charger_contacts<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("requete_charger_contacts Consommer commande : {:?}", & m.message);
+    debug!("requete_charger_contacts Consommer commande : {:?}", & m.type_message);
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             debug!("requete_charger_contacts user_id manquant du certificat");
-            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some("User_id manquant du certificat"))?))
         }
     };
 
-    let commande: RequeteChargerContacts = m.message.get_msg().map_contenu()?;
+    let commande: RequeteChargerContacts = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
     let contacts = {
         let mut user_ids = HashMap::new();
         let filtre = doc! { CHAMP_USER_ID: &user_id };
@@ -2234,7 +2205,7 @@ async fn requete_charger_contacts<M>(middleware: &M, m: MessageValideAction, ges
     };
 
     let reponse = ReponseContacts { contacts };
-    Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 #[derive(Deserialize)]
@@ -2254,21 +2225,25 @@ struct ReponsePartagesUsager {
     usagers: Option<Vec<ReponseUsager>>,
 }
 
-async fn requete_partages_usager<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn requete_partages_usager<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("requete_partages_usager Consommer commande : {:?}", & m.message);
+    debug!("requete_partages_usager Consommer commande : {:?}", & m.type_message);
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             debug!("requete_partages_usager user_id manquant du certificat");
-            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some("User_id manquant du certificat"))?))
         }
     };
 
-    let requete: RequetePartagesUsager = m.message.get_msg().map_contenu()?;
+    let requete: RequetePartagesUsager = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     let mut filtre = doc! { CHAMP_USER_ID: &user_id };
     if let Some(inner) = requete.contact_id.as_ref() {
@@ -2285,28 +2260,32 @@ async fn requete_partages_usager<M>(middleware: &M, m: MessageValideAction, gest
 
     let reponse = ReponsePartagesUsager { ok: true, partages, usagers: None };
 
-    Ok(Some(middleware.formatter_reponse(reponse, None)?))
+    Ok(Some(middleware.build_reponse(reponse)?.0))
 }
 
 #[derive(Deserialize)]
 struct RequetePartagesContact { user_id: Option<String> }
 
 /// Retourne la liste de tuuids partages avec l'usager qui fait la requete
-async fn requete_partages_contact<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-                                     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn requete_partages_contact<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+                                     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("requete_partages_usager Consommer commande : {:?}", & m.message);
+    debug!("requete_partages_usager Consommer commande : {:?}", & m.type_message);
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             debug!("requete_partages_usager user_id manquant du certificat");
-            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some("User_id manquant du certificat"))?))
         }
     };
 
-    let requete: RequetePartagesContact = m.message.get_msg().map_contenu()?;
+    let requete: RequetePartagesContact = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     // Charger la liste des contact_id qui correspondent a l'usager courant
     let contacts = get_contacts_user(middleware, user_id).await?;
@@ -2336,7 +2315,7 @@ async fn requete_partages_contact<M>(middleware: &M, m: MessageValideAction, ges
 
     let reponse = ReponsePartagesUsager { ok: true, partages, usagers: Some(usagers) };
 
-    Ok(Some(middleware.formatter_reponse(reponse, None)?))
+    Ok(Some(middleware.build_reponse(reponse)?.0))
 }
 
 #[derive(Deserialize)]
@@ -2359,21 +2338,25 @@ struct ReponseInfoStatistiques {
     info: Vec<ResultatStatistiquesRow>,
 }
 
-async fn requete_info_statistiques<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn requete_info_statistiques<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("requete_info_statistiques Consommer commande : {:?}", & m.message);
+    debug!("requete_info_statistiques Consommer commande : {:?}", & m.type_message);
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             debug!("requete_info_statistiques user_id manquant du certificat");
-            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some("User_id manquant du certificat"))?))
         }
     };
 
-    let requete: RequeteInfoStatistiques = m.message.get_msg().map_contenu()?;
+    let requete: RequeteInfoStatistiques = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     let user_id = if let Some(contact_id) = requete.contact_id {
         // Determiner le user_id effectif pour la requete en confirmant le droit d'acces via contact
@@ -2446,7 +2429,7 @@ async fn requete_info_statistiques<M>(middleware: &M, m: MessageValideAction, ge
 
     let reponse = ReponseInfoStatistiques { info: resultat };
 
-    Ok(Some(middleware.formatter_reponse(reponse, None)?))
+    Ok(Some(middleware.build_reponse(reponse)?.0))
 }
 
 #[derive(Deserialize)]
@@ -2495,21 +2478,26 @@ struct ReponseStructureRepertoire {
     liste: Vec<NodeFichierRepVersionCouranteOwned>,
 }
 
-async fn requete_structure_repertoire<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn requete_structure_repertoire<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("requete_info_statistiques Consommer commande : {:?}", & m.message);
+    debug!("requete_info_statistiques Consommer commande : {:?}", & m.type_message);
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             debug!("requete_info_statistiques user_id manquant du certificat");
-            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some("User_id manquant du certificat"))?))
         }
     };
 
-    let requete: RequeteStructureRepertoire = m.message.get_msg().map_contenu()?;
+    let requete: RequeteStructureRepertoire = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
     // let limite_bytes = match requete.limite_bytes { Some(inner) => inner, None => CONST_LIMITE_TAILLE_ZIP};
     let limite_nombre = match requete.limite_nombre { Some(inner) => inner, None => CONST_LIMITE_NOMBRE_ZIP};
 
@@ -2597,13 +2585,13 @@ async fn requete_structure_repertoire<M>(middleware: &M, m: MessageValideAction,
     // }
 
     let reponse = if reponse.liste.len() <= limite_nombre as usize {
-        middleware.formatter_reponse(reponse, None)?
+        middleware.build_reponse(reponse)?.0
     } else {
         // On a depasser la limite, retourner une erreur
         reponse.liste.clear();
         reponse.err = Some("Limite nombre atteinte".into());
         reponse.ok = false;
-        middleware.formatter_reponse(reponse, None)?
+        middleware.build_reponse(reponse)?.0
     };
 
     Ok(Some(reponse))
@@ -2624,21 +2612,26 @@ struct ReponseSousRepertoires {
     liste: Vec<NodeFichierRepOwned>,
 }
 
-async fn requete_sous_repertoires<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn requete_sous_repertoires<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("requete_sous_repertoires Consommer commande : {:?}", & m.message);
+    debug!("requete_sous_repertoires Consommer commande : {:?}", & m.type_message);
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             debug!("requete_sous_repertoires user_id manquant du certificat");
-            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some("User_id manquant du certificat"))?))
         }
     };
 
-    let requete: RequeteSousRepertoires = m.message.get_msg().map_contenu()?;
+    let requete: RequeteSousRepertoires = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
     let limite_nombre = match requete.limite_nombre { Some(inner) => inner, None => CONST_LIMITE_NOMBRE_SOUS_REPERTOIRES };
 
     let mut filtre = doc! {
@@ -2659,13 +2652,13 @@ async fn requete_sous_repertoires<M>(middleware: &M, m: MessageValideAction, ges
     }
 
     let reponse = if reponse.liste.len() <= limite_nombre as usize {
-        middleware.formatter_reponse(reponse, None)?
+        middleware.build_reponse(reponse)?.0
     } else {
         // On a depasser la limite, retourner une erreur
         reponse.liste.clear();
         reponse.err = Some("Limite nombre atteinte".into());
         reponse.ok = false;
-        middleware.formatter_reponse(reponse, None)?
+        middleware.build_reponse(reponse)?.0
     };
 
     Ok(Some(reponse))
@@ -2702,31 +2695,42 @@ impl TransfertRequeteRechercheIndex {
     }
 }
 
-pub async fn requete_recherche_index<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+pub async fn requete_recherche_index<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("requete_recherche_index Consommer commande : {:?}", & m.message);
+    debug!("requete_recherche_index Consommer commande : {:?}", & m.type_message);
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             debug!("requete_recherche_index user_id manquant du certificat");
-            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "User_id manquant du certificat"}), None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some("User_id manquant du certificat"))?))
         }
     };
 
-    let correlation_id = match m.correlation_id {
-        Some(inner) => inner,
-        None => Err(format!("requete_recherche_index Requete sans correlation_id"))?
+    let (reply_to, correlation_id) = match &m.type_message {
+        TypeMessageOut::Requete(r) => {
+            let reply_to = match r.reply_to.as_ref() {
+                Some(inner) => inner.as_str(),
+                None => Err(CommonError::Str("requetes.requete_recherche_index Reply_to manquant"))?
+            };
+            let correlation_id = match r.correlation_id.as_ref() {
+                Some(inner) => inner.as_str(),
+                None => Err(CommonError::Str("requetes.requete_recherche_index Correlation_id manquant"))?
+            };
+            (reply_to, correlation_id)
+        }
+        _ => {
+            Err(CommonError::Str("requetes.requete_recherche_index Mauvais type message, doit etre requete"))?
+        }
     };
 
-    let reply_q = match m.reply_q {
-        Some(inner) => inner,
-        None => Err(format!("requete_recherche_index Requete sans correlation_id"))?
+    let requete: RequeteRechercheIndex = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
     };
-
-    let requete: RequeteRechercheIndex = m.message.get_msg().map_contenu()?;
     let inclure_partages = match requete.inclure_partages.as_ref() { Some(true) => true, _ => false};
 
     let mut requete_transfert = TransfertRequeteRechercheIndex::new(
@@ -2758,9 +2762,8 @@ pub async fn requete_recherche_index<M>(middleware: &M, m: MessageValideAction, 
 
     let domaine: &str = RolesCertificats::SolrRelai.into();
     let action = "fichiers";
-    let routage = RoutageMessageAction::builder(domaine, action)
-        .exchanges(vec![Securite::L3Protege])
-        .reply_to(reply_q)
+    let routage = RoutageMessageAction::builder(domaine, action, vec![Securite::L3Protege])
+        .reply_to(reply_to)
         .correlation_id(correlation_id)
         .blocking(false)
         .build();

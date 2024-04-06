@@ -1,29 +1,29 @@
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
 use std::iter::Map;
 
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
-use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{doc, Document};
-use millegrilles_common_rust::certificats::{EnveloppeCertificat, ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage_cle::{CommandeSauvegarderCle, InformationCle, ReponseDechiffrageCles};
-use millegrilles_common_rust::chrono::{DateTime, Duration, Utc};
-use millegrilles_common_rust::common_messages::{RequeteDechiffrage, RequeteVerifierPreuve};
+use millegrilles_common_rust::bson::doc;
+use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
+use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L4Secure};
-use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille, MessageSerialise};
-use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, transmettre_cle_attachee};
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable};
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{MessageMilleGrillesBufferDefault, MessageMilleGrillesOwned};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
 use millegrilles_common_rust::mongodb::Collection;
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
-use millegrilles_common_rust::recepteur_messages::{MessageValide, MessageValideAction, TypeMessage};
+use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::Transaction;
-use millegrilles_common_rust::verificateur::VerificateurMessage;
+use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::messages_generiques::ReponseCommande;
+use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
+
 use crate::evenements::evenement_fichiers_syncpret;
 
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
@@ -36,31 +36,36 @@ use crate::transactions::*;
 
 const REQUETE_MAITREDESCLES_VERIFIER_PREUVE: &str = "verifierPreuve";
 
-pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + VerificateurMessage + ValidateurX509
+pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("consommer_commande : {:?}", &m.message);
+    debug!("consommer_commande : {:?}", &m.type_message);
 
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
 
     if role_prive && user_id.is_some() {
         // Ok, commande usager
     } else {
-        match m.verifier_exchanges(vec!(Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure)) {
+        match m.certificat.verifier_exchanges(vec!(Securite::L1Public, Securite::L2Prive, Securite::L3Protege, Securite::L4Secure))? {
             true => Ok(()),
             false => {
                 // Verifier si on a un certificat delegation globale
-                match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+                match m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
                     true => Ok(()),
-                    false => Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+                    false => Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message)),
                 }
             }
         }?;
     }
 
-    match m.action.as_str() {
+    let action = match &m.type_message {
+        TypeMessageOut::Commande(r) => r.action.clone(),
+        _ => Err(CommonError::Str("grosfichiers.consommer_commande Mauvais type message, doit etre Commande"))?
+    };
+
+    match action.as_str() {
         // Commandes standard
         TRANSACTION_NOUVELLE_VERSION => commande_nouvelle_version(middleware, m, gestionnaire).await,
         TRANSACTION_NOUVELLE_COLLECTION => commande_nouvelle_collection(middleware, m, gestionnaire).await,
@@ -109,31 +114,31 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValideAction, gesti
         TRANSACTION_SUPPRIMER_PARTAGE_USAGER => commande_supprimer_partage_usager(middleware, m, gestionnaire).await,
 
         // Commandes inconnues
-        _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, m.action))?,
+        _ => Err(format!("core_backup.consommer_commande: Commande {} inconnue : {}, message dropped", DOMAINE_NOM, action))?,
     }
 }
 
-async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    let uuid_transaction = m.message.get_msg().id.as_str();
-    debug!("commande_nouvelle_version Consommer commande : {:?}", & m.message);
-    let mut commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu()?;
-    debug!("Commande nouvelle versions parsed : {:?}", commande);
+    let mut message_owned = m.message.parse_to_owned()?;
+    let uuid_transaction = message_owned.id.as_str();
+    debug!("commande_nouvelle_version Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionNouvelleVersion = message_owned.deserialize()?;
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
-        None => Err(format!("commandes.commande_nouvelle_version user_id manquant du certificat - SKIP"))?
+        None => Err(CommonError::Str("commandes.commande_nouvelle_version user_id manquant du certificat - SKIP"))?
     };
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive {
         // Ok
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     // Valider la nouvelle version
@@ -152,7 +157,7 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValideAction
     }
 
     // Traiter la cle
-    match m.message.parsed.attachements.take() {
+    match message_owned.attachements.take() {
         Some(mut attachements) => match attachements.remove("cle") {
             Some(cle) => {
                 if let Some(reponse) = transmettre_cle_attachee(middleware, cle).await? {
@@ -162,12 +167,14 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValideAction
             },
             None => {
                 error!("Cle de nouvelle version manquante (1)");
-                return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cle manquante"}), None)?));
+                return Ok(Some(middleware.reponse_err(None, None, Some("Cle manquante"))?));
+                // return Ok(Some(middleware.build_reponse(json!({"ok": false, "err": "Cle manquante"}))?.0));
             }
         },
         None => {
             error!("Cle de nouvelle version manquante (2)");
-            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cle manquante"}), None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some("Cle manquante"))?));
+            // return Ok(Some(middleware.build_reponse(json!({"ok": false, "err": "Cle manquante"}))?.0));
         }
     }
 
@@ -175,30 +182,32 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValideAction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_decrire_fichier Consommer commande : {:?}", & m.message);
-    let commande: TransactionDecrireFichier = m.message.get_msg().map_contenu()?;
-    debug!("Commande decrire_fichier parsed : {:?}", commande);
+    debug!("commande_decrire_fichier Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionDecrireFichier = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => Err(format!("commande_decrire_fichier User_id absent"))?
     };
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive {
         let tuuids = vec![&commande.tuuid];
         let resultat = verifier_autorisation_usager(middleware, user_id.as_str(), Some(&tuuids), None::<String>).await?;
-        if resultat.erreur.is_some() {
-            return Ok(resultat.erreur)
+        if let Some(erreur) = resultat.erreur {
+            return Ok(Some(erreur.try_into()?))
         }
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     let (changement_media, fuuid) = match commande.mimetype.as_ref() {
@@ -283,35 +292,36 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValideAction, ges
     Ok(resultat)
 }
 
-async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_nouvelle_collection Consommer commande : {:?}", & m.message);
-    let commande: TransactionNouvelleCollection = m.message.get_msg().map_contenu()?;
+    debug!("commande_nouvelle_collection Consommer commande : {:?}", & m.type_message);
+    let mut message_owned = m.message.parse_to_owned()?;
+    let commande: TransactionNouvelleCollection = message_owned.deserialize()?;
     debug!("Commande commande_nouvelle_collection versions parsed : {:?}", commande);
 
     // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
     // Verifier si on a un certificat delegation globale
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let cuuid = commande.cuuid.as_ref();
         let resultat = verifier_autorisation_usager(middleware, user_id_str, None::<&Vec<String>>, cuuid).await?;
-        if resultat.erreur.is_some() {
-            return Ok(resultat.erreur)
+        if let Some(erreur) = resultat.erreur {
+            return Ok(Some(erreur.try_into()?))
         }
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     // Traiter la cle
-    match m.message.parsed.attachements.take() {
+    match message_owned.attachements.take() {
         Some(mut attachements) => match attachements.remove("cle") {
             Some(cle) => {
                 if let Some(reponse) = transmettre_cle_attachee(middleware, cle).await? {
@@ -321,12 +331,14 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValideAct
             },
             None => {
                 error!("Cle de nouvelle collection manquante (1)");
-                return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cle manquante"}), None)?));
+                // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cle manquante"}), None)?));
+                return Ok(Some(middleware.reponse_err(None, None, Some("Cle manquante"))?));
             }
         },
         None => {
             error!("Cle de nouvelle collection manquante (2)");
-            return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cle manquante"}), None)?));
+            // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Cle manquante"}), None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some("Cle manquante"))?));
         }
     }
 
@@ -334,51 +346,57 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValideAct
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_associer_conversions<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_associer_conversions Consommer commande : {:?}", & m.message);
-    let commande: TransactionAssocierConversions = m.message.get_msg().map_contenu()?;
+    debug!("commande_associer_conversions Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionAssocierConversions = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
     debug!("Commande commande_associer_conversions versions parsed : {:?}", commande);
 
-    if ! m.verifier_exchanges(vec![L4Secure]) {
-        Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas L4Secure) pour message {:?}", m.correlation_id))?
+    if ! m.certificat.verifier_exchanges(vec![L4Secure])? {
+        Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas L4Secure) pour message {:?}", m.type_message))?
     }
 
     // Autorisation - doit etre signe par media
-    if ! m.verifier_roles(vec![RolesCertificats::Media]) {
-        Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas media) pour message {:?}", m.correlation_id))?
+    if ! m.certificat.verifier_roles(vec![RolesCertificats::Media])? {
+        Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas media) pour message {:?}", m.type_message))?
     }
 
     if commande.user_id.is_none() {
-        Err(format!("grosfichiers.commande_associer_conversions: User_id obligatoire depuis version 2023.6 {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.commande_associer_conversions: User_id obligatoire depuis version 2023.6 {:?}", m.type_message))?
     }
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_associer_video<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_associer_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_associer_video Consommer commande : {:?}", & m.message);
-    let commande: TransactionAssocierVideo = m.message.get_msg().map_contenu()?;
+    debug!("commande_associer_video Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionAssocierVideo = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+    // let commande: TransactionAssocierVideo = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_associer_video versions parsed : {:?}", commande);
 
     // Autorisation
-    if ! m.verifier_exchanges(vec![L2Prive]) {
-        Err(format!("grosfichiers.commande_associer_video: Autorisation invalide pour message {:?}", m.correlation_id))?
+    if ! m.certificat.verifier_exchanges(vec![L2Prive])? {
+        Err(format!("grosfichiers.commande_associer_video: Autorisation invalide pour message {:?}", m.type_message))?
     }
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-#[derive(Debug)]
 pub struct InformationAutorisation {
-    pub erreur: Option<MessageMilleGrille>,
+    pub erreur: Option<MessageMilleGrillesOwned>,
     pub tuuids_repertoires: Vec<String>,
     pub tuuids_fichiers: Vec<String>,
     pub tuuids_refuses: Vec<String>,
@@ -399,7 +417,7 @@ impl InformationAutorisation {
 
 /// Verifie si l'usager a acces aux tuuids (et cuuid au besoin)
 async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuids: Option<&Vec<U>>, cuuid_in: Option<T>)
-    -> Result<InformationAutorisation, Box<dyn Error>>
+    -> Result<InformationAutorisation, CommonError>
     where
         M: GenerateurMessages + MongoDao,
         S: AsRef<str>, T: AsRef<str>, U: AsRef<str>
@@ -420,12 +438,14 @@ async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuid
             let mapping_collection = curseur.deserialize_current()?;
             if user_id_str != mapping_collection.user_id {
                 warn!("verifier_autorisation_usager Le cuuid {:?} n'appartiennent pas a l'usager {:?}", cuuid, user_id_str);
-                reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid n'appartient pas a l'usager"}), None)?);
+                // reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid n'appartient pas a l'usager"}), None)?);
+                reponse.erreur = Some(middleware.reponse_err(None, Some("cuuid n'appartient pas a l'usager"), None)?.parse_to_owned()?);
                 return Ok(reponse)
             }
         } else {
             warn!("verifier_autorisation_usager Le cuuid {:?} n'appartient pas a l'usager {:?} ou est inconnu", cuuid, user_id_str);
-            reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid inconnu"}), None)?);
+            // reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "cuuid inconnu"}), None)?);
+            reponse.erreur = Some(middleware.reponse_err(None, Some("cuuid inconnu"), None)?.parse_to_owned()?);
             return Ok(reponse)
         }
     }
@@ -486,7 +506,8 @@ async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuid
             warn!("verifier_autorisation_usager Les tuuids {:?} n'appartiennent pas a l'usager {:?}", tuuids_set, user_id_str);
             reponse.tuuids_repertoires.extend(tuuids_set.into_iter().map(|c| c.to_owned()));
             return {
-                reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "tuuids n'appartiennent pas a l'usager"}), None)?);
+                // reponse.erreur = Some(middleware.formatter_reponse(json!({"ok": false, "message": "tuuids n'appartiennent pas a l'usager"}), None)?);
+                reponse.erreur = Some(middleware.reponse_err(None, Some("tuuids n'appartiennent pas a l'usager"), None)?.parse_to_owned()?);
                 Ok(reponse)
             }
         }
@@ -495,17 +516,22 @@ async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuid
     Ok(reponse)
 }
 
-async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_ajouter_fichiers_collection Consommer commande : {:?}", & m.message);
-    let commande: TransactionAjouterFichiersCollection = m.message.get_msg().map_contenu()?;
+    debug!("commande_ajouter_fichiers_collection Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionAjouterFichiersCollection = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
+    // let commande: TransactionAjouterFichiersCollection = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_ajouter_fichiers_collection versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
 
     if let Some(contact_id) = commande.contact_id.as_ref() {
         debug!("Verifier que le contact_id est valide (correspond aux tuuids)");
@@ -514,8 +540,9 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
         let contact = match collection.find_one(filtre, None).await? {
             Some(inner) => inner,
             None => {
-                let reponse = json!({"ok": false, "err": "Contact_id invalide"});
-                return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
+                // let reponse = json!({"ok": false, "err": "Contact_id invalide"});
+                // return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
+                return Ok(Some(middleware.reponse_err(None, None, Some("Contact_id invalide"))?))
             }
         };
 
@@ -523,38 +550,45 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
             middleware, &contact.user_id, &commande.inclure_tuuids).await?;
 
         if resultat.len() != commande.inclure_tuuids.len() {
-            let reponse = json!({"ok": false, "err": "Acces refuse"});
-            return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
+            // let reponse = json!({"ok": false, "err": "Acces refuse"});
+            // return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
+            return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse"))?))
+
         }
     } else if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let cuuid = commande.cuuid.as_str();
         let tuuids: Vec<&str> = commande.inclure_tuuids.iter().map(|t| t.as_str()).collect();
         let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
-        if resultat.erreur.is_some() {
-            return Ok(resultat.erreur)
+        if let Some(erreur) = resultat.erreur {
+            return Ok(Some(erreur.try_into()?))
         }
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_deplacer_fichiers_collection Consommer commande : {:?}", & m.message);
-    let commande: TransactionDeplacerFichiersCollection = m.message.get_msg().map_contenu()?;
+    debug!("commande_deplacer_fichiers_collection Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionDeplacerFichiersCollection = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
+    // let commande: TransactionDeplacerFichiersCollection = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_deplacer_fichiers_collection versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let cuuid = commande.cuuid_origine.as_str();
@@ -562,27 +596,28 @@ async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageVali
         let mut tuuids: Vec<&str> = commande.inclure_tuuids.iter().map(|t| t.as_str()).collect();
         tuuids.push(cuuid_destination);  // Piggyback pour verifier un des 2 cuuids
         let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
-        if resultat.erreur.is_some() {
-            return Ok(resultat.erreur)
+        if let Some(erreur) = resultat.erreur {
+            return Ok(Some(erreur.try_into()?))
         }
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
-    debug!("commande_retirer_documents_collection **OBSOLETE** Consommer commande : {:?}", & m.message);
+    debug!("commande_retirer_documents_collection **OBSOLETE** Consommer commande : {:?}", & m.type_message);
 
-    let reponse = middleware.formatter_reponse(json!({"ok": false, "err": "Obsolete"}), None)?;
-    Ok(Some(reponse))
+    // let reponse = middleware.formatter_reponse(json!({"ok": false, "err": "Obsolete"}), None)?;
+    // Ok(Some(reponse))
+    Ok(Some(middleware.reponse_err(None, None, Some("Obsolete"))?))
 
     // let commande: TransactionRetirerDocumentsCollection = m.message.get_msg().map_contenu(None)?;
     // debug!("Commande commande_retirer_documents_collection versions parsed : {:?}", commande);
@@ -608,17 +643,22 @@ async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageVali
     // Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_supprimer_documents Consommer commande : {:?}", & m.message);
-    let commande: TransactionSupprimerDocuments = m.message.get_msg().map_contenu()?;
+    debug!("commande_supprimer_documents Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionSupprimerDocuments = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
+    // let commande: TransactionSupprimerDocuments = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_supprimer_documents versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let mut tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
@@ -628,13 +668,13 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValideAction,
             }
         }
         let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
-        if resultat.erreur.is_some() {
-            return Ok(resultat.erreur)
+        if let Some(erreur) = resultat.erreur {
+            return Ok(Some(erreur.try_into()?))
         }
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     // Traiter la transaction
@@ -646,34 +686,37 @@ struct RowFuuids {
     fuuids: Option<Vec<String>>
 }
 
-async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_recuperer_documents Consommer commande : {:?}", & m.message);
-    let commande: TransactionListeDocuments = m.message.get_msg().map_contenu()?;
+    debug!("commande_recuperer_documents Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionListeDocuments = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+    // let commande: TransactionListeDocuments = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_recuperer_documents versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
         let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
-        if resultat.erreur.is_some() {
-            return Ok(resultat.erreur)
+        if let Some(erreur) = resultat.erreur {
+            return Ok(Some(erreur.try_into()?))
         }
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     // Emettre une commande de reactivation a fichiers (consignation)
     // Attendre 1 succes, timeout 10 secondes pour echec
-    let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS, COMMANDE_FICHIERS_REACTIVER)
-        .exchanges(vec![Securite::L2Prive])
+    let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS, COMMANDE_FICHIERS_REACTIVER, vec![Securite::L2Prive])
         .timeout_blocking(5_000)
         .build();
 
@@ -697,7 +740,7 @@ async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction,
     debug!("commande_recuperer_documents Liste fuuids a recuperer : {:?}", fuuids);
 
     let commande = json!({ "fuuids": fuuids });
-    match middleware.transmettre_commande(routage, &commande, true).await {
+    match middleware.transmettre_commande(routage, &commande).await {
         Ok(r) => match r {
             Some(r) => match r {
                 TypeMessage::Valide(reponse) => {
@@ -707,17 +750,20 @@ async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValideAction,
                 },
                 _ => {
                     debug!("commande_recuperer_documents Reponse recuperer document est invalide");
-                    Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes"}), None)?))
+                    // Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes"}), None)?))
+                    Ok(Some(middleware.reponse_err(None, None, Some("Fichiers supprimes"))?))
                 }
             },
             None => {
                 debug!("commande_recuperer_documents Reponse recuperer : reponse vide");
-                Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Reponse des serveurs de fichiers vide (aucun contenu)"}), None)?))
+                // Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Reponse des serveurs de fichiers vide (aucun contenu)"}), None)?))
+                Ok(Some(middleware.reponse_err(None, None, Some("Reponse des serveurs de fichiers vide (aucun contenu)"))?))
             }
         },
         Err(e) => {
             debug!("commande_recuperer_documents Reponse recuperer document erreur : {:?}", e);
-            Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes/timeout"}), None)?))
+            // Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes/timeout"}), None)?))
+            Ok(Some(middleware.reponse_err(None, None, Some("Fichiers supprimes/timeout"))?))
         }
     }
 }
@@ -729,25 +775,28 @@ struct ReponseRecupererFichiers {
     recuperes: Option<Vec<String>>,
 }
 
-async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_recuperer_documents Consommer commande : {:?}", & m.message);
-    let commande: TransactionRecupererDocumentsV2 = m.message.get_msg().map_contenu() ?;
+    debug!("commande_recuperer_documents Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionRecupererDocumentsV2 = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => Err(format!("commandes.commande_recuperer_documents_v2 User_id absent du certificat"))?
     };
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive {
         // Ok
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("commandes.commande_recuperer_documents_v2: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("commandes.commande_recuperer_documents_v2: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     let mut tuuids = HashSet::new();
@@ -763,11 +812,11 @@ async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValideActi
     }
     let tuuids: Vec<&str> = tuuids.iter().map(|t| t.as_str()).collect();
     let resultat = verifier_autorisation_usager(middleware, user_id, Some(&tuuids), None::<String>).await?;
-    if resultat.erreur.is_some() {
-        return Ok(resultat.erreur)
+    if let Some(erreur) = resultat.erreur {
+        return Ok(Some(erreur.try_into()?))
     }
 
-    debug!("commande_recuperer_documents_v2 Verification autorisation fichiers : {:?}", resultat);
+    // debug!("commande_recuperer_documents_v2 Verification autorisation fichiers : {:?}", resultat);
 
     if resultat.fuuids.len() == 0 {
         debug!("commande_recuperer_documents_v2 Aucuns fichiers a restaurer - juste des repertoires. Aucunes verifications additionnelles requises");
@@ -776,19 +825,21 @@ async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValideActi
 
     // Emettre une commande de reactivation a fichiers (consignation)
     // Attendre 1 succes, timeout 5 secondes pour echec
-    let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS, COMMANDE_FICHIERS_REACTIVER)
-        .exchanges(vec![Securite::L2Prive])
+    let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS, COMMANDE_FICHIERS_REACTIVER, vec![Securite::L2Prive])
         .timeout_blocking(5_000)
         .build();
 
     let commande = json!({ "fuuids": resultat.fuuids });
-    match middleware.transmettre_commande(routage, &commande, true).await {
+    match middleware.transmettre_commande(routage, &commande).await {
         Ok(r) => match r {
             Some(r) => match r {
                 TypeMessage::Valide(reponse) => {
                     // Traiter la transaction
                     debug!("commande_recuperer_documents_v2 Reponse recuperer document OK : {:?}", reponse);
-                    let parsed: ReponseRecupererFichiers = reponse.message.parsed.map_contenu()?;
+                    let parsed: ReponseRecupererFichiers = {
+                        let reponse_ref = reponse.message.parse()?;
+                        reponse_ref.contenu()?.deserialize()?
+                    };
                     let mut inconnus = 0;
                     let mut errors = 0;
                     if let Some(inconnus_vec) = parsed.inconnus.as_ref() {
@@ -805,104 +856,114 @@ async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValideActi
                             "inconnus": parsed.inconnus,
                             "errors": parsed.errors,
                         });
-                        return Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+                        // return Ok(Some(middleware.formatter_reponse(&reponse, None)?))
+                        return Ok(Some(middleware.build_reponse(reponse)?.0))
                     }
                     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
                 },
                 _ => {
                     debug!("commande_recuperer_documents_v2 Reponse recuperer document est invalide");
-                    Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes"}), None)?))
+                    // Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes"}), None)?))
+                    Ok(Some(middleware.reponse_err(None, None, Some("Fichiers supprimes"))?))
                 }
             },
             None => {
                 debug!("commande_recuperer_documents_v2 Reponse recuperer : reponse vide");
-                Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Reponse des serveurs de fichiers vide (aucun contenu)"}), None)?))
+                // Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Reponse des serveurs de fichiers vide (aucun contenu)"}), None)?))
+                Ok(Some(middleware.reponse_err(None, None, Some("Reponse des serveurs de fichiers vide (aucun contenu)"))?))
             }
         },
         Err(e) => {
             debug!("commande_recuperer_documents_v2 Reponse recuperer document erreur : {:?}", e);
-            Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes/timeout"}), None)?))
+            // Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes/timeout"}), None)?))
+            Ok(Some(middleware.reponse_err(None, None, Some("Fichiers supprimes/timeout"))?))
         }
     }
 }
 
-async fn commande_archiver_documents<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_archiver_documents<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_archiver_documents Consommer commande : {:?}", & m.message);
-    let commande: TransactionListeDocuments = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_archiver_documents versions parsed : {:?}", commande);
+    debug!("commande_archiver_documents Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionListeDocuments = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
         let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
-        if resultat.erreur.is_some() {
-            return Ok(resultat.erreur)
+        if let Some(erreur) = resultat.erreur {
+            return Ok(Some(erreur.try_into()?))
         }
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("commandes.commande_archiver_documents: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("commandes.commande_archiver_documents: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_changer_favoris<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_changer_favoris<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_changer_favoris Consommer commande : {:?}", & m.message);
-    let commande: TransactionChangerFavoris = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_changer_favoris versions parsed : {:?}", commande);
+    debug!("commande_changer_favoris Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionChangerFavoris = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let keys: Vec<String> = commande.favoris.keys().cloned().collect();
         let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&keys), None::<String>).await?;
-        if resultat.erreur.is_some() {
-            return Ok(resultat.erreur)
+        if let Some(erreur) = resultat.erreur {
+            return Ok(Some(erreur.try_into()?))
         }
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     // Traiter la transaction
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_decrire_collection<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_decrire_collection Consommer commande : {:?}", & m.message);
-    let commande: TransactionDecrireCollection = m.message.get_msg().map_contenu()?;
-    debug!("Commande decrire_collection parsed : {:?}", commande);
+    debug!("commande_decrire_collection Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionDecrireCollection = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
         let tuuids = vec![commande.tuuid];
         let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
-        if resultat.erreur.is_some() {
-            return Ok(resultat.erreur)
+        if let Some(erreur) = resultat.erreur {
+            return Ok(Some(erreur.try_into()?))
         }
-    } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     // Traiter la transaction
@@ -910,11 +971,11 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValideAction, 
 }
 
 // commande_copier_fichier_tiers est OBSOLETE
-// async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-//     -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+// async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+//     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 //     where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 // {
-//     debug!("commande_copier_fichier_tiers Consommer commande : {:?}", & m.message);
+//     debug!("commande_copier_fichier_tiers Consommer commande : {:?}", & m.type_message);
 //     let commande: CommandeCopierFichierTiers = m.message.get_msg().map_contenu()?;
 //     debug!("commande_copier_fichier_tiers parsed : {:?}", commande);
 //     // debug!("Commande en json (DEBUG) : \n{:?}", serde_json::to_string(&commande));
@@ -999,7 +1060,7 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValideAction, 
 //                 MessageKind::Commande, &fichier, DOMAINE_NOM.into(), "copierFichierTiers".into(), None::<&str>, None::<&str>, None, false)?;
 //             let transaction_copier_message = MessageSerialise::from_parsed(transaction_copier_message)?;
 //
-//             let mva = MessageValideAction::new(
+//             let mva = MessageValide::new(
 //                 transaction_copier_message,
 //                 m.q.clone(),
 //                 "transaction.GrosFichiers.copierFichierTiers".into(),
@@ -1050,7 +1111,7 @@ pub struct CommandeCopierFichierTiers {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PreuvePossessionCles {
     pub preuve: String,
-    pub date: DateEpochSeconds,
+    pub date: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1058,25 +1119,27 @@ pub struct ReponsePreuvePossessionCles {
     pub verification: HashMap<String, bool>,
 }
 
-async fn commande_reindexer<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_reindexer<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_reindexer Consommer commande : {:?}", & m.message);
-    let commande: CommandeIndexerContenu = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_reindexer parsed : {:?}", commande);
+    debug!("commande_reindexer Consommer commande : {:?}", & m.type_message);
+    let commande: CommandeIndexerContenu = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     // Autorisation : doit etre un message provenant d'un usager avec delegation globale
     // Verifier si on a un certificat delegation globale
-    match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+    match m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         true => Ok(()),
-        false => Err(format!("commandes.commande_reindexer: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+        false => Err(format!("commandes.commande_reindexer: Commande autorisation invalide pour message {:?}", m.type_message)),
     }?;
 
     reset_flag_indexe(middleware, gestionnaire, &gestionnaire.indexation_job_handler).await?;
 
     let reponse = ReponseCommandeReindexer {ok: true, tuuids: None};
-    Ok(Some(middleware.formatter_reponse(reponse, None)?))
+    Ok(Some(middleware.build_reponse(reponse)?.0))
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1091,22 +1154,25 @@ struct ReponseCommandeReindexer {
     ok: bool,
 }
 
-async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
-    debug!("commande_completer_previews Consommer commande : {:?}", & m.message);
-    let commande: CommandeCompleterPreviews = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_completer_previews parsed : {:?}", commande);
+    debug!("commande_completer_previews Consommer commande : {:?}", & m.type_message);
+    let commande: CommandeCompleterPreviews = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
     // Verifier si on a un certificat delegation globale ou prive
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             warn!("commande_completer_previews User_id n'est pas fourni, commande refusee");
-            let reponse = middleware.formatter_reponse(json!({"ok": false, "err": "Acces refuse (user_id)"}), None)?;
-            return Ok(Some(reponse))
+            // let reponse = middleware.formatter_reponse(json!({"ok": false, "err": "Acces refuse (user_id)"}), None)?;
+            // return Ok(Some(reponse))
+            return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (user_id)"))?))
         }
     };
 
@@ -1164,8 +1230,9 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, 
         },
         None => {
             warn!("commande_completer_previews Aucuns fuuids, pas d'effet.");
-            let reponse = middleware.formatter_reponse(json!({"ok": true, "message": "Aucun effet (pas de fuuids fournis)"}), None)?;
-            return Ok(Some(reponse))
+            // let reponse = middleware.formatter_reponse(json!({"ok": true, "message": "Aucun effet (pas de fuuids fournis)"}), None)?;
+            // return Ok(Some(reponse))
+            return Ok(Some(middleware.reponse_err(None, None, Some("Aucun effet (pas de fuuids fournis)"))?))
         }
     };
 
@@ -1202,7 +1269,7 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValideAction, 
 
     // Reponse generer preview
     let reponse = json!({ "ok": true });
-    Ok(Some(middleware.formatter_reponse(reponse, None)?))
+    Ok(Some(middleware.build_reponse(reponse)?.0))
 }
 
 #[derive(Clone, Deserialize)]
@@ -1226,18 +1293,20 @@ struct ReponseCompleterPreviews {
     tuuids: Option<Vec<String>>,
 }
 
-async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
-    debug!("commande_confirmer_fichier_indexe Consommer commande : {:?}", & m.message);
-    let commande: ParametresConfirmerJobIndexation = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_confirmer_fichier_indexe parsed : {:?}", commande);
+    debug!("commande_confirmer_fichier_indexe Consommer commande : {:?}", & m.type_message);
+    let commande: ParametresConfirmerJobIndexation = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     // Autorisation : doit etre un message provenant d'un composant protege
-    match m.verifier_exchanges(vec![Securite::L4Secure]) {
+    match m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
         true => Ok(()),
-        false => Err(format!("commandes.commande_completer_previews: Commande autorisation invalide pour message {:?}", m.correlation_id)),
+        false => Err(format!("commandes.commande_completer_previews: Commande autorisation invalide pour message {:?}", m.type_message)),
     }?;
 
     // Traiter la commande
@@ -1256,21 +1325,23 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValideAc
 
 /// Commande qui indique la creation _en cours_ d'un nouveau fichier. Permet de creer un
 /// placeholder a l'ecran en attendant le traitement du fichier.
-async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
-    debug!("commande_nouveau_fichier Consommer commande : {:?}", & m.message);
-    let commande: TransactionNouvelleVersion = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_nouveau_fichier parsed : {:?}", commande);
+    debug!("commande_nouveau_fichier Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionNouvelleVersion = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.get_user_id();
-    let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
-    let delegation_proprietaire = m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE);
+    let user_id = m.certificat.get_user_id()?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
+    let delegation_proprietaire = m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)?;
     if ! (role_prive || delegation_proprietaire) && user_id.is_none() {
         let reponse = json!({"ok": false, "err": "Non autorise"});
-        return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
+        return Ok(Some(middleware.build_reponse(&reponse)?.0));
     }
 
     let fuuid = commande.fuuid;
@@ -1279,7 +1350,7 @@ async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValideAction, ges
         Some(t) => t,
         None => {
             let reponse = json!({"ok": false, "err": "tuuid manquant"});
-            return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
+            return Ok(Some(middleware.build_reponse(&reponse)?.0));
         }
     };
     let cuuid = commande.cuuid;
@@ -1329,44 +1400,43 @@ async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValideAction, ges
         emettre_evenement_contenu_collection(middleware, gestionnaire, event).await?;
     //}
 
-    Ok(middleware.reponse_ok()?)
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_favoris_creerpath Consommer commande : {:?}", & m.message);
-    let commande: TransactionFavorisCreerpath = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_favoris_creerpath parsed : {:?}", commande);
+    debug!("commande_favoris_creerpath Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionFavorisCreerpath = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     // Autorisation : si user_id fourni dans la commande, on verifie que le certificat est 4.secure ou delegation globale
     let user_id = {
         match commande.user_id {
             Some(user_id) => {
                 // S'assurer que le certificat permet d'utiliser un user_id fourni (4.secure ou delegation globale)
-                match m.verifier_exchanges(vec![Securite::L4Secure]) {
-                    true => Ok(user_id),
+                match m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
+                    true => user_id,
                     false => {
-                        match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-                            true => Ok(user_id),
-                            false => Err(format!("commandes.commande_completer_previews: Utilisation user_id refusee pour message {:?}", m.correlation_id))
+                        match m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+                            true => user_id,
+                            false => Err(format!("commandes.commande_completer_previews: Utilisation user_id refusee pour message {:?}", m.type_message))?
                         }
                     },
                 }
             },
             None => {
                 // Utiliser le user_id du certificat
-                match &m.message.certificat {
-                    Some(c) => match c.get_user_id()? {
-                        Some(u) => Ok(u.to_owned()),
-                        None => Err(format!("commandes.commande_favoris_creerpath: user_id manquant du certificat pour message {:?}", m.correlation_id))
-                    },
-                    None => Err(format!("commandes.commande_favoris_creerpath: Certificat non charge pour message {:?}", m.correlation_id))
+                match &m.certificat.get_user_id()? {
+                    Some(c) => c.to_owned(),
+                    None => Err(format!("commandes.commande_favoris_creerpath: Certificat non charge pour message {:?}", m.type_message))?
                 }
             }
         }
-    }?;
+    };
 
     debug!("commande_favoris_creerpath Utiliser user_id {}", user_id);
 
@@ -1432,7 +1502,7 @@ async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValideAction, g
         // Retourner le tuuid comme reponse, aucune transaction necessaire
         debug!("commande_favoris_creerpath Path trouve, tuuid {:?}", tuuid_leaf);
         let reponse = json!({CHAMP_TUUID: &tuuid_leaf});
-        Ok(Some(middleware.formatter_reponse(reponse, None)?))
+        Ok(Some(middleware.build_reponse(reponse)?.0))
     } else {
         // Poursuivre le traitement sous forme de transaction
         debug!("commande_favoris_creerpath Path incomplet, poursuivre avec la transaction");
@@ -1440,21 +1510,23 @@ async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValideAction, g
     }
 }
 
-async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_video_convertir Consommer commande : {:?}", & m.message);
-    let commande: CommandeVideoConvertir = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_video_convertir parsed : {:?}", commande);
+    debug!("commande_video_convertir Consommer commande : {:?}", & m.type_message);
+    let commande: CommandeVideoConvertir = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     let fuuid = commande.fuuid.as_str();
 
-    let user_id = if let Some(user_id) = m.get_user_id() {
+    let user_id = if let Some(user_id) = m.certificat.get_user_id()? {
         user_id
     } else {
-        let delegation_globale = m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE);
-        if delegation_globale || m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
+        let delegation_globale = m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)?;
+        if delegation_globale || m.certificat.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])? {
             // Ok, on utilise le user_id de la commande
             match commande.user_id {
                 Some(inner) => {
@@ -1463,12 +1535,14 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
                 },
                 None => {
                     debug!("commande_video_convertir verifier_exchanges : User id manquant pour fuuid {}", fuuid);
-                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant"}), None)?))
+                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant"}), None)?))
+                    return Ok(Some(middleware.reponse_err(None, None, Some("User id manquant"))?))
                 }
             }
         } else {
             debug!("commande_video_convertir verifier_exchanges : Certificat n'a pas l'acces requis (securite 2,3,4 ou user_id avec acces fuuid)");
-            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
+            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
+            return Ok(Some(middleware.reponse_err(None, None, Some("Access denied"))?))
         }
     };
     //     if delegation_globale || m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
@@ -1531,12 +1605,14 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
             Some(inner) => inner,
             None => {
                 info!("commande_video_convertir find_one : Fichier inconnu {}", fuuid);
-                return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichier inconnu"}), None)?))
+                // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichier inconnu"}), None)?))
+                return Ok(Some(middleware.reponse_err(None, None, Some("Fichier inconnu"))?))
             }
         },
         Err(e) => {
             error!("commande_video_convertir find_one : Erreur chargement/conversion {} : {:?}", fuuid, e);
-            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement/conversion"}), None)?))
+            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement/conversion"}), None)?))
+            return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement/conversion"))?))
         }
     };
 
@@ -1546,7 +1622,8 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
             match v.get(cle_video.as_str()) {
                 Some(v) => {
                     info!("commande_video_convertir Fichier video existe deja {} pour {}", cle_video, fuuid);
-                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Video dans ce format existe deja"}), None)?))
+                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Video dans ce format existe deja"}), None)?))
+                    return Ok(Some(middleware.reponse_err(None, None, Some("Video dans ce format existe deja"))?))
                 },
                 None => ()  // Ok, le video n'existe pas
             }
@@ -1596,12 +1673,12 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
         let consignation_disponible: Vec<&String> = version_courante.visites.keys().into_iter().collect();
 
         for consignation in consignation_disponible {
-            let routage = RoutageMessageAction::builder(DOMAINE_MEDIA_NOM, COMMANDE_VIDEO_DISPONIBLE)
-                .exchanges(vec![Securite::L2Prive])
+            let routage = RoutageMessageAction::builder(DOMAINE_MEDIA_NOM, COMMANDE_VIDEO_DISPONIBLE, vec![Securite::L2Prive])
                 .partition(consignation)
+                .blocking(false)
                 .build();
             let commande_fichiers = json!({CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video});
-            middleware.transmettre_commande(routage, &commande_fichiers, false).await?;
+            middleware.transmettre_commande(routage, &commande_fichiers).await?;
         }
 
         // Emettre evenement pour clients
@@ -1610,36 +1687,37 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValideAction, ges
             CHAMP_FUUID: fuuid,
             "tuuid": &commande.tuuid,
         });
-        let routage = RoutageMessageAction::builder(DOMAINE_NOM, "jobAjoutee")
-            .exchanges(vec![Securite::L2Prive])
+        let routage = RoutageMessageAction::builder(DOMAINE_NOM, "jobAjoutee", vec![Securite::L2Prive])
             .partition(&user_id)
             .build();
         middleware.emettre_evenement(routage, &evenement).await?;
     }
 
-    Ok(middleware.reponse_ok()?)
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn commande_image_get_job<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn commande_image_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
-    debug!("commande_image_get_job Consommer commande : {:?}", & m.message);
-    let commande: CommandeImageGetJob = m.message.get_msg().map_contenu()?;
-
-    let certificat = match m.message.certificat.as_ref() {
-        Some(inner) => inner.as_ref(),
-        None => Err(format!("commandes.commande_image_get_job Certificat absent"))?
+    debug!("commande_image_get_job Consommer commande : {:?}", m.type_message);
+    let commande: CommandeImageGetJob = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
     };
 
+    let certificat = m.certificat.as_ref();
+
     // Verifier autorisation
-    if ! m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+    if ! m.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
         info!("commande_image_get_job Exchange n'est pas de niveau 3 ou 4");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
+        // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
+        return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (exchange)"))?))
     }
-    if ! m.verifier_roles(vec![RolesCertificats::Media]) {
+    if ! m.certificat.verifier_roles(vec![RolesCertificats::Media])? {
         info!("commande_image_get_job Role n'est pas media");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre media)"}), None)?))
+        // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre media)"}), None)?))
+        return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (role doit etre media)"))?))
     }
 
     let commande_get_job = CommandeGetJob { instance_id: commande.instance_id, fallback: None };
@@ -1647,29 +1725,31 @@ async fn commande_image_get_job<M>(middleware: &M, m: MessageValideAction, gesti
         middleware, certificat, commande_get_job).await?;
 
     debug!("commande_image_get_job Prochaine job : {:?}", reponse_prochaine_job);
-    Ok(Some(middleware.formatter_reponse(reponse_prochaine_job, None)?))
+    Ok(Some(middleware.build_reponse(reponse_prochaine_job)?.0))
 }
 
-async fn commande_video_get_job<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+async fn commande_video_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
-    debug!("commande_video_get_job Consommer commande : {:?}", & m.message);
-    let commande: CommandeVideoGetJob = m.message.get_msg().map_contenu()?;
-
-    let certificat = match m.message.certificat.as_ref() {
-        Some(inner) => inner.as_ref(),
-        None => Err(format!("commandes.commande_video_get_job Certificat absent"))?
+    debug!("commande_video_get_job Consommer commande : {:?}", & m.type_message);
+    let commande: CommandeVideoGetJob = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
     };
 
+    let certificat = m.certificat.as_ref();
+
     // Verifier autorisation
-    if ! m.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure]) {
+    if ! m.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
         info!("commande_video_get_job Exchange n'est pas de niveau 3 ou 4");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
+        // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
+        return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (exchange)"))?))
     }
-    if ! m.verifier_roles(vec![RolesCertificats::Media]) {
+    if ! m.certificat.verifier_roles(vec![RolesCertificats::Media])? {
         info!("commande_video_get_job Role n'est pas media");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre media)"}), None)?))
+        // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre media)"}), None)?))
+        return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (role doit etre media)"))?))
     }
 
     let commande_get_job = CommandeGetJob { instance_id: commande.instance_id, fallback: commande.fallback };
@@ -1677,34 +1757,38 @@ async fn commande_video_get_job<M>(middleware: &M, m: MessageValideAction, gesti
         middleware, certificat, commande_get_job).await?;
 
     debug!("commande_video_get_job Prochaine job : {:?}", reponse_prochaine_job);
-    Ok(Some(middleware.formatter_reponse(reponse_prochaine_job, None)?))
+    Ok(Some(middleware.build_reponse(reponse_prochaine_job)?.0))
 }
 
-async fn commande_supprimer_video<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_supprimer_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_supprimer_video Consommer commande : {:?}", & m.message);
-    let commande: TransactionSupprimerVideo = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_supprimer_video parsed : {:?}", commande);
+    debug!("commande_supprimer_video Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionSupprimerVideo = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     let fuuid = &commande.fuuid_video;
-    let user_id = m.get_user_id();
+    let user_id = m.certificat.get_user_id()?;
 
     {   // Verifier acces
-        let delegation_globale = m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE);
-        if delegation_globale || m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
+        let delegation_globale = m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)?;
+        if delegation_globale || m.certificat.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])? {
             // Ok
         } else if user_id.is_some() {
             let u = user_id.as_ref().expect("commande_video_convertir user_id");
             let resultat = verifier_acces_usager(middleware, &u, vec![fuuid]).await?;
             if ! resultat.contains(fuuid) {
                 debug!("commande_video_convertir verifier_exchanges : Usager n'a pas acces a fuuid {}", fuuid);;
-                return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
+                // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
+                return Ok(Some(middleware.reponse_err(None, None, Some("Access denied"))?))
             }
         } else {
             debug!("commande_video_convertir verifier_exchanges : Certificat n'a pas l'acces requis (securite 2,3,4 ou user_id avec acces fuuid)");
-            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
+            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
+            return Ok(Some(middleware.reponse_err(None, None, Some("Access denied"))?))
         }
     }
 
@@ -1716,7 +1800,7 @@ async fn commande_supprimer_video<M>(middleware: &M, m: MessageValideAction, ges
         // Traiter la transaction
         Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
     } else {
-        Ok(middleware.reponse_ok()?)
+        Ok(Some(middleware.reponse_ok(None, None)?))
     }
 }
 
@@ -1730,31 +1814,37 @@ struct ReponseChargerUserIdParNomUsager {
     usagers: Option<HashMap<String, Option<String>>>
 }
 
-async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_ajouter_contact Consommer commande : {:?}", & m.message);
-    let commande: CommandeAjouterContactLocal = m.message.get_msg().map_contenu()?;
+    debug!("commande_ajouter_contact Consommer commande : {:?}", & m.type_message);
+    let commande: CommandeAjouterContactLocal = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             debug!("commande_ajouter_contact_local user_id absent, SKIP");;
-            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
+            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
+            return Ok(Some(middleware.reponse_err(None, None, Some("User id manquant du certificat"))?))
         }
     };
 
     // Identifier le user_id de l'usager a ajouter
     let user_contact_id = {
-        let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCOMPTES, "getUserIdParNomUsager")
-            .exchanges(vec![Securite::L4Secure])
+        let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCOMPTES, "getUserIdParNomUsager", vec![Securite::L4Secure])
             .build();
         let requete = json!({ "noms_usagers": [commande.nom_usager] });
         match middleware.transmettre_requete(routage, &requete).await {
             Ok(inner) => match inner {
                 TypeMessage::Valide(r) => {
-                    let reponse_mappee: ReponseChargerUserIdParNomUsager = r.message.parsed.map_contenu()?;
+                    let reponse_mappee: ReponseChargerUserIdParNomUsager = {
+                        let reponse_ref = r.message.parse()?;
+                        reponse_ref.contenu()?.deserialize()?
+                    };
                     match reponse_mappee.usagers {
                         Some(mut inner) => {
                             match inner.remove(commande.nom_usager.as_str()) {
@@ -1762,36 +1852,42 @@ async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValideActio
                                     Some(inner) => inner,
                                     None => {
                                         debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (usager inconnu - 1), SKIP");;
-                                        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                                        // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                                        return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                                     }
                                 },
                                 None => {
                                     debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (usager inconnu - 2), SKIP");;
-                                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                                    return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                                 }
                             }
                         },
                         None => {
                             debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (reponse sans liste usagers), SKIP");;
-                            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                            return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                         }
                     }
                 },
                 _ => {
                     debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (mauvais type reponse), SKIP");;
-                    return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                    return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                 }
             },
             Err(e) => {
                 debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact, SKIP : {:?}", e);;
-                return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
+                return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
             }
         }
     };
 
     if user_contact_id == user_id {
         debug!("commande_ajouter_contact_local Usager (courant) tente de s'ajouter a ses propres contacts, SKIP");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Usager courant ne peut etre ajoute au contacts"}), None)?))
+        // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Usager courant ne peut etre ajoute au contacts"}), None)?))
+        return Ok(Some(middleware.reponse_err(None, None, Some("Usager courant ne peut etre ajoute au contacts"))?))
     }
 
     // Convertir en transaction
@@ -1803,38 +1899,44 @@ async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValideActio
     // Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_supprimer_contacts<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_supprimer_contacts<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_supprimer_contacts Consommer commande : {:?}", & m.message);
-    let commande: TransactionSupprimerContacts = m.message.get_msg().map_contenu()?;
+    debug!("commande_supprimer_contacts Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionSupprimerContacts = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             debug!("commande_supprimer_contacts user_id absent, SKIP");
-            ;
-            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
+            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
+            return Ok(Some(middleware.reponse_err(None, None, Some("User id manquant du certificat"))?))
         }
     };
 
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_partager_collections<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_partager_collections<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_partager_collections Consommer commande : {:?}", & m.message);
-    let commande: TransactionPartagerCollections = m.message.get_msg().map_contenu()?;
+    debug!("commande_partager_collections Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionPartagerCollections = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             debug!("commande_partager_collections user_id absent, SKIP");
-            ;
-            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
+            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
+            return Ok(Some(middleware.reponse_err(None, None, Some("User id manquant du certificat"))?))
         }
     };
 
@@ -1854,36 +1956,44 @@ async fn commande_partager_collections<M>(middleware: &M, mut m: MessageValideAc
 
     if cuuids_manquants.len() > 0 {
         error!("commande_partager_collections Il y a au moins un cuuid non couvert pour l'usager, SKIP");
-        return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Au moins un repertoire est invalide"}), None)?))
+        // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Au moins un repertoire est invalide"}), None)?))
+        return Ok(Some(middleware.reponse_err(None, None, Some("Au moins un repertoire est invalide"))?))
     }
 
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_supprimer_partage_usager<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_supprimer_partage_usager<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_supprimer_partage_usager Consommer commande : {:?}", & m.message);
-    let commande: TransactionSupprimerPartageUsager = m.message.get_msg().map_contenu()?;
+    debug!("commande_supprimer_partage_usager Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionSupprimerPartageUsager = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
-    let user_id = match m.get_user_id() {
+    let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             debug!("commande_supprimer_partage_usager user_id absent, SKIP");
-            return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
+            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
+            return Ok(Some(middleware.reponse_err(None, None, Some("User id manquant du certificat"))?))
         }
     };
 
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_supprimer_orphelins<M>(middleware: &M, mut m: MessageValideAction, gestionnaire: &GestionnaireGrosFichiers)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
-    where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
+async fn commande_supprimer_orphelins<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_supprimer_orphelins Consommer commande : {:?}", & m.message);
-    let commande: TransactionSupprimerOrphelins = m.message.get_msg().map_contenu()?;
+    debug!("commande_supprimer_orphelins Consommer commande : {:?}", & m.type_message);
+    let commande: TransactionSupprimerOrphelins = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
     let resultat = trouver_orphelins_supprimer(middleware, &commande).await?;
     debug!("commande_supprimer_orphelins Versions supprimees : {:?}, fuuids a conserver : {:?}",
@@ -1902,11 +2012,65 @@ async fn commande_supprimer_orphelins<M>(middleware: &M, mut m: MessageValideAct
     }
 
     let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };
-    Ok(Some(middleware.formatter_reponse(reponse, None)?))
+    Ok(Some(middleware.build_reponse(reponse)?.0))
+}
+
+async fn transmettre_cle_attachee<M>(middleware: &M, cle: Value) -> Result<Option<MessageMilleGrillesBufferDefault>, millegrilles_common_rust::error::Error>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao
+{
+    let mut message_cle: MessageMilleGrillesOwned = serde_json::from_value(cle)?;
+
+    let mut routage_builder = RoutageMessageAction::builder(
+        DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE, vec![Securite::L3Protege])
+        .correlation_id(&message_cle.id)
+        .partition("all");
+
+    match message_cle.attachements.take() {
+        Some(inner) => {
+            if let Some(partition) = inner.get("partition") {
+                if let Some(partition) = partition.as_str() {
+                    // Override la partition
+                    routage_builder = routage_builder.partition(partition);
+                }
+            }
+        },
+        None => ()
+    }
+
+    let routage = routage_builder.build();
+    let type_message = TypeMessageOut::Commande(routage);
+
+    let buffer_message: MessageMilleGrillesBufferDefault = message_cle.try_into()?;
+    let reponse = middleware.emettre_message(type_message, buffer_message).await?;
+
+    match reponse {
+        Some(inner) => match inner {
+            TypeMessage::Valide(reponse) => {
+                let message_ref = reponse.message.parse()?;
+                let contenu = message_ref.contenu()?;
+                let reponse: ReponseCommande = contenu.deserialize()?;
+                if let Some(true) = reponse.ok {
+                    debug!("Cle sauvegardee ok");
+                    Ok(None)
+                } else {
+                    error!("traiter_commande_configurer_consignation Erreur sauvegarde cle : {:?}", reponse);
+                    Ok(Some(middleware.reponse_err(3, reponse.message, reponse.err)?))
+                }
+            },
+            _ => {
+                error!("traiter_commande_configurer_consignation Erreur sauvegarde cle : Mauvais type de reponse");
+                Ok(Some(middleware.reponse_err(2, None, Some("Erreur sauvegarde cle"))?))
+            }
+        },
+        None => {
+            error!("traiter_commande_configurer_consignation Erreur sauvegarde cle : Timeout sur confirmation de sauvegarde");
+            Ok(Some(middleware.reponse_err(1, None, Some("Timeout"))?))
+        }
+    }
 }
 
 // async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &TransactionSupprimerOrphelins)
-//     -> Result<ResultatVerifierOrphelins, Box<dyn Error>>
+//     -> Result<ResultatVerifierOrphelins, CommonError>
 //     where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 // {
 //     let mut versions_supprimees = HashMap::new();

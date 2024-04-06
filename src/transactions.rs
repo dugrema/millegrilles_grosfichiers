@@ -1,6 +1,5 @@
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
 use std::convert::TryInto;
 
 use log::{debug, info, error, warn};
@@ -11,21 +10,25 @@ use millegrilles_common_rust::bson::{Bson, bson};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::fichiers::is_mimetype_video;
-use millegrilles_common_rust::formatteur_messages::{DateEpochSeconds, MessageMilleGrille};
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao, verifier_erreur_duplication_mongo};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::multihash::Code;
-use millegrilles_common_rust::recepteur_messages::MessageValideAction;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
-use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::{get_user_effectif, Transaction};
-use millegrilles_common_rust::verificateur::VerificateurMessage;
+use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
+use millegrilles_common_rust::recepteur_messages::MessageValide;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epochseconds, optionepochseconds};
+use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
+
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 
 use crate::grosfichiers_constantes::*;
@@ -34,14 +37,21 @@ use crate::traitement_jobs::{JobHandler, JobHandlerFichiersRep, JobHandlerVersio
 // use crate::traitement_media::emettre_commande_media;
 // use crate::traitement_index::emettre_commande_indexation;
 
-pub async fn consommer_transaction<M>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, m: MessageValideAction) -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+pub async fn consommer_transaction<M>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where
-    M: ValidateurX509 + GenerateurMessages + MongoDao + VerificateurMessage
+    M: ValidateurX509 + GenerateurMessages + MongoDao
 {
-    debug!("transactions.consommer_transaction Consommer transaction : {:?}", &m.message);
+    debug!("transactions.consommer_transaction Consommer transaction : {:?}", &m.type_message);
+
+    let action = match &m.type_message {
+        TypeMessageOut::Commande(r) |
+        TypeMessageOut::Transaction(r) => r.action.clone(),
+        _ => Err(CommonError::Str("consommer_transaction Mauvais type de message (doit etre Commande ou Transaction)"))?
+    };
 
     // Autorisation
-    match m.action.as_str() {
+    match action.as_str() {
         // 4.secure - doivent etre validees par une commande
         TRANSACTION_NOUVELLE_VERSION |
         TRANSACTION_NOUVELLE_COLLECTION |
@@ -63,29 +73,37 @@ where
         TRANSACTION_IMAGE_SUPPRIMER_JOB |
         TRANSACTION_VIDEO_SUPPRIMER_JOB |
         TRANSACTION_SUPPRIMER_ORPHELINS => {
-            match m.verifier_exchanges(vec![Securite::L4Secure]) {
+            match m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
                 true => Ok(()),
-                false => Err(format!("transactions.consommer_transaction: pas 4.secure"))
+                false => Err(CommonError::Str("transactions.consommer_transaction: pas 4.secure"))
             }?;
         },
-        _ => Err(format!("transactions.consommer_transaction: Mauvais type d'action pour une transaction : {}", m.action))?,
+        _ => Err(format!("transactions.consommer_transaction: Mauvais type d'action pour une transaction : {:?}", m.type_message))?,
     }
 
-    // sauvegarder_transaction_recue(middleware, m, NOM_COLLECTION_TRANSACTIONS).await?;
     Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: T)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao,
-        T: Transaction
+        T: TryInto<TransactionValide> + Send
 {
-    let action = match transaction.get_routage().action.as_ref() {
-        Some(inner) => inner.as_str(),
-        None => Err(format!("transactions.aiguillage_transaction Transaction sans action : {:?}", transaction))?
+    let transaction = match transaction.try_into() {
+        Ok(inner) => inner,
+        Err(_) => Err(CommonError::Str("aiguillage_transaction Erreur try_into TransactionValide"))?
     };
 
-    match action {
+    let action = match transaction.transaction.routage.as_ref() {
+        Some(inner) => match inner.action.as_ref() {
+            Some(inner) => inner.to_owned(),
+            None => Err(format!("transactions.aiguillage_transaction Transaction sans action : {}", transaction.transaction.id))?
+        },
+        None => Err(format!("transactions.aiguillage_transaction Transaction sans routage : {}", transaction.transaction.id))?
+    };
+
+    match action.as_str() {
         TRANSACTION_NOUVELLE_VERSION => transaction_nouvelle_version(gestionnaire, middleware, transaction).await,
         TRANSACTION_NOUVELLE_COLLECTION => transaction_nouvelle_collection(middleware, gestionnaire, transaction).await,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION => transaction_ajouter_fichiers_collection(middleware, gestionnaire, transaction).await,
@@ -110,7 +128,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
         TRANSACTION_PARTAGER_COLLECTIONS => transaction_partager_collections(middleware, gestionnaire, transaction).await,
         TRANSACTION_SUPPRIMER_PARTAGE_USAGER => transaction_supprimer_partage_usager(middleware, gestionnaire, transaction).await,
         TRANSACTION_SUPPRIMER_ORPHELINS => transaction_supprimer_orphelins(middleware, gestionnaire, transaction).await,
-        _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.get_uuid_transaction(), action)),
+        _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.transaction.id, action))?
     }
 }
 
@@ -139,9 +157,9 @@ pub struct TransactionNouvelleVersion {
 pub struct TransactionDecrireFichier {
     pub tuuid: String,
     // nom: Option<String>,
-    // titre: Option<HashMap<String, String>>,
+    // titre: Option<HashMap<String, CommonError>>,
     metadata: Option<DataChiffre>,
-    // description: Option<HashMap<String, String>>,
+    // description: Option<HashMap<String, CommonError>>,
     pub mimetype: Option<String>,
 }
 
@@ -150,8 +168,8 @@ pub struct TransactionDecrireCollection {
     pub tuuid: String,
     // nom: Option<String>,
     metadata: Option<DataChiffre>,
-    // titre: Option<HashMap<String, String>>,
-    // description: Option<HashMap<String, String>>,
+    // titre: Option<HashMap<String, CommonError>>,
+    // description: Option<HashMap<String, CommonError>>,
     // securite: Option<String>,
 }
 
@@ -326,15 +344,17 @@ pub struct NodeFichierRepOwned {
     pub path_cuuids: Option<Vec<String>>,
 
     // Mapping date - requis pour sync
-    #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
-    map_derniere_modification: DateTime<Utc>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub derniere_modification: Option<DateEpochSeconds>,
+    // #[serde(deserialize_with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification")]
+    // map_derniere_modification: DateTime<Utc>,
+    #[serde(default, rename = "_mg-derniere-modification", skip_serializing_if = "Option::is_none",
+    serialize_with="optionepochseconds::serialize",
+    deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
+    pub derniere_modification: Option<DateTime<Utc>>,
 }
 
 impl NodeFichierRepOwned {
     pub async fn from_nouvelle_version<M,U,S>(middleware: &M, value: &TransactionNouvelleVersion, uuid_transaction: S, user_id: U)
-        -> Result<Self, Box<dyn Error>>
+        -> Result<Self, CommonError>
         where M: MongoDao, S: ToString, U: ToString
     {
         let user_id = user_id.to_string();
@@ -377,14 +397,14 @@ impl NodeFichierRepOwned {
             mimetype: Some(value.mimetype.clone()),
             fuuids_versions: Some(vec![value.fuuid.clone()]),
             path_cuuids: Some(cuuids),
-            map_derniere_modification: Default::default(),
+            // map_derniere_modification: Default::default(),
             derniere_modification: None,
         })
     }
     
-    pub fn map_date_modification(&mut self) {
-        self.derniere_modification = Some(DateEpochSeconds::from(self.map_derniere_modification.clone()));
-    }
+    // pub fn map_date_modification(&mut self) {
+    //     self.derniere_modification = Some(self.map_derniere_modification.clone());
+    // }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -400,13 +420,13 @@ pub struct NodeFichierVersionOwned {
     pub fuuids_reclames: Vec<String>,
 
     pub supprime: bool,
-    pub visites: HashMap<String, DateEpochSeconds>,
+    pub visites: HashMap<String, DateTime<Utc>>,
 
     // Mapping date
     #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
     map_derniere_modification: DateTime<Utc>,
     #[serde(skip_serializing_if="Option::is_none")]
-    derniere_modification: Option<DateEpochSeconds>,
+    derniere_modification: Option<DateTime<Utc>>,
 
     // Champs optionnels media
     #[serde(skip_serializing_if="Option::is_none")]
@@ -438,7 +458,7 @@ pub struct NodeFichierVersionOwned {
 
 impl NodeFichierVersionOwned {
     pub async fn from_nouvelle_version<U, S>(value: &TransactionNouvelleVersion, tuuid: S, user_id: U)
-        -> Result<Self, Box<dyn Error>>
+        -> Result<Self, CommonError>
         where S: ToString, U: ToString
     {
         let user_id = user_id.to_string();
@@ -496,27 +516,27 @@ impl NodeFichierVersionOwned {
     }
 
     pub fn map_date_modification(&mut self) {
-        self.derniere_modification = Some(DateEpochSeconds::from(self.map_derniere_modification.clone()));
+        self.derniere_modification = Some(self.map_derniere_modification.clone());
     }
 }
 
-async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_nouvelle_version<M>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_nouvelle_version Consommer transaction : {:?}", &transaction);
-    let transaction_fichier: TransactionNouvelleVersion = match transaction.clone().convertir::<TransactionNouvelleVersion>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_nouvelle_version Consommer transaction : {}", transaction.transaction.id);
+    let transaction_fichier: TransactionNouvelleVersion = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_fichier: TransactionNouvelleVersion = match transaction.clone().convertir::<TransactionNouvelleVersion>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur conversion transaction : {:?}", e))?
+    // };
 
-    let enveloppe = match transaction.get_enveloppe_certificat() {
-        Some(inner) => inner,
-        None => Err(format!("grosfichiers.transaction_nouvelle_version Certificat absent (enveloppe)"))?
-    };
+    // let enveloppe = match transaction.get_enveloppe_certificat() {
+    //     Some(inner) => inner,
+    //     None => Err(format!("grosfichiers.transaction_nouvelle_version Certificat absent (enveloppe)"))?
+    // };
 
-    let user_id = match enveloppe.get_user_id() {
+    let user_id = match transaction.certificat.get_user_id() {
         Ok(inner) => match inner {
             Some(user) => user.to_owned(),
             None => Err(format!("grosfichiers.transaction_nouvelle_version User_id absent du certificat"))?
@@ -533,7 +553,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
     // Determiner tuuid - si non fourni, c'est l'uuid-transaction (implique un nouveau fichier)
     // let tuuid = match &transaction_fichier.tuuid {
     //     Some(t) => t.clone(),
-    //     None => String::from(transaction.get_uuid_transaction())
+    //     None => String::from(&transaction.transaction.id)
     // };
 
     // Conserver champs transaction uniquement (filtrer champs meta)
@@ -543,7 +563,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
     // };
 
     let fichier_rep = match NodeFichierRepOwned::from_nouvelle_version(
-        middleware, &transaction_fichier, transaction.get_uuid_transaction(), &user_id).await {
+        middleware, &transaction_fichier, &transaction.transaction.id, &user_id).await {
         Ok(inner) => inner,
         Err(e) => Err(format!("grosfichiers.NodeFichierRepOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
     };
@@ -553,7 +573,7 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
     let fichier_version = match NodeFichierVersionOwned::from_nouvelle_version(
         &transaction_fichier, &tuuid, &user_id).await {
         Ok(mut inner) => {
-            inner.visites.insert("nouveau".to_string(), DateEpochSeconds::now());
+            inner.visites.insert("nouveau".to_string(), Utc::now());
             inner
         },
         Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
@@ -652,19 +672,19 @@ async fn transaction_nouvelle_version<M, T>(gestionnaire: &GestionnaireGrosFichi
         // }
     }
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_nouvelle_collection<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_nouvelle_collection Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionNouvelleCollection = match transaction.clone().convertir::<TransactionNouvelleCollection>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_nouvelle_collection Consommer transaction : {}", transaction.transaction.id);
+    let transaction_collection: TransactionNouvelleCollection = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_collection: TransactionNouvelleCollection = match transaction.clone().convertir::<TransactionNouvelleCollection>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion transaction : {:?}", e))?
+    // };
 
     // Conserver champs transaction uniquement (filtrer champs meta)
     let mut doc_bson_transaction = match convertir_to_bson(&transaction_collection) {
@@ -672,12 +692,9 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, gestionnaire: &Ge
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion transaction en bson : {:?}", e))?
     };
 
-    let user_id = match transaction.get_enveloppe_certificat() {
-        Some(e) => e.get_user_id()?.to_owned(),
-        None => None
-    };
+    let user_id = transaction.certificat.get_user_id()?;
 
-    let tuuid = transaction.get_uuid_transaction().to_owned();
+    let tuuid = &transaction.transaction.id.to_owned();
     let cuuid = transaction_collection.cuuid;
     // let nom_collection = transaction_collection.nom;
     let metadata = match convertir_to_bson(&transaction_collection.metadata) {
@@ -793,10 +810,11 @@ async fn transaction_nouvelle_collection<M, T>(middleware: &M, gestionnaire: &Ge
     }
 
     let reponse = json!({"ok": true, "tuuid": tuuid});
-    match middleware.formatter_reponse(&reponse, None) {
-        Ok(inner) => Ok(Some(inner)),
-        Err(e) => Err(format!("transaction_nouvelle_collection Erreur formattage reponse : {:?}", e))?
-    }
+    Ok(Some(middleware.build_reponse(reponse)?.0))
+    // match middleware.formatter_reponse(&reponse, None) {
+    //     Ok(inner) => Ok(Some(inner)),
+    //     Err(e) => Err(format!("transaction_nouvelle_collection Erreur formattage reponse : {:?}", e))?
+    // }
 
     // middleware.reponse_ok()
 }
@@ -809,7 +827,7 @@ struct RowRepertoirePaths {
 }
 
 async fn get_path_cuuid<M,S>(middleware: &M, cuuid: S)
-    -> Result<Option<Vec<String>>, Box<dyn Error>>
+    -> Result<Option<Vec<String>>, CommonError>
     where M: MongoDao, S: AsRef<str>
 {
     let cuuid = cuuid.as_ref();
@@ -843,7 +861,7 @@ pub struct RowFichiersRepCuuidNode {
     ancetres: Option<Vec<String>>,  // Liste (set) de tous les cuuids ancetres
 }
 
-// async fn recalculer_cuuids_fichiers<M,S,T>(middleware: &M, cuuids: Vec<S>, tuuids: Option<Vec<T>>) -> Result<(), Box<dyn Error>>
+// async fn recalculer_cuuids_fichiers<M,S,T>(middleware: &M, cuuids: Vec<S>, tuuids: Option<Vec<T>>) -> Result<(), CommonError>
 //     where
 //         M: MongoDao,
 //         S: AsRef<str>,
@@ -941,25 +959,22 @@ pub struct RowFichiersRepCuuidNode {
 //     Ok(())
 // }
 
-async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_ajouter_fichiers_collection<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    let uuid_transaction = transaction.get_uuid_transaction();
+    let uuid_transaction = &transaction.transaction.id;
 
-    debug!("transaction_ajouter_fichiers_collection Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionAjouterFichiersCollection = match transaction.clone().convertir::<TransactionAjouterFichiersCollection>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_ajouter_fichiers_collection Consommer transaction : {}", transaction.transaction.id);
+    let transaction_collection: TransactionAjouterFichiersCollection = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_collection: TransactionAjouterFichiersCollection = match transaction.clone().convertir::<TransactionAjouterFichiersCollection>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur conversion transaction : {:?}", e))?
+    // };
 
-    let user_id = match transaction.get_enveloppe_certificat() {
-        Some(e) => match e.get_user_id()?.to_owned() {
-            Some(inner) => inner,
-            None => Err(format!("transaction.transaction_ajouter_fichiers_collection Certificat sans user_id"))?
-        },
-        None => Err(format!("transaction.transaction_ajouter_fichiers_collection Certificat n'est pas charge"))?
+    let user_id = match transaction.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(CommonError::Str("transaction.transaction_ajouter_fichiers_collection Certificat sans user_id"))?
     };
 
     let (user_id_origine, user_id_destination) = match transaction_collection.contact_id.as_ref() {
@@ -972,10 +987,11 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, gestionna
                     Some(inner) => inner,
                     None => {
                         let reponse = json!({"ok": false, "err": "Contact_id invalide"});
-                        match middleware.formatter_reponse(&reponse, None) {
-                            Ok(inner) => return Ok(Some(inner)),
-                            Err(e) => Err(format!("transactions.transaction_ajouter_fichiers_collection Erreur formattage reponse (err) pour contact_id invalide : {:?}", e))?
-                        }
+                        return Ok(Some(middleware.build_reponse(reponse)?.0))
+                        // match middleware.formatter_reponse(&reponse, None) {
+                        //     Ok(inner) => return Ok(Some(inner)),
+                        //     Err(e) => Err(format!("transactions.transaction_ajouter_fichiers_collection Erreur formattage reponse (err) pour contact_id invalide : {:?}", e))?
+                        // }
                     }
                 },
                 Err(e) => Err(format!("transactions.transaction_ajouter_fichiers_collection Erreur traitement contact_id : {:?}", e))?
@@ -985,10 +1001,11 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, gestionna
                 Ok(inner) => {
                     if inner.len() != transaction_collection.inclure_tuuids.len() {
                         let reponse = json!({"ok": false, "err": "Acces refuse"});
-                        match middleware.formatter_reponse(&reponse, None) {
-                            Ok(inner) => return Ok(Some(inner)),
-                            Err(e) => Err(format!("transactions.transaction_ajouter_fichiers_collection Erreur formattage reponse (err) pour verifier_acces_usager_tuuids : {:?}", e))?
-                        }
+                        return Ok(Some(middleware.build_reponse(reponse)?.0))
+                        // match middleware.formatter_reponse(&reponse, None) {
+                        //     Ok(inner) => return Ok(Some(inner)),
+                        //     Err(e) => Err(format!("transactions.transaction_ajouter_fichiers_collection Erreur formattage reponse (err) pour verifier_acces_usager_tuuids : {:?}", e))?
+                        // }
                     }
                 },
                 Err(e) => Err(format!("transactions.transaction_ajouter_fichiers_collection Erreur verifier_acces_usager_tuuids : {:?}", e))?
@@ -1033,7 +1050,7 @@ async fn transaction_ajouter_fichiers_collection<M, T>(middleware: &M, gestionna
         emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
     }
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 #[derive(Clone, Debug)]
@@ -1045,7 +1062,7 @@ struct CopieTuuidVersCuuid {
 /// Duplique la structure des repertoires listes dans tuuids.
 /// Les fichiers des sous-repertoires sont linkes (pas copies).
 async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_transaction: U, cuuid: C, tuuids: &Vec<T>, user_id: S, user_id_destination: Option<D>)
-    -> Result<(), Box<dyn Error>>
+    -> Result<(), CommonError>
     where M: MongoDao, U: AsRef<str>, C: AsRef<str>, T: ToString, S: AsRef<str>, D: AsRef<str>
 {
     let uuid_transaction = uuid_transaction.as_ref();
@@ -1184,7 +1201,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
 
 /// Recalcule les path de cuuids de tous les sous-repertoires et fichiers sous un cuuid
 async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
-    -> Result<(), Box<dyn Error>>
+    -> Result<(), CommonError>
     where M: MongoDao, C: ToString
 {
     let cuuid = cuuid.to_string();
@@ -1236,21 +1253,22 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
     Ok(())
 }
 
-async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_deplacer_fichiers_collection Consommer transaction : {:?}", &transaction);
-    let user_id = match transaction.get_enveloppe_certificat() {
-        Some(e) => e.get_user_id()?.to_owned(),
-        None => None
-    };
+    debug!("transaction_deplacer_fichiers_collection Consommer transaction : {}", transaction.transaction.id);
+    let user_id = transaction.certificat.get_user_id()?;
+    // let user_id = match transaction.get_enveloppe_certificat() {
+    //     Some(e) => e.get_user_id()?.to_owned(),
+    //     None => None
+    // };
 
-    let transaction_collection: TransactionDeplacerFichiersCollection = match transaction.convertir::<TransactionDeplacerFichiersCollection>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Erreur conversion transaction : {:?}", e))?
-    };
+    let transaction_collection: TransactionDeplacerFichiersCollection = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_collection: TransactionDeplacerFichiersCollection = match transaction.convertir::<TransactionDeplacerFichiersCollection>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Erreur conversion transaction : {:?}", e))?
+    // };
 
     let path_cuuids_destination = match get_path_cuuid(middleware, transaction_collection.cuuid_destination.as_str()).await {
         Ok(inner) => match inner {
@@ -1305,11 +1323,11 @@ async fn transaction_deplacer_fichiers_collection<M, T>(middleware: &M, gestionn
         emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_destination).await?;
     }
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 /// Obsolete - conserver pour support legacy
-async fn transaction_retirer_documents_collection<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+async fn transaction_retirer_documents_collection<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: GenerateurMessages + MongoDao,
         T: Transaction
@@ -1355,11 +1373,11 @@ async fn transaction_retirer_documents_collection<M, T>(middleware: &M, gestionn
         emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
     }
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 async fn find_tuuids_retires<M,U,S>(middleware: &M, user_id: U, tuuids_in: Vec<S>)
-    -> Result<HashMap<String, Vec<String>>, Box<dyn Error>>
+    -> Result<HashMap<String, Vec<String>>, CommonError>
     where M: MongoDao, U: AsRef<str>, S: AsRef<str>
 {
     let tuuids: Vec<&str> = tuuids_in.iter().map(|c| c.as_ref()).collect();
@@ -1420,7 +1438,7 @@ async fn find_tuuids_retires<M,U,S>(middleware: &M, user_id: U, tuuids_in: Vec<S
 }
 
 async fn supprimer_versions_conditionnel<M,T,U>(middleware: &M, user_id: U, fuuids_in: &Vec<T>)
-    -> Result<(), Box<dyn Error>>
+    -> Result<(), CommonError>
     where M: MongoDao, U: AsRef<str>, T: AsRef<str>
 {
     let user_id = user_id.as_ref();
@@ -1468,7 +1486,7 @@ async fn supprimer_versions_conditionnel<M,T,U>(middleware: &M, user_id: U, fuui
 }
 
 async fn supprimer_tuuids<M,U,T>(middleware: &M, user_id_in: U, tuuids_in: Vec<T>)
-    -> Result<HashMap<String, Vec<String>>, Box<dyn Error>>
+    -> Result<HashMap<String, Vec<String>>, CommonError>
     where M: MongoDao, U: AsRef<str>, T: AsRef<str>
 {
     let user_id = user_id_in.as_ref();
@@ -1543,20 +1561,20 @@ async fn supprimer_tuuids<M,U,T>(middleware: &M, user_id_in: U, tuuids_in: Vec<T
     Ok(tuuids_retires_par_cuuid)
 }
 
-async fn transaction_supprimer_documents<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_supprimer_documents<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_supprimer_documents Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionSupprimerDocuments = match transaction.clone().convertir::<TransactionSupprimerDocuments>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_supprimer_documents Consommer transaction : {}", transaction.transaction.id);
+    let transaction_collection: TransactionSupprimerDocuments = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_collection: TransactionSupprimerDocuments = match transaction.clone().convertir::<TransactionSupprimerDocuments>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur conversion transaction : {:?}", e))?
+    // };
 
-    let user_id = match transaction.get_enveloppe_certificat() {
-        Some(c) => c.get_user_id()?.clone().expect("get_user_id NONE"),
-        None => Err(format!("grosfichiers.transaction_supprimer_documents Erreur user_id absent du certificat"))?
+    let user_id = match transaction.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(CommonError::Str("grosfichiers.transaction_supprimer_documents Erreur user_id absent du certificat"))?
     };
 
     // Conserver liste de tuuids par cuuid, utilise pour evenement
@@ -1578,19 +1596,19 @@ async fn transaction_supprimer_documents<M, T>(middleware: &M, gestionnaire: &Ge
         emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
     }
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_recuperer_documents<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_recuperer_documents<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_recuperer_documents Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionListeDocuments = match transaction.clone().convertir::<TransactionListeDocuments>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_recuperer_documents Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_recuperer_documents Consommer transaction : {}", transaction.transaction.id);
+    let transaction_collection: TransactionListeDocuments = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_collection: TransactionListeDocuments = match transaction.clone().convertir::<TransactionListeDocuments>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_recuperer_documents Erreur conversion transaction : {:?}", e))?
+    // };
 
     // Conserver champs transaction uniquement (filtrer champs meta)
     let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.tuuids}};
@@ -1613,7 +1631,7 @@ async fn transaction_recuperer_documents<M, T>(middleware: &M, gestionnaire: &Ge
         }
     }
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1622,7 +1640,7 @@ pub struct TransactionRecupererDocumentsV2 {
     pub items: HashMap<String, Option<Vec<String>>>
 }
 
-async fn recuperer_parents<M,C,U>(middleware: &M, user_id: U, tuuid: C) -> Result<(), Box<dyn Error>>
+async fn recuperer_parents<M,C,U>(middleware: &M, user_id: U, tuuid: C) -> Result<(), CommonError>
     where M: MongoDao, C: AsRef<str>, U: AsRef<str>
 {
     let tuuid = tuuid.as_ref();
@@ -1680,7 +1698,7 @@ pub struct RowRecupererFichierDb {
     supprime_indirect: Option<bool>,
 }
 
-async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_params: Option<Vec<T>>) -> Result<(), Box<dyn Error>>
+async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_params: Option<Vec<T>>) -> Result<(), CommonError>
     where
         M: MongoDao,
         T: AsRef<str>,
@@ -1835,21 +1853,22 @@ async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_
     Ok(())
 }
 
-async fn transaction_recuperer_documents_v2<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_recuperer_documents_v2<M>(middleware: &M, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_recuperer_documents_v2 Consommer transaction : {:?}", &transaction);
-    let user_id = match transaction.get_enveloppe_certificat() {
-        Some(c) => c.get_user_id()?.clone().expect("get_user_id NONE"),
-        None => Err(format!("grosfichiers.transaction_recuperer_documents_v2 Erreur user_id absent du certificat"))?
+    debug!("transaction_recuperer_documents_v2 Consommer transaction : {}", transaction.transaction.id);
+
+    let user_id = match transaction.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(CommonError::Str("grosfichiers.transaction_recuperer_documents_v2 Erreur user_id absent du certificat"))?
     };
 
-    let transaction: TransactionRecupererDocumentsV2 = match transaction.clone().convertir() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_recuperer_documents_v2 Erreur conversion transaction : {:?}", e))?
-    };
+    let transaction: TransactionRecupererDocumentsV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction: TransactionRecupererDocumentsV2 = match transaction.clone().convertir() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_recuperer_documents_v2 Erreur conversion transaction : {:?}", e))?
+    // };
 
     for (cuuid, paths) in transaction.items {
         // Recuperer le cuuid (parent) jusqu'a la racine au besoin
@@ -1865,24 +1884,25 @@ async fn transaction_recuperer_documents_v2<M, T>(middleware: &M, transaction: T
         }
     }
 
-    Ok(middleware.reponse_ok()?)
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_archiver_documents<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_archiver_documents<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_archiver_documents Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionListeDocuments = match transaction.clone().convertir::<TransactionListeDocuments>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("transactions.transaction_archiver_documents Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_archiver_documents Consommer transaction : {}", transaction.transaction.id);
+    let transaction_collection: TransactionListeDocuments = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_collection: TransactionListeDocuments = match transaction.clone().convertir::<TransactionListeDocuments>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("transactions.transaction_archiver_documents Erreur conversion transaction : {:?}", e))?
+    // };
 
-    let user_id = match transaction.get_enveloppe_certificat() {
-        Some(e) => e.get_user_id()?.to_owned(),
-        None => None
-    };
+    let user_id = transaction.certificat.get_user_id()?;
+    // let user_id = match transaction.get_enveloppe_certificat() {
+    //     Some(e) => e.get_user_id()?.to_owned(),
+    //     None => None
+    // };
 
     // Conserver champs transaction uniquement (filtrer champs meta)
     let filtre = match user_id.as_ref() {
@@ -1908,10 +1928,10 @@ async fn transaction_archiver_documents<M, T>(middleware: &M, gestionnaire: &Ges
         }
     }
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_changer_favoris<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
+async fn transaction_changer_favoris<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: GenerateurMessages + MongoDao,
         T: Transaction
@@ -1973,11 +1993,11 @@ async fn transaction_changer_favoris<M, T>(middleware: &M, gestionnaire: &Gestio
         }
     }
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 /// Fait un touch sur les fichiers_rep identifies. User_id optionnel (e.g. pour ops systeme comme visites)
-async fn touch_fichiers_rep<M,U,S,V>(middleware: &M, user_id: Option<U>, fuuids_in: V) -> Result<(), Box<dyn Error>>
+async fn touch_fichiers_rep<M,U,S,V>(middleware: &M, user_id: Option<U>, fuuids_in: V) -> Result<(), CommonError>
     where
         M: GenerateurMessages + MongoDao,
         U: AsRef<str>,
@@ -2008,16 +2028,16 @@ async fn touch_fichiers_rep<M,U,S,V>(middleware: &M, user_id: Option<U>, fuuids_
     Ok(())
 }
 
-async fn transaction_associer_conversions<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_associer_conversions Consommer transaction : {:?}", &transaction);
-    let transaction_mappee: TransactionAssocierConversions = match transaction.clone().convertir::<TransactionAssocierConversions>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_associer_conversions Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_associer_conversions Consommer transaction : {}", transaction.transaction.id);
+    let transaction_mappee: TransactionAssocierConversions = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_mappee: TransactionAssocierConversions = match transaction.clone().convertir::<TransactionAssocierConversions>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_associer_conversions Erreur conversion transaction : {:?}", e))?
+    // };
 
     let tuuid = transaction_mappee.tuuid.clone();
     let user_id = match transaction_mappee.user_id.as_ref() {
@@ -2123,19 +2143,19 @@ async fn transaction_associer_conversions<M, T>(middleware: &M, gestionnaire: &G
         }
     }
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_associer_video Consommer transaction : {:?}", &transaction);
-    let transaction_mappee: TransactionAssocierVideo = match transaction.clone().convertir::<TransactionAssocierVideo>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("transactions.transaction_associer_video Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_associer_video Consommer transaction : {}", transaction.transaction.id);
+    let transaction_mappee: TransactionAssocierVideo = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_mappee: TransactionAssocierVideo = match transaction.clone().convertir::<TransactionAssocierVideo>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("transactions.transaction_associer_video Erreur conversion transaction : {:?}", e))?
+    // };
 
     let tuuid = transaction_mappee.tuuid.clone();
 
@@ -2339,24 +2359,21 @@ async fn transaction_associer_video<M, T>(middleware: &M, gestionnaire: &Gestion
         error!("transaction_associer_video Erreur touch_fichiers_rep {:?}/{:?} : {:?}", transaction_mappee.user_id, fuuids, e);
     }
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_decrire_fichier<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_decire_fichier Consommer transaction : {:?}", &transaction);
-    let transaction_mappee: TransactionDecrireFichier = match transaction.clone().convertir::<TransactionDecrireFichier>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_decire_fichier Consommer transaction : {}", transaction.transaction.id);
+    let transaction_mappee: TransactionDecrireFichier = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_mappee: TransactionDecrireFichier = match transaction.clone().convertir::<TransactionDecrireFichier>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion transaction : {:?}", e))?
+    // };
 
-    let user_id = match transaction.get_enveloppe_certificat() {
-        Some(e) => e.get_user_id()?.to_owned(),
-        None => None
-    };
+    let user_id = transaction.certificat.get_user_id()?;
 
     let tuuid = transaction_mappee.tuuid.as_str();
     let mut filtre = doc! { CHAMP_TUUID: tuuid };
@@ -2435,24 +2452,21 @@ async fn transaction_decrire_fichier<M, T>(middleware: &M, gestionnaire: &Gestio
         warn!("transaction_decire_fichier Erreur emettre_evenement_maj_fichier : {:?}", e);
     }
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_decire_collection<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_decire_collection<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_decire_collection Consommer transaction : {:?}", &transaction);
-    let transaction_mappee: TransactionDecrireCollection = match transaction.clone().convertir::<TransactionDecrireCollection>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_decire_collection Consommer transaction : {}", transaction.transaction.id);
+    let transaction_mappee: TransactionDecrireCollection = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_mappee: TransactionDecrireCollection = match transaction.clone().convertir::<TransactionDecrireCollection>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion transaction : {:?}", e))?
+    // };
 
-    let user_id = match transaction.get_enveloppe_certificat() {
-        Some(e) => e.get_user_id()?.to_owned(),
-        None => None
-    };
+    let user_id = transaction.certificat.get_user_id()?;
 
     let tuuid = transaction_mappee.tuuid.as_str();
     let filtre = doc! { CHAMP_TUUID: tuuid };
@@ -2509,14 +2523,12 @@ async fn transaction_decire_collection<M, T>(middleware: &M, gestionnaire: &Gest
     // Emettre fichier pour que tous les clients recoivent la mise a jour
     emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid).await?;
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: T)
-    -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_copier_fichier_tiers<M>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
     warn!("transaction_copier_fichier_tiers Transaction OBSOLETE - SKIP");
     Ok(None)
@@ -2548,7 +2560,7 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     //                 },
     //                 None => {
     //                     // Nouveau fichier, utiliser uuid_transaction pour le tuuid
-    //                     transaction.get_uuid_transaction().to_string()
+    //                     &transaction.transaction.id.to_string()
     //                 }
     //             }
     //         },
@@ -2736,32 +2748,35 @@ async fn transaction_copier_fichier_tiers<M, T>(gestionnaire: &GestionnaireGrosF
     // middleware.reponse_ok()
 }
 
-async fn transaction_favoris_creerpath<M, T>(middleware: &M, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_favoris_creerpath Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionFavorisCreerpath = match transaction.clone().convertir::<TransactionFavorisCreerpath>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur conversion transaction : {:?}", e))?
-    };
-    let uuid_transaction = transaction.get_uuid_transaction();
+    debug!("transaction_favoris_creerpath Consommer transaction : {}", transaction.transaction.id);
+    let transaction_collection: TransactionFavorisCreerpath = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_collection: TransactionFavorisCreerpath = match transaction.clone().convertir::<TransactionFavorisCreerpath>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur conversion transaction : {:?}", e))?
+    // };
+    let uuid_transaction = &transaction.transaction.id;
 
     let user_id = match &transaction_collection.user_id {
-        Some(u) => Ok(u.to_owned()),
+        Some(u) => u.to_owned(),
         None => {
-            match transaction.get_enveloppe_certificat() {
-                Some(c) => {
-                    match c.get_user_id()? {
-                        Some(u) => Ok(u.to_owned()),
-                        None => Err(format!("grosfichiers.transaction_favoris_creerpath user_id manquant"))
-                    }
-                },
-                None => Err(format!("grosfichiers.transaction_favoris_creerpath Certificat non charge"))
+            match transaction.certificat.get_user_id()? {
+                Some(inner) => inner,
+                None => Err(CommonError::Str("grosfichiers.transaction_favoris_creerpath Erreur user_id absent du certificat"))?
             }
+            // match transaction.get_enveloppe_certificat() {
+            //     Some(c) => {
+            //         match c.get_user_id()? {
+            //             Some(u) => Ok(u.to_owned()),
+            //             None => Err(format!("grosfichiers.transaction_favoris_creerpath user_id manquant"))
+            //         }
+            //     },
+            //     None => Err(format!("grosfichiers.transaction_favoris_creerpath Certificat non charge"))
+            // }
         }
-    }?;
+    };
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
 
@@ -2876,12 +2891,13 @@ async fn transaction_favoris_creerpath<M, T>(middleware: &M, transaction: T) -> 
     }
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
-    let reponse = match middleware.formatter_reponse(json!({CHAMP_TUUID: &tuuid_leaf}), None) {
-        Ok(r) => Ok(r),
-        Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
-    }?;
-
-    Ok(Some(reponse))
+    Ok(Some(middleware.build_reponse(json!({CHAMP_TUUID: &tuuid_leaf}))?.0))
+    // let reponse = match middleware.formatter_reponse(json!({CHAMP_TUUID: &tuuid_leaf}), None) {
+    //     Ok(r) => Ok(r),
+    //     Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
+    // }?;
+    //
+    // Ok(Some(reponse))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2894,24 +2910,24 @@ pub struct InformationCollection {
     pub favoris: Option<bool>,
 }
 
-async fn transaction_supprimer_video<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_supprimer_video<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_supprimer_video Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionSupprimerVideo = match transaction.clone().convertir::<TransactionSupprimerVideo>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_supprimer_video Consommer transaction : {}", transaction.transaction.id);
+    let transaction_collection: TransactionSupprimerVideo = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_collection: TransactionSupprimerVideo = match transaction.clone().convertir::<TransactionSupprimerVideo>() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur conversion transaction : {:?}", e))?
+    // };
 
     let fuuid = &transaction_collection.fuuid_video;
 
-    let enveloppe = match transaction.get_enveloppe_certificat() {
-        Some(e) => e,
-        None => Err(format!("transaction_supprimer_video Certificat inconnu, transaction ignoree"))?
-    };
-    let user_id = enveloppe.get_user_id()?;
+    // let enveloppe = match transaction.get_enveloppe_certificat() {
+    //     Some(e) => e,
+    //     None => Err(format!("transaction_supprimer_video Certificat inconnu, transaction ignoree"))?
+    // };
+    let user_id = transaction.certificat.get_user_id()?;
 
     let mut labels_videos = Vec::new();
     let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
@@ -2968,23 +2984,23 @@ async fn transaction_supprimer_video<M, T>(middleware: &M, gestionnaire: &Gestio
     }
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
-    match middleware.reponse_ok() {
-        Ok(r) => Ok(r),
-        Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
+    match middleware.reponse_ok(None, None) {
+        Ok(r) => Ok(Some(r)),
+        Err(e) => Err(CommonError::Str("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
     }
 }
 
 
-async fn transaction_supprimer_job_image<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_supprimer_job_image<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_supprimer_job_image Consommer transaction : {:?}", &transaction);
-    let transaction_supprimer_job: TransactionSupprimerJobImage = match transaction.clone().convertir() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_supprimer_job_video Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_supprimer_job_image Consommer transaction : {}", transaction.transaction.id);
+    let transaction_supprimer_job: TransactionSupprimerJobImage = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_supprimer_job: TransactionSupprimerJobImage = match transaction.clone().convertir() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(CommonError::String(format!("grosfichiers.transaction_supprimer_job_video Erreur conversion transaction : {:?}", e)))?
+    // };
 
     let user_id = get_user_effectif(&transaction, &transaction_supprimer_job)?;
 
@@ -3003,22 +3019,22 @@ async fn transaction_supprimer_job_image<M, T>(middleware: &M, gestionnaire: &Ge
     }
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
-    match middleware.reponse_ok() {
-        Ok(r) => Ok(r),
-        Err(e) => Err(format!("transactions.transaction_supprimer_job_image Erreur formattage reponse"))
+    match middleware.reponse_ok(None, None) {
+        Ok(r) => Ok(Some(r)),
+        Err(e) => Err(CommonError::Str("transactions.transaction_supprimer_job_image Erreur formattage reponse"))
     }
 }
 
-async fn transaction_supprimer_job_video<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_supprimer_job_video<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_supprimer_job_video Consommer transaction : {:?}", &transaction);
-    let transaction_supprimer: TransactionSupprimerJobVideo = match transaction.clone().convertir() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_supprimer_job_image Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_supprimer_job_video Consommer transaction : {}", transaction.transaction.id);
+    let transaction_supprimer: TransactionSupprimerJobVideo = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_supprimer: TransactionSupprimerJobVideo = match transaction.clone().convertir() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_supprimer_job_image Erreur conversion transaction : {:?}", e))?
+    // };
 
     let user_id = get_user_effectif(&transaction, &transaction_supprimer)?;
 
@@ -3033,9 +3049,9 @@ async fn transaction_supprimer_job_video<M, T>(middleware: &M, gestionnaire: &Ge
     }
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
-    match middleware.reponse_ok() {
-        Ok(r) => Ok(r),
-        Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
+    match middleware.reponse_ok(None, None) {
+        Ok(r) => Ok(Some(r)),
+        Err(e) => Err(CommonError::Str("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
     }
 }
 
@@ -3047,18 +3063,18 @@ pub struct TransactionAjouterContactLocal {
     pub contact_user_id: String,
 }
 
-async fn transaction_ajouter_contact_local<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_ajouter_contact_local<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_ajouter_contact_local Consommer transaction : {:?}", &transaction);
-    let uuid_transaction = transaction.get_uuid_transaction().to_owned();
+    debug!("transaction_ajouter_contact_local Consommer transaction : {}", transaction.transaction.id);
+    let uuid_transaction = transaction.transaction.id.clone();
 
-    let transaction_mappee: TransactionAjouterContactLocal = match transaction.convertir() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_ajouter_contact_local Erreur conversion transaction : {:?}", e))?
-    };
+    let transaction_mappee: TransactionAjouterContactLocal = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_mappee: TransactionAjouterContactLocal = match transaction.convertir() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_ajouter_contact_local Erreur conversion transaction : {:?}", e))?
+    // };
 
     let filtre = doc! {
         CHAMP_CONTACT_ID: uuid_transaction,
@@ -3080,9 +3096,9 @@ async fn transaction_ajouter_contact_local<M, T>(middleware: &M, gestionnaire: &
     }
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
-    match middleware.reponse_ok() {
-        Ok(r) => Ok(r),
-        Err(e) => Err(format!("grosfichiers.transaction_ajouter_contact_local Erreur formattage reponse"))
+    match middleware.reponse_ok(None, None) {
+        Ok(r) => Ok(Some(r)),
+        Err(e) => Err(CommonError::Str("grosfichiers.transaction_ajouter_contact_local Erreur formattage reponse"))
     }
 }
 
@@ -3091,24 +3107,28 @@ pub struct TransactionSupprimerContacts {
     pub contact_ids: Vec<String>,
 }
 
-async fn transaction_supprimer_contacts<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_supprimer_contacts<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_supprimer_contacts Consommer transaction : {:?}", &transaction);
-    let user_id = match transaction.get_enveloppe_certificat() {
-        Some(inner) => match inner.get_user_id()? {
-            Some(inner) => inner.to_owned(),
-            None => Err(format!("grosfichiers.transaction_supprimer_contacts User_id manquant du certificat"))?
-        },
-        None => Err(format!("grosfichiers.transaction_supprimer_contacts Erreur enveloppe manquante"))?
+    debug!("transaction_supprimer_contacts Consommer transaction : {}", transaction.transaction.id);
+    let user_id = match transaction.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(CommonError::Str("grosfichiers.transaction_supprimer_contacts Erreur user_id absent du certificat"))?
     };
+    // let user_id = match transaction.get_enveloppe_certificat() {
+    //     Some(inner) => match inner.get_user_id()? {
+    //         Some(inner) => inner.to_owned(),
+    //         None => Err(format!("grosfichiers.transaction_supprimer_contacts User_id manquant du certificat"))?
+    //     },
+    //     None => Err(format!("grosfichiers.transaction_supprimer_contacts Erreur enveloppe manquante"))?
+    // };
 
-    let transaction_mappee: TransactionSupprimerContacts = match transaction.convertir() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_supprimer_contacts Erreur conversion transaction : {:?}", e))?
-    };
+    let transaction_mappee: TransactionSupprimerContacts = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_mappee: TransactionSupprimerContacts = match transaction.convertir() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_supprimer_contacts Erreur conversion transaction : {:?}", e))?
+    // };
 
     let filtre = doc! {
         CHAMP_USER_ID: &user_id,
@@ -3120,9 +3140,9 @@ async fn transaction_supprimer_contacts<M, T>(middleware: &M, gestionnaire: &Ges
     }
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
-    match middleware.reponse_ok() {
-        Ok(r) => Ok(r),
-        Err(e) => Err(format!("grosfichiers.transaction_supprimer_contacts Erreur formattage reponse"))
+    match middleware.reponse_ok(None, None) {
+        Ok(r) => Ok(Some(r)),
+        Err(e) => Err(CommonError::Str("grosfichiers.transaction_supprimer_contacts Erreur formattage reponse"))
     }
 }
 
@@ -3132,24 +3152,28 @@ pub struct TransactionPartagerCollections {
     pub contact_ids: Vec<String>,
 }
 
-async fn transaction_partager_collections<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_partager_collections<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_partager_collections Consommer transaction : {:?}", &transaction);
-    let user_id = match transaction.get_enveloppe_certificat() {
-        Some(inner) => match inner.get_user_id()? {
-            Some(inner) => inner.to_owned(),
-            None => Err(format!("grosfichiers.transaction_partager_collections User_id manquant du certificat"))?
-        },
-        None => Err(format!("grosfichiers.transaction_partager_collections Erreur enveloppe manquante"))?
+    debug!("transaction_partager_collections Consommer transaction : {}", transaction.transaction.id);
+    let user_id = match transaction.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(CommonError::Str("grosfichiers.transaction_partager_collections Erreur user_id absent du certificat"))?
     };
+    // let user_id = match transaction.get_enveloppe_certificat() {
+    //     Some(inner) => match inner.get_user_id()? {
+    //         Some(inner) => inner.to_owned(),
+    //         None => Err(format!("grosfichiers.transaction_partager_collections User_id manquant du certificat"))?
+    //     },
+    //     None => Err(format!("grosfichiers.transaction_partager_collections Erreur enveloppe manquante"))?
+    // };
 
-    let transaction_mappee: TransactionPartagerCollections = match transaction.convertir() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_partager_collections Erreur conversion transaction : {:?}", e))?
-    };
+    let transaction_mappee: TransactionPartagerCollections = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_mappee: TransactionPartagerCollections = match transaction.convertir() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_partager_collections Erreur conversion transaction : {:?}", e))?
+    // };
 
     let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
     for contact_id in transaction_mappee.contact_ids {
@@ -3175,7 +3199,7 @@ async fn transaction_partager_collections<M, T>(middleware: &M, gestionnaire: &G
         }
     }
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3184,24 +3208,28 @@ pub struct TransactionSupprimerPartageUsager {
     pub tuuid: String,
 }
 
-async fn transaction_supprimer_partage_usager<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_supprimer_partage_usager<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_supprimer_partage_usager Consommer transaction : {:?}", &transaction);
-    let user_id = match transaction.get_enveloppe_certificat() {
-        Some(inner) => match inner.get_user_id()? {
-            Some(inner) => inner.to_owned(),
-            None => Err(format!("grosfichiers.transaction_supprimer_partage_usager User_id manquant du certificat"))?
-        },
-        None => Err(format!("grosfichiers.transaction_supprimer_partage_usager Erreur enveloppe manquante"))?
+    debug!("transaction_supprimer_partage_usager Consommer transaction : {}", transaction.transaction.id);
+    let user_id = match transaction.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(CommonError::Str("grosfichiers.transaction_supprimer_partage_usager Erreur user_id absent du certificat"))?
     };
+    // let user_id = match transaction.get_enveloppe_certificat() {
+    //     Some(inner) => match inner.get_user_id()? {
+    //         Some(inner) => inner.to_owned(),
+    //         None => Err(format!("grosfichiers.transaction_supprimer_partage_usager User_id manquant du certificat"))?
+    //     },
+    //     None => Err(format!("grosfichiers.transaction_supprimer_partage_usager Erreur enveloppe manquante"))?
+    // };
 
-    let transaction_mappee: TransactionSupprimerPartageUsager = match transaction.convertir() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_supprimer_partage_usager Erreur conversion transaction : {:?}", e))?
-    };
+    let transaction_mappee: TransactionSupprimerPartageUsager = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_mappee: TransactionSupprimerPartageUsager = match transaction.convertir() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_supprimer_partage_usager Erreur conversion transaction : {:?}", e))?
+    // };
 
     let filtre = doc! {
         CHAMP_USER_ID: &user_id,
@@ -3213,7 +3241,7 @@ async fn transaction_supprimer_partage_usager<M, T>(middleware: &M, gestionnaire
         Err(format!("transactions.transaction_supprimer_partage_usager Erreur delete_one : {:?}", e))?
     }
 
-    middleware.reponse_ok()
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3234,7 +3262,7 @@ pub struct ResultatVerifierOrphelins {
 }
 
 pub async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &TransactionSupprimerOrphelins)
-    -> Result<ResultatVerifierOrphelins, Box<dyn Error>>
+    -> Result<ResultatVerifierOrphelins, CommonError>
     where M: MongoDao
 {
     let mut versions_supprimees = HashMap::new();
@@ -3289,17 +3317,16 @@ pub async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &Transacti
     Ok(resultat)
 }
 
-async fn transaction_supprimer_orphelins<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T)
-    -> Result<Option<MessageMilleGrille>, String>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
+async fn transaction_supprimer_orphelins<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_supprimer_partage_usager Consommer transaction : {:?}", &transaction);
-    let transaction_mappee: TransactionSupprimerOrphelins = match transaction.convertir() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_supprimer_orphelins Erreur conversion transaction : {:?}", e))?
-    };
+    debug!("transaction_supprimer_partage_usager Consommer transaction : {}", transaction.transaction.id);
+    let transaction_mappee: TransactionSupprimerOrphelins = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let transaction_mappee: TransactionSupprimerOrphelins = match transaction.convertir() {
+    //     Ok(t) => t,
+    //     Err(e) => Err(format!("grosfichiers.transaction_supprimer_orphelins Erreur conversion transaction : {:?}", e))?
+    // };
     match traiter_transaction_supprimer_orphelins(middleware, transaction_mappee).await {
         Ok(inner) => Ok(inner),
         Err(e) => Err(format!("transaction_supprimer_orphelins Erreur traitement {:?}", e))?
@@ -3307,7 +3334,7 @@ async fn transaction_supprimer_orphelins<M, T>(middleware: &M, gestionnaire: &Ge
 }
 
 async fn traiter_transaction_supprimer_orphelins<M>(middleware: &M, transaction: TransactionSupprimerOrphelins)
-    -> Result<Option<MessageMilleGrille>, Box<dyn Error>>
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: GenerateurMessages + MongoDao
 {
@@ -3338,5 +3365,6 @@ async fn traiter_transaction_supprimer_orphelins<M>(middleware: &M, transaction:
     }
 
     let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };
-    Ok(Some(middleware.formatter_reponse(reponse, None)?))
+    Ok(Some(middleware.build_reponse(reponse)?.0))
+    // Ok(Some(middleware.formatter_reponse(reponse, None)?))
 }
