@@ -28,6 +28,7 @@ use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epochseconds, optionepochseconds};
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
+use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::mapstringepochseconds;
 
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 
@@ -420,12 +421,15 @@ pub struct NodeFichierVersionOwned {
     pub fuuids_reclames: Vec<String>,
 
     pub supprime: bool,
+    #[serde(with="mapstringepochseconds")]
     pub visites: HashMap<String, DateTime<Utc>>,
 
     // Mapping date
-    #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
-    map_derniere_modification: DateTime<Utc>,
-    #[serde(skip_serializing_if="Option::is_none")]
+    // #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
+    // map_derniere_modification: DateTime<Utc>,
+    #[serde(default, rename(deserialize = "_mg-derniere-modification"),
+    serialize_with = "optionepochseconds::serialize",
+    deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
     derniere_modification: Option<DateTime<Utc>>,
 
     // Champs optionnels media
@@ -478,7 +482,7 @@ impl NodeFichierVersionOwned {
             fuuids_reclames: vec![value.fuuid.clone()],
             supprime: false,
             visites: Default::default(),
-            map_derniere_modification: Default::default(),
+            // map_derniere_modification: Default::default(),
             derniere_modification: None,
             height: None,
             width: None,
@@ -515,9 +519,9 @@ impl NodeFichierVersionOwned {
         (flag_media_traite, flag_video_traite, flag_media)
     }
 
-    pub fn map_date_modification(&mut self) {
-        self.derniere_modification = Some(self.map_derniere_modification.clone());
-    }
+    // pub fn map_date_modification(&mut self) {
+    //     self.derniere_modification = Some(self.map_derniere_modification.clone());
+    // }
 }
 
 async fn transaction_nouvelle_version<M>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: TransactionValide)

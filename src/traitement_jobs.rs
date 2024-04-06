@@ -498,32 +498,7 @@ async fn entretien_jobs_versions<J,G,M>(middleware: &M, gestionnaire: &G, job_ha
         let user_id = version_mappee.user_id;
         let mimetype_ref = version_mappee.mimetype;
 
-        // let filtre_job = doc!{ CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref };
-        //
-        // let options = FindOneOptions::builder().hint(Hint::Name(NOM_INDEX_USER_ID_TUUIDS.to_string())).build();
-        // let job_existante = collection_jobs.find_one(filtre_job.clone(), options).await?;
-
-        // if let Some(job) = job_existante {
-        //     if let Some(retry) = job.retry {
-        //         if retry > CONST_MAX_RETRY {
-        //             warn!("traiter_indexation_batch Expirer indexation sur document user_id {} tuuid {} : {} retries",
-        //                 user_id, tuuid_ref, retry);
-        //             let ops = doc! {
-        //                 "$set": {
-        //                     champ_flag_index: true,
-        //                     format!("{}_erreur", champ_flag_index): ERREUR_MEDIA_TOOMANYRETRIES,
-        //                 }
-        //             };
-        //             let filtre_version = doc! {CHAMP_USER_ID: user_id, CHAMP_TUUID: tuuid_ref};
-        //             collection_versions.update_one(filtre_version, ops, None).await?;
-        //             collection_jobs.delete_one(filtre_job, None).await?;
-        //             continue;
-        //         }
-        //     }
-        // }
-
         // Creer ou mettre a jour la job
-        //for instance in version_mappee.visites.into_keys() {
         let instances = version_mappee.visites.into_keys().map(|s| s.to_owned()).collect::<Vec<String>>();
         let mut champs_cles = HashMap::new();
         champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
@@ -538,18 +513,13 @@ async fn entretien_jobs_versions<J,G,M>(middleware: &M, gestionnaire: &G, job_ha
         {
             info!("entretien_jobs Erreur creation job : {:?}", e)
         }
-        //}
     }
 
-    // Cleanup des jobs avec retry excessifs. Ces jobs sont orphelines (e.g. la correspondante dans
-    // versions est deja traitee).
     {
         let filtre = doc! {
             // Inclue etat pour utiliser index etat_jobs_2
             CHAMP_ETAT_JOB: {"$in": [
                 VIDEO_CONVERSION_ETAT_PENDING,
-                // VIDEO_CONVERSION_ETAT_RUNNING,
-                // VIDEO_CONVERSION_ETAT_PERSISTING,
                 VIDEO_CONVERSION_ETAT_ERROR,
                 VIDEO_CONVERSION_ETAT_ERROR_TOOMANYRETRIES,
             ]},

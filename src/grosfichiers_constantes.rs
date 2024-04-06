@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use millegrilles_common_rust::bson::{Bson, Document};
-use millegrilles_common_rust::chiffrage_cle::InformationCle;
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::messages_generiques::CommandeUsager;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
-use millegrilles_common_rust::serde_json::Value;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epochseconds, optionepochseconds};
+use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
+use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::{mapstringepochseconds, optionmapstringepochseconds};
+
 use crate::requetes::mapper_fichier_db;
 
 pub const DOMAINE_NOM: &str = "GrosFichiers";
@@ -248,7 +250,13 @@ pub struct FichierDetail {
     pub fuuid_v_courante: Option<String>,
     pub version_courante: Option<DBFichierVersionDetail>,
     pub favoris: Option<bool>,
+    #[serde(default, rename(deserialize = "_mg-creation"),
+    serialize_with = "optionepochseconds::serialize",
+    deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
     pub date_creation: Option<DateTime<Utc>>,
+    #[serde(default, rename(deserialize = "_mg-derniere-modification"),
+    serialize_with = "optionepochseconds::serialize",
+    deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
     pub derniere_modification: Option<DateTime<Utc>>,
     pub supprime: Option<bool>,
     pub archive: Option<bool>,
@@ -256,7 +264,7 @@ pub struct FichierDetail {
     pub metadata: Option<DataChiffre>,
     // #[serde(skip_serializing_if="Option::is_none")]
     // pub supprime_cuuids_path: Option<Vec<String>>,
-    #[serde(skip_serializing_if="Option::is_none")]
+    #[serde(default, skip_serializing_if="Option::is_none", with="optionmapstringepochseconds")]
     pub visites: Option<HashMap<String, DateTime<Utc>>>,
 
     /// Breadcrumbs pour chaque cuuid du fichier
@@ -291,7 +299,9 @@ pub struct DBFichierVersionDetail {
     pub user_id: Option<String>,
     pub mimetype: String,
     pub taille: usize,
-    #[serde(rename="dateFichier")]
+    #[serde(rename="dateFichier", default,
+    serialize_with = "optionepochseconds::serialize",
+    deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
     pub date_fichier: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub height: Option<u32>,
@@ -673,7 +683,8 @@ pub struct NodeFichierVersionBorrowed<'a> {
     pub fuuids_reclames: Vec<&'a str>,
 
     pub supprime: bool,
-    pub visites: HashMap<&'a str, DateTime<Utc>>,
+    #[serde(with="mapstringepochseconds")]
+    pub visites: HashMap<String, DateTime<Utc>>,
 
     // Champs optionnels media
     #[serde(skip_serializing_if="Option::is_none")]
