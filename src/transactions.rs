@@ -595,6 +595,14 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GestionnaireGrosFichiers
 
     // Inserer document de version
     {
+        let visites = {
+            let mut visites = doc!();
+            for (k, v) in &fichier_version.visites {
+                visites.insert(k.to_owned(), v.timestamp());
+            }
+            visites
+        };
+
         // Utiliser la struct fichier_version comme contenu initial
         let mut doc_version_bson = match convertir_to_bson(fichier_version) {
             Ok(inner) => inner,
@@ -603,10 +611,12 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GestionnaireGrosFichiers
 
         // Ajouter date creation
         doc_version_bson.insert(CHAMP_CREATION, Utc::now());
+        doc_version_bson.insert(CHAMP_MODIFICATION, Utc::now());  // Remplacer champ
+        doc_version_bson.insert(CHAMP_VISITES, visites);  // Override visites avec date i64
 
         let ops = doc!{
             "$setOnInsert": doc_version_bson,
-            "$currentDate": { CHAMP_MODIFICATION: true }
+            // "$currentDate": { CHAMP_MODIFICATION: true }
         };
 
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
@@ -633,11 +643,12 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GestionnaireGrosFichiers
 
         // Ajouter date creation
         doc_rep_bson.insert(CHAMP_CREATION, Utc::now());
+        doc_rep_bson.insert(CHAMP_MODIFICATION, Utc::now());  // Remplacer champ modification
         doc_rep_bson.insert(CHAMP_FLAG_INDEX, false);
 
         let ops = doc!{
             "$setOnInsert": doc_rep_bson,
-            "$currentDate": { CHAMP_MODIFICATION: true }
+            // "$currentDate": { CHAMP_MODIFICATION: true }
         };
 
         let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;

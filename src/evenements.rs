@@ -430,7 +430,7 @@ async fn marquer_visites_fuuids<M>(
         debug!("marquer_visites_fuuids Filtre versions {:?}", filtre_versions);
 
         let ops = doc! {
-            "$set": {format!("visites.{}", instance_id): date_visite},
+            "$set": {format!("visites.{}", instance_id): date_visite.timestamp()},
             "$unset": {"visites.nouveau": true},
             "$currentDate": { CHAMP_MODIFICATION: true },
         };
