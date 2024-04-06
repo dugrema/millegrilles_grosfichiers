@@ -347,7 +347,7 @@ pub struct NodeFichierRepOwned {
     // Mapping date - requis pour sync
     // #[serde(deserialize_with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification")]
     // map_derniere_modification: DateTime<Utc>,
-    #[serde(default, rename = "_mg-derniere-modification", skip_serializing_if = "Option::is_none",
+    #[serde(default, rename(deserialize="_mg-derniere-modification"), skip_serializing_if = "Option::is_none",
     serialize_with="optionepochseconds::serialize",
     deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
     pub derniere_modification: Option<DateTime<Utc>>,

@@ -29,6 +29,8 @@ use millegrilles_common_rust::transactions::Transaction;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
+use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
@@ -299,7 +301,7 @@ pub struct ReponseFichierRepVersion {
     #[serde(skip_serializing_if="Option::is_none")]
     pub version_courante: Option<NodeFichierVersionOwned>,
 
-    #[serde(skip_serializing_if="Option::is_none")]
+    #[serde(default, skip_serializing_if="Option::is_none", with="optionepochseconds")]
     pub derniere_modification: Option<DateTime<Utc>>,
 }
 
@@ -1796,8 +1798,12 @@ struct RequeteSyncCuuids {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct FichierSync {
     tuuid: String,
-    #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
-    map_derniere_modification: DateTime<Utc>,
+    // #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
+    // map_derniere_modification: DateTime<Utc>,
+    #[serde(default,
+    rename(deserialize="_mg-derniere-modification"),
+    serialize_with = "optionepochseconds::serialize",
+    deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
     derniere_modification: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if="Option::is_none")]
     favoris: Option<bool>,
@@ -1810,8 +1816,12 @@ struct FichierSync {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct CuuidsSync {
     tuuid: String,
-    #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
-    map_derniere_modification: DateTime<Utc>,
+    // #[serde(with="millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime", rename="_mg-derniere-modification", skip_serializing)]
+    // map_derniere_modification: DateTime<Utc>,
+    #[serde(default,
+    rename(deserialize="_mg-derniere-modification"),
+    serialize_with = "optionepochseconds::serialize",
+    deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
     derniere_modification: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if="Option::is_none")]
     favoris: Option<bool>,
@@ -2065,7 +2075,7 @@ async fn find_sync_fichiers<M>(middleware: &M, filtre: Document, opts: FindOptio
     while curseur.advance().await? {
         let mut row = curseur.deserialize_current()?;
         // let mut record: FichierSync = convertir_bson_deserializable(d?)?;
-        row.derniere_modification = Some(row.map_derniere_modification.clone());
+        // row.derniere_modification = Some(row.map_derniere_modification.clone());
         fichiers_confirmation.push(row);
     }
 
@@ -2081,7 +2091,7 @@ async fn find_sync_cuuids<M>(middleware: &M, filtre: Document, opts: FindOptions
     let mut cuuids_confirmation = Vec::new();
     while let Some(d) = curseur.next().await {
         let mut record: CuuidsSync = convertir_bson_deserializable(d?)?;
-        record.derniere_modification = Some(record.map_derniere_modification.clone());
+        // record.derniere_modification = Some(record.map_derniere_modification.clone());
         cuuids_confirmation.push(record);
     }
 
