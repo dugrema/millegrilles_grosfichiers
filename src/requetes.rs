@@ -1154,7 +1154,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, gestionn
         .blocking(false)
         .build();
 
-    debug!("Transmettre requete permission dechiffrage cle : {:?}", permission);
+    debug!("Transmettre requete permission dechiffrage cle Routage {:?}\n{:?}", routage, permission);
 
     middleware.transmettre_requete(routage, &permission).await?;
 

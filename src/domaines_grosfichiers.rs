@@ -10,7 +10,7 @@ use millegrilles_common_rust::configuration::{charger_configuration, ConfigMessa
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::futures::stream::FuturesUnordered;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
-use millegrilles_common_rust::middleware::Middleware;
+use millegrilles_common_rust::middleware::{charger_certificats_chiffrage, Middleware};
 use millegrilles_common_rust::middleware_db::{MiddlewareDb, preparer_middleware_db};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleChiffrageHandler;
 use millegrilles_common_rust::mongo_dao::MongoDao;
@@ -214,13 +214,20 @@ async fn entretien_grosfichiers<M>(middleware: Arc<M>, gestionnaire_arc: Arc<Ges
         debug!("domaines_grosfichiers.entretien  Execution task d'entretien Core {:?}", maintenant);
 
         if prochain_chargement_certificats_maitredescles < maintenant {
-            let public_keys = middleware.get_publickeys_chiffrage();
-            if public_keys.len() > 0 {
-                prochain_chargement_certificats_maitredescles = maintenant + intervalle_chargement_certificats_maitredescles;
-                debug!("Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_maitredescles);
-            } else {
-                warn!("Erreur chargement certificats de maitre des cles, aucunes cles recues")
+            match charger_certificats_chiffrage(middleware.as_ref()).await {
+                Ok(()) => {
+                    prochain_chargement_certificats_maitredescles = maintenant + intervalle_chargement_certificats_maitredescles;
+                    debug!("domaines_core.entretien Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_maitredescles);
+                },
+                Err(e) => warn!("domaines_core.entretien Erreur chargement certificats de maitre des cles : {:?}", e)
             }
+            // let public_keys = middleware.get_publickeys_chiffrage();
+            // if public_keys.len() > 0 {
+            //     prochain_chargement_certificats_maitredescles = maintenant + intervalle_chargement_certificats_maitredescles;
+            //     debug!("Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_maitredescles);
+            // } else {
+            //     warn!("Erreur chargement certificats de maitre des cles, aucunes cles recues")
+            // }
         }
 
         // Sleep jusqu'au prochain entretien ou evenement MQ (e.g. connexion)
