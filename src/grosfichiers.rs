@@ -1,7 +1,6 @@
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
-use std::error::Error;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
@@ -54,10 +53,9 @@ pub struct GestionnaireGrosFichiers {
 
 #[async_trait]
 impl TraiterTransaction for GestionnaireGrosFichiers {
-    async fn appliquer_transaction<M,T>(&self, middleware: &M, transaction: T) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    async fn appliquer_transaction<M>(&self, middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
         where
-            M: ValidateurX509 + GenerateurMessages + MongoDao,
-            T: TryInto<TransactionValide> + Send
+            M: ValidateurX509 + GenerateurMessages + MongoDao
     {
         aiguillage_transaction(self, middleware, transaction).await
     }
@@ -69,20 +67,20 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
 
     fn get_collection_transactions(&self) -> Option<String> { Some(String::from(NOM_COLLECTION_TRANSACTIONS)) }
 
-    fn get_collections_documents(&self) -> Vec<String> { vec![
+    fn get_collections_documents(&self) -> Result<Vec<String>, CommonError> { Ok(vec![
         String::from(NOM_COLLECTION_VERSIONS),
         String::from(NOM_COLLECTION_FICHIERS_REP),
         String::from(NOM_COLLECTION_DOCUMENTS),
         String::from(NOM_COLLECTION_PARTAGE_CONTACT),
-    ] }
+    ]) }
 
-    fn get_q_transactions(&self) -> Option<String> { Some(String::from(NOM_Q_TRANSACTIONS)) }
+    fn get_q_transactions(&self) -> Result<Option<String>, CommonError> { Ok(Some(String::from(NOM_Q_TRANSACTIONS))) }
 
-    fn get_q_volatils(&self) -> Option<String> { Some(String::from(NOM_Q_VOLATILS)) }
+    fn get_q_volatils(&self) -> Result<Option<String>, CommonError> { Ok(Some(String::from(NOM_Q_VOLATILS))) }
 
-    fn get_q_triggers(&self) -> Option<String> { Some(String::from(NOM_Q_TRIGGERS)) }
+    fn get_q_triggers(&self) -> Result<Option<String>, CommonError> { Ok(Some(String::from(NOM_Q_TRIGGERS))) }
 
-    fn preparer_queues(&self) -> Vec<QueueType> { preparer_queues() }
+    fn preparer_queues(&self) -> Result<Vec<QueueType>, CommonError> { Ok(preparer_queues()) }
 
     fn chiffrer_backup(&self) -> bool {
         true
@@ -131,11 +129,9 @@ impl GestionnaireDomaine for GestionnaireGrosFichiers {
         traiter_cedule(self, middleware, trigger).await
     }
 
-    async fn aiguillage_transaction<M, T>(&self, middleware: &M, transaction: T)
+    async fn aiguillage_transaction<M>(&self, middleware: &M, transaction: TransactionValide)
         -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-        where
-            M: ValidateurX509 + GenerateurMessages + MongoDao,
-            T: TryInto<TransactionValide> + Send
+        where M: ValidateurX509 + GenerateurMessages + MongoDao
     {
         aiguillage_transaction(self, middleware, transaction).await
     }
