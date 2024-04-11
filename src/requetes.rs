@@ -579,7 +579,8 @@ async fn requete_verifier_acces_tuuids<M>(middleware: &M, m: MessageValide, gest
 
     let acces_tous = resultat.len() == requete.tuuids.len();
 
-    // let reponse = json!({ "fuuids_acces": resultat , "acces_tous": acces_tous, "user_id": user_id });
+    debug!("requete_verifier_acces_tuuids user_id {} : acces tous {:?}, acces {:?}", user_id, acces_tous, resultat);
+
     let reponse = ReponseVerifierAccesTuuids {
         tuuids_acces: resultat,
         acces_tous,
