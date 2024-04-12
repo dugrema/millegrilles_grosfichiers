@@ -160,6 +160,7 @@ pub async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValide)
     // Repondre immediatement pour declencher sync
     {
         match m.type_message {
+            TypeMessageOut::Commande(r) |
             TypeMessageOut::Evenement(r) => {
                 let reponse = json!({ "ok": true });
                 if let Some(correlation_id) = r.correlation_id.as_ref() {
@@ -169,7 +170,7 @@ pub async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValide)
                     }
                 }
             },
-            _ => error!("evenement_fichiers_syncpret Mauvais type message, devrait etre evenement")
+            _ => error!("evenement_fichiers_syncpret Mauvais type message, devrait etre commande/evenement")
         }
     }
 
