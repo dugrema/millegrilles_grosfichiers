@@ -26,7 +26,7 @@ use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::Transaction;
-use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
@@ -1148,12 +1148,25 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, gestionn
         }
     };
 
-    let routage = RoutageMessageAction::builder(
-        DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE, vec![Securite::L4Secure])
-        .reply_to(reply_to)
-        .correlation_id(correlation_id)
-        .blocking(false)
-        .build();
+    let routage = match requete.version {
+        Some(2) => {
+            RoutageMessageAction::builder(
+                DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, vec![Securite::L3Protege])
+                .reply_to(reply_to)
+                .correlation_id(correlation_id)
+                .blocking(false)
+                .build()
+        },
+        None | Some(1) => {
+            RoutageMessageAction::builder(
+                DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE, vec![Securite::L3Protege])
+                .reply_to(reply_to)
+                .correlation_id(correlation_id)
+                .blocking(false)
+                .build()
+        },
+        _ => Err(Error::Str("Version de reponse non supportee"))?
+    };
 
     debug!("Transmettre requete permission dechiffrage cle Routage {:?}\n{:?}", routage, permission);
 

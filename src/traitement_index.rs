@@ -577,6 +577,7 @@ pub struct ParametresGetPermission {
     pub tuuids: Option<Vec<String>>,
     pub fuuids: Vec<String>,
     pub partage: Option<bool>,
+    pub version: Option<i8>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
