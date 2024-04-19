@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::ops::Deref;
+use std::str::from_utf8;
 
 use log::{debug, error, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
@@ -767,51 +768,55 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
                 None => Err(format!("requetes.get_information_fichier_stream Format chiffrage video manquant pour fuuid {}", fuuid))?
             };
 
-            let info_dechiffrage = InformationDechiffrage {
-                format,
-                ref_hachage_bytes: Some(fuuid_ref.to_string()),
-                header: video.header,
-                tag: None,
-            };
-
-            InformationFichierStream {
-                mimetype: video.mimetype,
-                dechiffrage: info_dechiffrage,
-            }
+            todo!("Fix me")
+            // let info_dechiffrage = InformationDechiffrage {
+            //     format,
+            //     ref_hachage_bytes: Some(fuuid_ref.to_string()),
+            //     header: video.header,
+            //     tag: None,
+            // };
+            //
+            // InformationFichierStream {
+            //     mimetype: video.mimetype,
+            //     dechiffrage: info_dechiffrage,
+            // }
         },
         None => {
             // On n'a pas de fuuid de reference - faire requete vers le maitre des cles.
             let requete = RequeteDechiffrage {
                 domaine: DOMAINE_NOM.to_string(),
-                liste_hachage_bytes: vec![fuuid.to_string()],
+                liste_hachage_bytes: None,
+                cle_ids: Some(vec![fuuid.to_string()]),
                 certificat_rechiffrage: None,
             };
             let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE, vec![Securite::L4Secure])
                 .build();
 
-            debug!("Transmettre requete permission dechiffrage cle : {:?}", requete);
-            let reponse = middleware.transmettre_requete(routage, &requete).await?;
-            let info_dechiffrage = if let Some(TypeMessage::Valide(reponse)) = reponse {
-                debug!("Reponse dechiffrage : {:?}", reponse);
-                let mut reponse_dechiffrage: ReponseDechiffrage = deser_message_buffer!(reponse.message);
-                let cle = match reponse_dechiffrage.cles.remove(fuuid) {
-                    Some(inner) => inner,
-                    None => Err(format!("requetes.get_information_fichier_stream Cle fuuid {} manquante", fuuid))?
-                };
-                InformationDechiffrage {
-                    format: FormatChiffrage::try_from(cle.format.as_str())?,
-                    ref_hachage_bytes: None,
-                    header: cle.header,
-                    tag: cle.tag,
-                }
-            } else {
-                Err(format!("Erreur requete information dechiffrage {}, reponse invalide", fuuid))?
-            };
-
-            InformationFichierStream {
-                mimetype: fichier.mimetype,
-                dechiffrage: info_dechiffrage,
-            }
+            todo!("Fix me")
+            // debug!("Transmettre requete permission dechiffrage cle : {:?}", requete);
+            // let reponse = middleware.transmettre_requete(routage, &requete).await?;
+            // let info_dechiffrage = if let Some(TypeMessage::Valide(reponse)) = reponse {
+            //     debug!("Reponse dechiffrage : {:?}", reponse);
+            //     let mut reponse_dechiffrage: ReponseDechiffrage = deser_message_buffer!(reponse.message);
+            //     let cle = match reponse_dechiffrage.cles.remove(fuuid) {
+            //         Some(inner) => inner,
+            //         None => Err(format!("requetes.get_information_fichier_stream Cle fuuid {} manquante", fuuid))?
+            //     };
+            //     InformationDechiffrage {
+            //         format: match cle.format.as_ref() { Some(inner) => Some(FormatChiffrage::try_from(inner.as_str())?), None => None },
+            //         cle_id: None,
+            //         ref_hachage_bytes: None,
+            //         header: cle.header,
+            //         tag: cle.tag,
+            //     }
+            // } else {
+            //     Err(format!("Erreur requete information dechiffrage {}, reponse invalide", fuuid))?
+            // };
+            //
+            // InformationFichierStream {
+            //     mimetype: fichier.mimetype,
+            //     dechiffrage: info_dechiffrage,
+            // }
         }
     };
 
@@ -1031,7 +1036,13 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, gestionn
     debug!("requete_get_cles_fichiers Message : {:?}", &m.type_message);
     let requete: ParametresGetPermission = {
         let message_ref = m.message.parse()?;
-        message_ref.contenu()?.deserialize()?
+        match message_ref.contenu()?.deserialize() {
+            Ok(inner) => inner,
+            Err(e) => {
+                error!("requete_get_cles_fichiers Erreur mapping message\n{}", from_utf8(m.message.buffer.as_slice())?);
+                Err(e)?
+            }
+        }
     };
 
     // Faire une requete pour confirmer que l'usager a acces aux fuuids
@@ -1039,6 +1050,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, gestionn
         doc!{"$or":[
             {CHAMP_FUUIDS_VERSIONS: { "$in": &requete.fuuids }},
             {"metadata.ref_hachage_bytes": { "$in": &requete.fuuids }},
+            {"metadata.cle_id": { "$in": &requete.fuuids }},
         ]}
     ];
 
@@ -1095,9 +1107,21 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, gestionn
         NOM_COLLECTION_FICHIERS_REP)?;
     let mut curseur = collection.find(filtre.clone(), Some(opts)).await?;
 
-    let mut hachage_bytes_demandes = HashSet::new();
-    hachage_bytes_demandes.extend(requete.fuuids.into_iter());
-    let mut hachage_bytes = Vec::new();
+    let liste_cle_ids = match requete.cle_ids {
+        Some(inner) => inner,
+        None => match requete.fuuids {
+            Some(inner) => inner,
+            None => {
+                warn!("requete_get_cles_fichiers Aucun cle_ids ni fuuids dans la requete");
+                return Ok(Some(middleware.reponse_err(1, None, Some("Aucune cle_ids ni fuuids recus"))?))
+            }
+        }
+    };
+
+    let mut cle_ids_demandes = HashSet::new();
+    cle_ids_demandes.extend(liste_cle_ids.iter().map(|s|s.as_str()));
+
+    let mut cle_ids_approuves = Vec::new();
     while curseur.advance().await? {
     // while let Some(fresult) = curseur.next().await {
         let doc_mappe = curseur.deserialize_current()?;
@@ -1105,28 +1129,34 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, gestionn
         // let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
         if let Some(fuuids) = doc_mappe.fuuids_versions {
             for d in fuuids {
-                if hachage_bytes_demandes.remove(d) {
-                    hachage_bytes.push(d.to_owned());
+                if cle_ids_demandes.remove(d) {
+                    cle_ids_approuves.push(d.to_owned());
                 }
             }
         }
         if let Some(metadata) = doc_mappe.metadata {
             if let Some(ref_hachage_bytes) = metadata.ref_hachage_bytes {
-                if hachage_bytes_demandes.remove(ref_hachage_bytes) {
-                    hachage_bytes.push(ref_hachage_bytes.to_owned());
+                if cle_ids_demandes.remove(ref_hachage_bytes) {
+                    cle_ids_approuves.push(ref_hachage_bytes.to_owned());
+                }
+            }
+            if let Some(cle_id) = metadata.cle_id {
+                if cle_ids_demandes.remove(cle_id) {
+                    cle_ids_approuves.push(cle_id.to_owned());
                 }
             }
         }
     }
 
-    if hachage_bytes_demandes.len() > 0 {
+    if cle_ids_demandes.len() > 0 {
         warn!("requete_get_cles_fichiers Acces cles suivantes refuse pour user_id {:?} (partage: {:?}) : {:?}\nFiltre: {:?}",
-            m.certificat.get_user_id()?, requete.partage, hachage_bytes_demandes, serde_json::to_string(&filtre));
+            m.certificat.get_user_id()?, requete.partage, cle_ids_demandes, serde_json::to_string(&filtre));
     }
 
     let permission = RequeteDechiffrage {
         domaine: DOMAINE_NOM.to_string(),
-        liste_hachage_bytes: hachage_bytes,
+        liste_hachage_bytes: None,
+        cle_ids: Some(cle_ids_approuves),
         certificat_rechiffrage: Some(pem_rechiffrage),
     };
 
@@ -1275,7 +1305,8 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnai
 
     let permission = RequeteDechiffrage {
         domaine: DOMAINE_NOM.to_string(),
-        liste_hachage_bytes: hachage_bytes,
+        liste_hachage_bytes: None,
+        cle_ids: Some(hachage_bytes),
         certificat_rechiffrage: Some(pem_rechiffrage),
     };
 

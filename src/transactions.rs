@@ -766,36 +766,6 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &Gesti
             },
             Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection get_path_cuuid : {:?}", e))?
         }
-
-        // let filtre = doc! { CHAMP_TUUID: c };
-        // match collection.find_one(filtre, None).await {
-        //     Ok(inner) => {
-        //         match inner {
-        //             Some(doc_parent) => {
-        //                 match convertir_bson_deserializable::<FichierDetail>(doc_parent) {
-        //                     Ok(inner) => {
-        //                         match inner.path_cuuids.clone() {
-        //                             Some(mut path_cuuids) => {
-        //                                 // Inserer le nouveau parent
-        //                                 let mut path_cuuids_modifie: Vec<Bson> = path_cuuids.iter().map(|c| Bson::String(c.to_owned())).collect();
-        //                                 path_cuuids_modifie.insert(0, Bson::String(c.to_owned()));
-        //                                 doc_collection.insert("path_cuuids", path_cuuids_modifie);
-        //                             },
-        //                             None => {
-        //                                 doc_collection.insert("path_cuuids", vec![Bson::String(c.to_owned())]);
-        //                             }
-        //                         }
-        //                     },
-        //                     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection convertir_bson_deserializable : {:?}", e))?
-        //                 }
-        //             },
-        //             None => {
-        //                 doc_collection.insert("path_cuuids", vec![Bson::String(c.to_owned())]);
-        //             }
-        //         }
-        //     },
-        //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection find_one : {:?}", e))?
-        // }
     }
 
     let resultat = match collection.insert_one(doc_collection, None).await {
@@ -826,12 +796,6 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &Gesti
 
     let reponse = json!({"ok": true, "tuuid": tuuid});
     Ok(Some(middleware.build_reponse(reponse)?.0))
-    // match middleware.formatter_reponse(&reponse, None) {
-    //     Ok(inner) => Ok(Some(inner)),
-    //     Err(e) => Err(format!("transaction_nouvelle_collection Erreur formattage reponse : {:?}", e))?
-    // }
-
-    // middleware.reponse_ok()
 }
 
 #[derive(Deserialize)]

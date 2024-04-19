@@ -324,7 +324,11 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, g
     match message_owned.attachements.take() {
         Some(mut attachements) => match attachements.remove("cle") {
             Some(cle) => {
-                if let Some(reponse) = transmettre_cle_attachee(middleware, cle).await? {
+                // if let Some(reponse) = transmettre_cle_attachee(middleware, cle).await? {
+                //     error!("Erreur sauvegarde cle : {:?}", reponse);
+                //     return Ok(Some(reponse));
+                // }
+                if let Some(reponse) = transmettre_cle_attachee_domaines(middleware, cle).await? {
                     error!("Erreur sauvegarde cle : {:?}", reponse);
                     return Ok(Some(reponse));
                 }
@@ -2025,7 +2029,8 @@ async fn commande_supprimer_orphelins<M>(middleware: &M, mut m: MessageValide, g
     Ok(Some(middleware.build_reponse(reponse)?.0))
 }
 
-async fn transmettre_cle_attachee<M>(middleware: &M, cle: Value) -> Result<Option<MessageMilleGrillesBufferDefault>, millegrilles_common_rust::error::Error>
+async fn transmettre_cle_attachee<M>(middleware: &M, cle: Value)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, millegrilles_common_rust::error::Error>
     where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
     let mut message_cle: MessageMilleGrillesOwned = serde_json::from_value(cle)?;
@@ -2051,6 +2056,51 @@ async fn transmettre_cle_attachee<M>(middleware: &M, cle: Value) -> Result<Optio
     let type_message = TypeMessageOut::Commande(routage);
 
     let buffer_message: MessageMilleGrillesBufferDefault = message_cle.try_into()?;
+    let reponse = middleware.emettre_message(type_message, buffer_message).await?;
+
+    match reponse {
+        Some(inner) => match inner {
+            TypeMessage::Valide(reponse) => {
+                let message_ref = reponse.message.parse()?;
+                let contenu = message_ref.contenu()?;
+                let reponse: ReponseCommande = contenu.deserialize()?;
+                if let Some(true) = reponse.ok {
+                    debug!("Cle sauvegardee ok");
+                    Ok(None)
+                } else {
+                    error!("traiter_commande_configurer_consignation Erreur sauvegarde cle : {:?}", reponse);
+                    Ok(Some(middleware.reponse_err(3, reponse.message, reponse.err)?))
+                }
+            },
+            _ => {
+                error!("traiter_commande_configurer_consignation Erreur sauvegarde cle : Mauvais type de reponse");
+                Ok(Some(middleware.reponse_err(2, None, Some("Erreur sauvegarde cle"))?))
+            }
+        },
+        None => {
+            error!("traiter_commande_configurer_consignation Erreur sauvegarde cle : Timeout sur confirmation de sauvegarde");
+            Ok(Some(middleware.reponse_err(1, None, Some("Timeout"))?))
+        }
+    }
+}
+
+async fn transmettre_cle_attachee_domaines<M>(middleware: &M, cle: Value)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, millegrilles_common_rust::error::Error>
+    where M: ValidateurX509 + GenerateurMessages + MongoDao
+{
+    let mut message_cle: MessageMilleGrillesOwned = serde_json::from_value(cle)?;
+
+    let routage = RoutageMessageAction::builder(
+        DOMAINE_NOM_MAITREDESCLES, COMMANDE_AJOUTER_CLE_DOMAINES, vec![Securite::L1Public])
+        .correlation_id(&message_cle.id)
+        .timeout_blocking(5_000)
+        .build();
+
+    let type_message = TypeMessageOut::Commande(routage);
+    let buffer_message: MessageMilleGrillesBufferDefault = message_cle.try_into()?;
+
+    debug!("transmettre_cle_attachee_domaines Emettre cle attachee, attendre reponse");
+
     let reponse = middleware.emettre_message(type_message, buffer_message).await?;
 
     match reponse {

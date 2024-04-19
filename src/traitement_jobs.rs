@@ -1349,33 +1349,34 @@ pub async fn get_cle_job_indexation<M,S>(middleware: &M, fuuid: S, certificat: &
     //     fp_certs.into_iter().map(|cert| cert.pem).collect()
     // };
 
-    let permission = RequeteDechiffrage {
-        domaine: DOMAINE_NOM.to_string(),
-        liste_hachage_bytes: vec![fuuid.to_string()],
-        certificat_rechiffrage: Some(pem_rechiffrage),
-    };
-
-    debug!("get_cle_job_indexation Transmettre requete permission dechiffrage cle : {:?}", permission);
-    let cle = if let Some(TypeMessage::Valide(reponse)) = middleware.transmettre_requete(routage, &permission).await? {
-        let reponse: ReponseDechiffrageCles = deser_message_buffer!(reponse.message);
-        if reponse.acces.as_str() != "1.permis" {
-            Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : acces refuse ({}) a cle {}", reponse.acces, fuuid))?
-        }
-
-        match reponse.cles {
-            Some(mut inner) => match inner.remove(fuuid) {
-                Some(inner) => inner,
-                None => Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : cle non recue pour {}", fuuid))?
-            },
-            None => Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : cles vides pour {}", fuuid))?
-        }
-    } else {
-        Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : mauvais type message recu"))?
-    };
-
-    debug!("get_cle_job_indexation Cle recue pour {}, format dechiffrage  {}", cle.hachage_bytes, cle.format);
-
-    Ok(cle)
+    todo!("fix me")
+    // let permission = RequeteDechiffrage {
+    //     domaine: DOMAINE_NOM.to_string(),
+    //     liste_hachage_bytes: vec![fuuid.to_string()],
+    //     certificat_rechiffrage: Some(pem_rechiffrage),
+    // };
+    //
+    // debug!("get_cle_job_indexation Transmettre requete permission dechiffrage cle : {:?}", permission);
+    // let cle = if let Some(TypeMessage::Valide(reponse)) = middleware.transmettre_requete(routage, &permission).await? {
+    //     let reponse: ReponseDechiffrageCles = deser_message_buffer!(reponse.message);
+    //     if reponse.acces.as_str() != "1.permis" {
+    //         Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : acces refuse ({}) a cle {}", reponse.acces, fuuid))?
+    //     }
+    //
+    //     match reponse.cles {
+    //         Some(mut inner) => match inner.remove(fuuid) {
+    //             Some(inner) => inner,
+    //             None => Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : cle non recue pour {}", fuuid))?
+    //         },
+    //         None => Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : cles vides pour {}", fuuid))?
+    //     }
+    // } else {
+    //     Err(format!("commandes.get_cle_job_indexation Erreur reception reponse cle : mauvais type message recu"))?
+    // };
+    //
+    // debug!("get_cle_job_indexation Cle recue pour {}, format dechiffrage  {}", cle.hachage_bytes, cle.format);
+    //
+    // Ok(cle)
 }
 
 #[derive(Clone, Debug, Deserialize)]
