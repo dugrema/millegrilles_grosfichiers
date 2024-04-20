@@ -713,6 +713,14 @@ impl<'a> From<DataChiffreBorrow<'a>> for DataChiffre {
 pub struct NodeVersionCouranteInlineOwned {
     pub fuuid: String,
     pub taille: u64,
+
+    // Champs chiffrage V2
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub cle_id: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub nonce: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub format: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -734,7 +742,7 @@ pub struct NodeFichierRepVersionCouranteOwned {
     /// Path des cuuids parents (inverse, parent immediat est index 0)
     pub path_cuuids: Option<Vec<String>>,
 
-    pub versions: Option<Vec<NodeVersionCouranteInlineOwned>>
+    pub versions: Option<Vec<NodeVersionCouranteInlineOwned>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

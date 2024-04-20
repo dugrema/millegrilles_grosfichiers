@@ -2655,7 +2655,7 @@ async fn requete_structure_repertoire<M>(middleware: &M, m: MessageValide, gesti
         doc! { "$project": {
             CHAMP_TUUID: 1, CHAMP_USER_ID: 1, CHAMP_TYPE_NODE: 1, CHAMP_PATH_CUUIDS: 1,
             CHAMP_FUUIDS_VERSIONS: 1, CHAMP_METADATA: 1, CHAMP_MIMETYPE: 1,
-            CHAMP_SUPPRIME: 1, CHAMP_SUPPRIME_INDIRECT: 1
+            CHAMP_SUPPRIME: 1, CHAMP_SUPPRIME_INDIRECT: 1,
         }},
         doc! { "$lookup": {
             "from": NOM_COLLECTION_VERSIONS,
@@ -2665,7 +2665,11 @@ async fn requete_structure_repertoire<M>(middleware: &M, m: MessageValide, gesti
             "pipeline": [
                 // {"$match": { CHAMP_USER_ID: &user_id, CHAMP_FUUID: "$fuuid"}},
                 {"$match": { CHAMP_USER_ID: &user_id }},
-                {"$project": {CHAMP_TAILLE: 1, CHAMP_USER_ID: 1, CHAMP_FUUID: 1}},
+                {"$project": {
+                    CHAMP_TAILLE: 1, CHAMP_USER_ID: 1, CHAMP_FUUID: 1,
+                    // Dechiffrage V2
+                    "cle_id": 1, "nonce": 1, "format": 1,
+                }},
                 // { "$group": {
                 //         "_id": "$user_id",
                 //         "taille": {"$sum": "$taille"}
