@@ -4,10 +4,12 @@ use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::bson::{Bson, Document};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::messages_generiques::CommandeUsager;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{FormatChiffrage, optionformatchiffragestr};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epochseconds, optionepochseconds};
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::{mapstringepochseconds, optionmapstringepochseconds};
+
 
 use crate::requetes::mapper_fichier_db;
 
@@ -367,6 +369,10 @@ pub struct TransactionAssocierVideo {
     pub header: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub format: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub nonce: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub cle_id: Option<String>,
 
     /// Fix bug videas verticaux. Ajoute dans version 2023.7.4
     pub cle_conversion: Option<String>,
@@ -393,6 +399,10 @@ pub struct TransactionAssocierVideoVersionDetail {
     pub header: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub format: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub nonce: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub cle_id: Option<String>,
 
     /// Fix bug videas verticaux. Ajoute dans version 2023.7.4
     pub cle_conversion: Option<String>,
@@ -416,6 +426,10 @@ pub struct ImageConversion {
     pub header: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub format: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub nonce: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub cle_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -766,4 +780,14 @@ pub struct NodeFichierVersionBorrowed<'a> {
     pub flag_video_traite: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub flag_index: Option<bool>,
+
+    // Information de chiffrage symmetrique (depuis 2024.3.0)
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub cle_id: Option<&'a str>,
+    #[serde(default, with="optionformatchiffragestr", skip_serializing_if="Option::is_none")]
+    pub format: Option<FormatChiffrage>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub nonce: Option<&'a str>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub verification: Option<&'a str>,
 }

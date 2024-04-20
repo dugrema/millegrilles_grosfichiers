@@ -10,7 +10,7 @@ use millegrilles_common_rust::bson::{Bson, doc, Document};
 use millegrilles_common_rust::bson::serde_helpers::deserialize_chrono_datetime_from_bson_datetime;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
-use millegrilles_common_rust::common_messages::{InformationDechiffrage, ReponseDechiffrage, RequeteDechiffrage};
+use millegrilles_common_rust::common_messages::{InformationDechiffrage, InformationDechiffrageV2, ReponseDechiffrage, RequeteDechiffrage};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
@@ -33,6 +33,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
 
 use crate::grosfichiers::GestionnaireGrosFichiers;
 use crate::grosfichiers_constantes::*;
@@ -305,6 +306,16 @@ pub struct ReponseFichierRepVersion {
 
     #[serde(default, skip_serializing_if="Option::is_none", with="optionepochseconds")]
     pub derniere_modification: Option<DateTime<Utc>>,
+
+    // Information de chiffrage symmetrique (depuis 2024.3.0)
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub cle_id: Option<String>,
+    #[serde(default, with="optionformatchiffragestr", skip_serializing_if="Option::is_none")]
+    pub format: Option<FormatChiffrage>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub nonce: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub verification: Option<String>,
 }
 
 impl From<NodeFichierRepOwned> for ReponseFichierRepVersion {
@@ -322,6 +333,10 @@ impl From<NodeFichierRepOwned> for ReponseFichierRepVersion {
             path_cuuids: value.path_cuuids,
             version_courante: None,
             derniere_modification: value.derniere_modification,
+            cle_id: None,
+            format: None,
+            nonce: None,
+            verification: None,
         }
     }
 }
@@ -719,7 +734,7 @@ async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValide, gestio
 
 struct InformationFichierStream {
     mimetype: String,
-    dechiffrage: InformationDechiffrage,
+    dechiffrage: InformationDechiffrageV2,
 }
 
 async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuuid: S, fuuid_ref_in: Option<R>)
@@ -742,8 +757,8 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
 
     let resultat = match fuuid_ref {
         Some(fuuid_ref) => {
-            // On a un fuuid de reference - l'information de dechiffrage est dans
-            // la collection VERSIONS (deja charge).
+            // On a un fuuid de reference (video transcode) - l'information de dechiffrage est
+            // dans la collection VERSIONS (deja charge).
             if fuuid_ref != fichier.fuuid.as_str() {
                 Err(format!("requetes.get_information_fichier_stream Mismatch fuuid_ref {} et fichier trouve (db) {}", fuuid_ref, fichier.fuuid))?
             }
@@ -768,31 +783,70 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
                 None => Err(format!("requetes.get_information_fichier_stream Format chiffrage video manquant pour fuuid {}", fuuid))?
             };
 
-            todo!("Fix me")
-            // let info_dechiffrage = InformationDechiffrage {
-            //     format,
-            //     ref_hachage_bytes: Some(fuuid_ref.to_string()),
-            //     header: video.header,
-            //     tag: None,
-            // };
-            //
-            // InformationFichierStream {
-            //     mimetype: video.mimetype,
-            //     dechiffrage: info_dechiffrage,
-            // }
+            let cle_id = match video.cle_id {
+                Some(inner) => inner,
+                None => fuuid_ref.to_owned()
+            };
+
+            let nonce = match video.nonce {
+                Some(inner) => Some(inner),
+                None => match video.header {
+                    Some(inner) => Some(inner[1..].to_string()),
+                    None => None
+                }
+            };
+
+            let info_dechiffrage = InformationDechiffrageV2 {
+                cle_id,
+                format,
+                nonce,
+                verification: None,
+                fuuid: Some(fuuid_ref.to_owned()),  // Reference au fichier video, requis pour JWT
+            };
+
+            InformationFichierStream {
+                mimetype: video.mimetype,
+                dechiffrage: info_dechiffrage,
+            }
         },
         None => {
-            // On n'a pas de fuuid de reference - faire requete vers le maitre des cles.
-            let requete = RequeteDechiffrage {
-                domaine: DOMAINE_NOM.to_string(),
-                liste_hachage_bytes: None,
-                cle_ids: Some(vec![fuuid.to_string()]),
-                certificat_rechiffrage: None,
-            };
-            let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE, vec![Securite::L4Secure])
-                .build();
+            // On n'a pas de fuuid de reference - video original
 
-            todo!("Fix me")
+            // Verifier si on a l'ancien ou le nouveau format de chiffrage symmetrique (V2)
+            match fichier.cle_id {
+                Some(cle_id) => {
+                    // Nouveau format, toute l'information est deja disponible
+                    let format = match fichier.format {
+                        Some(inner) => inner,
+                        None => Err(Error::Str("requetes.get_information_fichier_stream Format de chiffrage manquant"))?
+                    };
+                    let info_dechiffrage = InformationDechiffrageV2 {
+                        cle_id,
+                        format,
+                        nonce: fichier.nonce,
+                        verification: fichier.verification,
+                        fuuid: None,
+                    };
+                    InformationFichierStream {
+                        mimetype: fichier.mimetype,
+                        dechiffrage: info_dechiffrage,
+                    }
+                },
+                None => {
+                    // Ancien format, on doit recuperer l'information aupres du maitre des cles
+                    todo!("fix me")
+                }
+            }
+
+            // let requete = RequeteDechiffrage {
+            //     domaine: DOMAINE_NOM.to_string(),
+            //     liste_hachage_bytes: None,
+            //     cle_ids: Some(vec![fuuid.to_string()]),
+            //     certificat_rechiffrage: None,
+            // };
+            // let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE, vec![Securite::L4Secure])
+            //     .build();
+
             // debug!("Transmettre requete permission dechiffrage cle : {:?}", requete);
             // let reponse = middleware.transmettre_requete(routage, &requete).await?;
             // let info_dechiffrage = if let Some(TypeMessage::Valide(reponse)) = reponse {
@@ -812,7 +866,6 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
             // } else {
             //     Err(format!("Erreur requete information dechiffrage {}, reponse invalide", fuuid))?
             // };
-            //
             // InformationFichierStream {
             //     mimetype: fichier.mimetype,
             //     dechiffrage: info_dechiffrage,
@@ -1273,7 +1326,7 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnai
     let pem_rechiffrage = m.certificat.chaine_pem()?;
 
     debug!("requete_get_cles_stream Filtre : {:?}", filtre);
-    let projection = doc! { CHAMP_FUUID: true, CHAMP_FUUIDS: true, CHAMP_METADATA: true };
+    let projection = doc! { CHAMP_FUUID: true, CHAMP_FUUIDS: true, CHAMP_METADATA: true, "cle_id": true };
     let opts = FindOptions::builder().projection(projection).limit(1000).build();
     let collection = middleware.get_collection_typed::<ResultatDocsVersionsFuuidsBorrow>(
         NOM_COLLECTION_VERSIONS)?;
@@ -1283,21 +1336,29 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnai
     hachage_bytes_demandes.extend(requete.fuuids.iter().map(|f| f.to_string()));
     let mut hachage_bytes = Vec::new();
     while curseur.advance().await? {
-    // while let Some(fresult) = curseur.next().await {
         let doc_mappe = curseur.deserialize_current()?;
         debug!("requete_get_cles_stream document trouve pour permission cle : {:?}", doc_mappe);
-        // let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
-        if let Some(fuuids) = doc_mappe.fuuids {
-            for d in fuuids {
-                if hachage_bytes_demandes.remove(d) {
-                    hachage_bytes.push(d.to_owned());
+        match doc_mappe.cle_id {
+            Some(inner) => {
+                // Nouvelle approche chiffrage V2
+                hachage_bytes.push(inner.to_owned());
+            },
+            None => {
+                // Ancienne approche
+                // let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
+                if let Some(fuuids) = doc_mappe.fuuids {
+                    for d in fuuids {
+                        if hachage_bytes_demandes.remove(d) {
+                            hachage_bytes.push(d.to_owned());
+                        }
+                    }
                 }
-            }
-        }
-        if let Some(metadata) = doc_mappe.metadata {
-            if let Some(ref_hachage_bytes) = metadata.ref_hachage_bytes {
-                if hachage_bytes_demandes.remove(ref_hachage_bytes) {
-                    hachage_bytes.push(ref_hachage_bytes.to_owned());
+                if let Some(metadata) = doc_mappe.metadata {
+                    if let Some(ref_hachage_bytes) = metadata.ref_hachage_bytes {
+                        if hachage_bytes_demandes.remove(ref_hachage_bytes) {
+                            hachage_bytes.push(ref_hachage_bytes.to_owned());
+                        }
+                    }
                 }
             }
         }
@@ -1334,7 +1395,7 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnai
     };
 
     let routage = RoutageMessageAction::builder(
-        DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE, vec![Securite::L4Secure])
+        DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, vec![Securite::L3Protege])
         .reply_to(reply_to)
         .correlation_id(correlation_id)
         .blocking(false)
@@ -1628,10 +1689,9 @@ struct ResultatDocsPermission<'a> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ResultatDocsVersionsFuuidsBorrow<'a> {
     fuuid: &'a str,
-    #[serde(borrow)]
     fuuids: Option<Vec<&'a str>>,
-    #[serde(borrow)]
     metadata: Option<DataChiffreBorrow<'a>>,
+    cle_id: Option<&'a str>,
 }
 
 async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)

@@ -24,12 +24,13 @@ use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::{get_user_effectif, Transaction};
 use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epochseconds, optionepochseconds};
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::mapstringepochseconds;
-
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
 use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
 
 use crate::grosfichiers_constantes::*;
@@ -136,22 +137,22 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichier
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionNouvelleVersion {
     pub fuuid: String,
-    // #[serde(skip_serializing_if="Option::is_none")]
-    // pub cuuid: Option<String>,
     pub cuuid: String,
     #[serde(skip_serializing_if="Option::is_none")]
     pub tuuid: Option<String>,  // uuid de la premiere commande/transaction comme collateur de versions
-    //#[serde(skip_serializing_if="Option::is_none")]
-    //pub nom: Option<String>,
     pub mimetype: String,
-    //#[serde(skip_serializing_if="Option::is_none")]
-    //pub metadata: Option<DataChiffre>,
     pub metadata: DataChiffre,
     pub taille: u64,
-    //#[serde(rename="dateFichier", skip_serializing_if="Option::is_none")]
-    //pub date_fichier: Option<DateEpochSeconds>,
-    // #[serde(rename = "_cle", skip_serializing_if = "Option::is_none")]
-    // pub cle: Option<MessageMilleGrille>,
+
+    // Valeurs de chiffrage symmetrique (depuis 2024.3)
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub cle_id: Option<String>,
+    #[serde(default, with="optionformatchiffragestr", skip_serializing_if="Option::is_none")]
+    pub format: Option<FormatChiffrage>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub nonce: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub verification: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -458,6 +459,16 @@ pub struct NodeFichierVersionOwned {
     pub flag_video_traite: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub flag_index: Option<bool>,
+
+    // Information de chiffrage symmetrique (depuis 2024.3.0)
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub cle_id: Option<String>,
+    #[serde(default, with="optionformatchiffragestr", skip_serializing_if="Option::is_none")]
+    pub format: Option<FormatChiffrage>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub nonce: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub verification: Option<String>,
 }
 
 impl NodeFichierVersionOwned {
@@ -496,6 +507,10 @@ impl NodeFichierVersionOwned {
             flag_media_traite: Some(flag_media_traite),
             flag_video_traite: Some(flag_video_traite),
             flag_index: Some(false),
+            cle_id: value.cle_id.clone(),
+            format: value.format.clone(),
+            nonce: value.nonce.clone(),
+            verification: value.verification.clone(),
         })
     }
 

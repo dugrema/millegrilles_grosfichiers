@@ -22,6 +22,8 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::Transaction;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::messages_generiques::ReponseCommande;
+use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
+use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 
 use crate::evenements::evenement_fichiers_syncpret;
@@ -1728,8 +1730,8 @@ async fn commande_image_get_job<M>(middleware: &M, m: MessageValide, gestionnair
     let reponse_prochaine_job = gestionnaire.image_job_handler.get_prochaine_job(
         middleware, certificat, commande_get_job).await?;
 
-    debug!("commande_image_get_job Prochaine job : {:?}", reponse_prochaine_job);
-    Ok(Some(middleware.build_reponse(reponse_prochaine_job)?.0))
+    debug!("commande_image_get_job Prochaine job : tuuid {:?}", reponse_prochaine_job.tuuid);
+    Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, middleware.get_enveloppe_signature().as_ref(), m.certificat.as_ref())?.0))
 }
 
 async fn commande_video_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
@@ -1760,8 +1762,8 @@ async fn commande_video_get_job<M>(middleware: &M, m: MessageValide, gestionnair
     let reponse_prochaine_job = gestionnaire.video_job_handler.get_prochaine_job(
         middleware, certificat, commande_get_job).await?;
 
-    debug!("commande_video_get_job Prochaine job : {:?}", reponse_prochaine_job);
-    Ok(Some(middleware.build_reponse(reponse_prochaine_job)?.0))
+    debug!("commande_video_get_job Prochaine job : {:?}", reponse_prochaine_job.tuuid);
+    Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, middleware.get_enveloppe_signature().as_ref(), m.certificat.as_ref())?.0))
 }
 
 async fn commande_supprimer_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
@@ -2036,21 +2038,10 @@ async fn transmettre_cle_attachee<M>(middleware: &M, cle: Value)
     let mut message_cle: MessageMilleGrillesOwned = serde_json::from_value(cle)?;
 
     let mut routage_builder = RoutageMessageAction::builder(
-        DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE, vec![Securite::L3Protege])
-        .correlation_id(&message_cle.id)
-        .partition("all");
-
-    match message_cle.attachements.take() {
-        Some(inner) => {
-            if let Some(partition) = inner.get("partition") {
-                if let Some(partition) = partition.as_str() {
-                    // Override la partition
-                    routage_builder = routage_builder.partition(partition);
-                }
-            }
-        },
-        None => ()
-    }
+        // DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE, vec![Securite::L3Protege])
+        DOMAINE_NOM_MAITREDESCLES, COMMANDE_AJOUTER_CLE_DOMAINES, vec![Securite::L1Public]
+    )
+        .correlation_id(&message_cle.id);
 
     let routage = routage_builder.build();
     let type_message = TypeMessageOut::Commande(routage);

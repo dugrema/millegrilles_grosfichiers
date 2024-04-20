@@ -53,10 +53,11 @@ impl JobHandler for IndexationJobHandler {
     {
         let erreur = erreur.to_string();
 
-        let tuuid = match job.tuuid {
-            Some(inner) => inner,
-            None => Err(format!("traitement_index.JobHandler Tuuid manquant"))?
-        };
+        // let tuuid = match job.tuuid {
+        //     Some(inner) => inner,
+        //     None => Err(format!("traitement_index.JobHandler Tuuid manquant"))?
+        // };
+        let tuuid = job.tuuid;
         let user_id = job.user_id;
 
         self.set_flag(middleware, tuuid, Some(user_id), None, true).await?;
@@ -561,8 +562,9 @@ pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValide, ge
     let reponse_prochaine_job = gestionnaire.indexation_job_handler.get_prochaine_job(
         middleware, m.certificat.as_ref(), commande_get_job).await?;
 
-    debug!("commande_indexation_get_job Prochaine job : {:?}", reponse_prochaine_job);
-    Ok(Some(middleware.build_reponse(reponse_prochaine_job)?.0))
+    debug!("commande_indexation_get_job Prochaine job : {:?}", reponse_prochaine_job.tuuid);
+    let enveloppe_privee = middleware.get_enveloppe_signature();
+    Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, enveloppe_privee.as_ref(), m.certificat.as_ref())?.0))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -5,7 +5,7 @@ use millegrilles_common_rust::bson::{Bson, DateTime, doc};
 use millegrilles_common_rust::certificats::ValidateurX509;
 use millegrilles_common_rust::chiffrage_cle::{InformationCle, ReponseDechiffrageCles};
 use millegrilles_common_rust::chrono::{Duration, Utc};
-use millegrilles_common_rust::common_messages::RequeteDechiffrage;
+use millegrilles_common_rust::common_messages::{InformationDechiffrageV2, ReponseRequeteDechiffrageV2, RequeteDechiffrage};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
@@ -13,9 +13,13 @@ use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDa
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::serde_json::{json, Value};
-use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::error::{Error as CommonError, Error};
+use millegrilles_common_rust::millegrilles_cryptographie;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleSecreteSerialisee;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
+use millegrilles_common_rust::tokio_stream::StreamExt;
 
 use serde::{Deserialize, Serialize};
 
@@ -972,8 +976,8 @@ pub struct CommandeGetJob {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct BackgroundJob {
-    pub tuuid: Option<String>,
-    pub fuuid: Option<String>,
+    pub tuuid: String,
+    pub fuuid: String,
     pub user_id: String,
     pub etat: i32,
     #[serde(rename="_mg-derniere-modification", skip_serializing)]
@@ -984,7 +988,7 @@ pub struct BackgroundJob {
     pub champs_optionnels: HashMap<String, Value>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ReponseJob {
     pub ok: bool,
     pub err: Option<String>,
@@ -993,7 +997,7 @@ pub struct ReponseJob {
     pub user_id: Option<String>,
     pub mimetype: Option<String>,
     pub metadata: Option<DataChiffre>,
-    pub cle: Option<InformationCle>,
+    pub cle: Option<CleSecreteSerialisee>,
     pub path_cuuids: Option<Vec<String>>,
 
     // Champs video
@@ -1110,8 +1114,8 @@ impl From<BackgroundJob> for ReponseJob {
         Self {
             ok: true,
             err: None,
-            tuuid: value.tuuid,
-            fuuid: value.fuuid,
+            tuuid: Some(value.tuuid),
+            fuuid: Some(value.fuuid),
             user_id: Some(value.user_id),
             mimetype,
             metadata: None,
@@ -1146,13 +1150,15 @@ pub async fn get_prochaine_job_versions<M,S>(middleware: &M, nom_collection: S, 
 
     debug!("get_prochaine_job Prochaine job : {:?}", job);
 
-    let fuuid = match job.fuuid.as_ref() {
-        Some(inner) => inner.to_owned(),
-        None => Err(format!("traitement_jobs.get_prochaine_job fuuid manquant"))?
-    };
+    // let fuuid = match job.fuuid.as_ref() {
+    //     Some(inner) => inner.to_owned(),
+    //     None => Err(format!("traitement_jobs.get_prochaine_job fuuid manquant"))?
+    // };
+    let fuuid = job.fuuid.as_str();
+    let tuuid = job.tuuid.as_str();
 
     // Recuperer les metadonnees et information de version
-    let filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_FUUID: &fuuid };
+    let filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_FUUID: fuuid };
     let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(
         NOM_COLLECTION_VERSIONS)?;
     let fichier_version = match collection_versions.find_one(filtre, None).await? {
@@ -1161,7 +1167,7 @@ pub async fn get_prochaine_job_versions<M,S>(middleware: &M, nom_collection: S, 
     };
 
     // Recuperer la cle de dechiffrage du fichier
-    let cle = get_cle_job_indexation(middleware, fuuid, certificat).await?;
+    let cle = get_cle_job_indexation(middleware, tuuid, fuuid).await?;
 
     let metadata = fichier_version.metadata;
     let mimetype = fichier_version.mimetype;
@@ -1175,7 +1181,7 @@ pub async fn get_prochaine_job_versions<M,S>(middleware: &M, nom_collection: S, 
     reponse_job.metadata = Some(metadata);
     reponse_job.mimetype = Some(mimetype);
     reponse_job.cle = Some(cle);
-    debug!("get_prochaine_job Reponse job : {:?}", reponse_job);
+    debug!("get_prochaine_job Reponse job : {:?}", reponse_job.tuuid);
 
     Ok(reponse_job)
 }
@@ -1197,22 +1203,19 @@ pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: 
 
     debug!("get_prochaine_job_fichiersrep Prochaine job : {:?}", job);
 
-    let tuuid = match job.tuuid.as_ref() {
-        Some(inner) => inner.to_owned(),
-        None => Err(format!("get_prochaine_job_fichiersrep tuuid manquant"))?
-    };
+    let tuuid = job.tuuid.as_str();
 
     let ref_hachage_bytes = match job.champs_optionnels.get("ref_hachage_bytes") {
         Some(inner) => match inner.as_str() {
-            Some(inner) => Some(inner),
+            Some(inner) => inner,
             None => Err(format!("get_prochaine_job_fichiersrep Mauvais format ref_hachage_bytes (!str)"))?,
         },
-        None => match job.fuuid.as_ref() { Some(inner) => Some(inner.as_str()), None => None }
+        None => job.fuuid.as_str()
     };
 
     // Recuperer les metadonnees et information de version
     let (fichier_rep, cle) = {
-        let filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: &tuuid };
+        let filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: tuuid };
         let collection_rep = middleware.get_collection_typed::<NodeFichierRepOwned>(
             NOM_COLLECTION_FICHIERS_REP)?;
 
@@ -1222,23 +1225,24 @@ pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: 
         };
 
         // Utiliser la version courante (fuuid[0])
-        let fuuid = match ref_hachage_bytes {
-            Some(inner) => inner.to_owned(),
-            None => {
-                match fichier_rep.metadata.ref_hachage_bytes.as_ref() {
-                    Some(inner) => inner.to_owned(),
-                    None => {
-                        match fichier_rep.fuuids_versions.as_ref() {
-                            Some(inner) => match inner.get(0) {
-                                Some(inner) => inner.to_owned(),
-                                None => Err(format!("traitement_jobs.get_prochaine_job Aucun fuuid courant pour tuuid {}", tuuid))?
-                            },
-                            None => Err(format!("traitement_jobs.get_prochaine_job Aucuns version_fuuids pour tuuid {}", tuuid))?
-                        }
-                    }
-                }
-            }
-        };
+        let fuuid = ref_hachage_bytes;
+        // let fuuid = match ref_hachage_bytes {
+        //     Some(inner) => inner.to_owned(),
+        //     None => {
+        //         match fichier_rep.metadata.ref_hachage_bytes.as_ref() {
+        //             Some(inner) => inner.to_owned(),
+        //             None => {
+        //                 match fichier_rep.fuuids_versions.as_ref() {
+        //                     Some(inner) => match inner.get(0) {
+        //                         Some(inner) => inner.to_owned(),
+        //                         None => Err(format!("traitement_jobs.get_prochaine_job Aucun fuuid courant pour tuuid {}", tuuid))?
+        //                     },
+        //                     None => Err(format!("traitement_jobs.get_prochaine_job Aucuns version_fuuids pour tuuid {}", tuuid))?
+        //                 }
+        //             }
+        //         }
+        //     }
+        // };
 
         // let fuuid = match fichier_rep.fuuids_versions.as_ref() {
         //     Some(mut inner) => match inner.get(0) {
@@ -1249,7 +1253,7 @@ pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: 
         // };
 
         // Recuperer la cle de dechiffrage du fichier
-        let cle = get_cle_job_indexation(middleware, fuuid, certificat).await?;
+        let cle = get_cle_job_indexation(middleware, tuuid, fuuid).await?;
 
         (fichier_rep, cle)
     };
@@ -1267,7 +1271,7 @@ pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: 
     reponse_job.mimetype = Some(mimetype.to_string());
     reponse_job.cle = Some(cle);
     reponse_job.path_cuuids = path_cuuids;
-    debug!("Reponse job : {:?}", reponse_job);
+    debug!("get_prochaine_job_fichiersrep Reponse job : {:?}", reponse_job.tuuid);
 
     Ok(reponse_job)
 }
@@ -1331,31 +1335,108 @@ pub async fn trouver_prochaine_job_traitement<M,S>(middleware: &M, nom_collectio
     Ok(job)
 }
 
-pub async fn get_cle_job_indexation<M,S>(middleware: &M, fuuid: S, certificat: &EnveloppeCertificat)
-    -> Result<InformationCle, CommonError>
+pub async fn get_cle_job_indexation<M,T,S>(middleware: &M, tuuid: T, fuuid: S)
+    -> Result<CleSecreteSerialisee, CommonError>
     where
         M: GenerateurMessages + MongoDao,
+        T: AsRef<str>,
         S: AsRef<str>
 {
     let fuuid = fuuid.as_ref();
+    let tuuid = tuuid.as_ref();
 
-    let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE, vec![Securite::L4Secure])
+    // Charger information de rechiffrage symmetrique
+    let filtre = doc!{ CHAMP_FUUID: fuuid, CHAMP_TUUID: tuuid };
+    let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
+    let mut curseur = collection.find(filtre, None).await?;
+    let mut information_dechiffrage = None;
+    while curseur.advance().await? {
+        let fichier = curseur.deserialize_current()?;
+        if let Some(cle_id) = fichier.cle_id {
+            // Chiffrage V2+, extraire information
+            information_dechiffrage = Some(InformationDechiffrageV2 {
+                cle_id: cle_id.to_owned(),
+                format: match fichier.format {
+                    Some(inner) => inner,
+                    None => Err(CommonError::Str("get_cle_job_indexation Information de format manquante de la version de fichier"))?
+                },
+                nonce: match fichier.nonce { Some(inner) => Some(inner.to_owned()), None => None },
+                verification: match fichier.verification { Some(inner) => Some(inner.to_owned()), None => None },
+                fuuid: None,
+            })
+        }
+    };
+
+    // // Utiliser certificat du message client (requete) pour demande de rechiffrage
+    // let pem_rechiffrage = certificat.chaine_pem()?;
+
+    let cle_id = match information_dechiffrage.as_ref() {
+        Some(inner) => inner.cle_id.as_str(),
+        None => fuuid,
+    };
+
+    let demande_rechiffrage = RequeteDechiffrage {
+        domaine: DOMAINE_NOM.to_string(),
+        liste_hachage_bytes: None,
+        cle_ids: Some(vec![cle_id.to_owned()]),
+        certificat_rechiffrage: None,
+        // certificat_rechiffrage: Some(pem_rechiffrage),
+    };
+    let routage = RoutageMessageAction::builder(
+        DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, vec![Securite::L3Protege]
+    )
         .build();
 
-    // Utiliser certificat du message client (requete) pour demande de rechiffrage
-    let pem_rechiffrage = certificat.chaine_pem()?;
-    // let pem_rechiffrage: Vec<String> = {
-    //     let fp_certs = certificat.get_pem_vec();
-    //     fp_certs.into_iter().map(|cert| cert.pem).collect()
-    // };
+    // Recuperer la cle de dechiffrage
+    let mut cle = if let Some(TypeMessage::Valide(reponse)) = middleware.transmettre_requete(routage, &demande_rechiffrage).await? {
+        let reponse_cle = reponse.message.parse()?;
+        match reponse_cle.kind {
+            millegrilles_cryptographie::messages_structs::MessageKind::ReponseChiffree => {
+                let enveloppe_privee = middleware.get_enveloppe_signature();
+                let reponse_dechiffree: ReponseRequeteDechiffrageV2 = reponse_cle.dechiffrer(enveloppe_privee.as_ref())?;
+                match reponse_dechiffree.cles {
+                    Some(mut inner) => match inner.pop() {
+                        Some(inner) => inner,
+                        None => Err(CommonError::Str("get_cle_job_indexation Aucunes cles recues"))?
+                    },
+                    None => Err(CommonError::Str("get_cle_job_indexation Aucunes cles recues (None)"))?
+                }
+            },
+            millegrilles_cryptographie::messages_structs::MessageKind::Reponse => {
+                // La reponse n'est pas chiffree, l'acces est refuse
+                let reponse: ReponseRequeteDechiffrageV2 = reponse_cle.contenu()?.deserialize()?;
+                Err(CommonError::String(format!("get_cle_job_indexation Acces refuse a la cle : {:?}", reponse.err)))?
+            },
+            _ => Err(CommonError::Str("get_cle_job_indexation Erreur attente reponse cles pour job, mauvais kind de message recu"))?
+        }
+    } else {
+        Err(CommonError::Str("get_cle_job_indexation Erreur attente reponse cles pour job, mauvais type de message recu"))?
+    };
 
-    todo!("fix me")
-    // let permission = RequeteDechiffrage {
-    //     domaine: DOMAINE_NOM.to_string(),
-    //     liste_hachage_bytes: vec![fuuid.to_string()],
-    //     certificat_rechiffrage: Some(pem_rechiffrage),
-    // };
-    //
+    // Verifier que le cle_id recu correspond a la cle demandee
+    if let Some(cle_id_recu) = cle.cle_id.as_ref() {
+        if cle_id_recu.as_str() != cle_id {
+            Err(CommonError::Str("get_cle_job_indexation La cle dechiffree ne correspond pas au cle_id"))?
+        }
+    } else {
+        Err(CommonError::Str("get_cle_job_indexation La cle dechiffree ne contient pas de cle_id"))?
+    }
+
+    if let Some(information) = information_dechiffrage {
+        // Injecter l'information de dechiffrage
+        cle.format = Some(information.format);
+        cle.nonce = match information.nonce {
+            Some(inner) => Some(inner.as_str().try_into().map_err(|_| CommonError::Str("get_cle_job_indexation Erreur mapping nonce"))?),
+            None => None
+        };
+        cle.verification = match information.verification {
+            Some(inner) => Some(inner.as_str().try_into().map_err(|_| CommonError::Str("get_cle_job_indexation Erreur mapping verification"))?),
+            None => None
+        };
+    }
+
+    Ok(cle)
+
     // debug!("get_cle_job_indexation Transmettre requete permission dechiffrage cle : {:?}", permission);
     // let cle = if let Some(TypeMessage::Valide(reponse)) = middleware.transmettre_requete(routage, &permission).await? {
     //     let reponse: ReponseDechiffrageCles = deser_message_buffer!(reponse.message);
