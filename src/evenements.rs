@@ -311,6 +311,7 @@ struct DocumentFichierDetailIds {
     // flag_index: Option<bool>,
     mimetype: Option<String>,
     visites: Option<HashMap<String, u32>>,
+    cle_id: Option<String>,
 }
 
 async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValide)
@@ -344,7 +345,7 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
     let projection = doc! {
         "user_id": 1, "tuuid": 1, "fuuid": 1, "flag_media": 1, "mimetype": 1, "visites": 1,
         CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_FLAG_INDEX: 1, CHAMP_FLAG_VIDEO_TRAITE: 1,
-
+        "cle_id": 1,
     };
     let options = FindOptions::builder().projection(projection).build();
     let collection = middleware.get_collection_typed::<DocumentFichierDetailIds>(NOM_COLLECTION_VERSIONS)?;
@@ -360,6 +361,11 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
                 debug!("Aucunes visites sur {}, skip", doc_fuuid.fuuid);
                 continue;
             }
+        };
+
+        let cle_id = match doc_fuuid.cle_id.as_ref() {
+            Some(inner) => inner.as_str(),
+            None => doc_fuuid.fuuid.as_str()
         };
 
         let image_traitee = match doc_fuuid.flag_media_traite {
@@ -382,6 +388,7 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
             let mut parametres_index = HashMap::new();
             parametres_index.insert("mimetype".to_string(), Bson::String(mimetype.to_string()));
             parametres_index.insert("fuuid".to_string(), Bson::String(doc_fuuid.fuuid.clone()));
+            parametres_index.insert("cle_id".to_string(), Bson::String(cle_id.to_owned()));
             gestionnaire.indexation_job_handler.sauvegarder_job(
                 middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(vec![instance_id.clone()]),
                 None, Some(parametres_index), true
@@ -391,6 +398,7 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &Gestionnai
             champs_cles.insert("mimetype".to_string(), mimetype);
             let mut champs_parametres = HashMap::new();
             champs_parametres.insert("tuuid".to_string(), Bson::String(doc_fuuid.tuuid.clone()));
+            champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_owned()));
 
             if ! image_traitee {
                 // Note : La job est uniquement creee si le format est une image

@@ -502,6 +502,10 @@ async fn entretien_jobs_versions<J,G,M>(middleware: &M, gestionnaire: &G, job_ha
         let fuuid_ref = version_mappee.fuuid;
         let user_id = version_mappee.user_id;
         let mimetype_ref = version_mappee.mimetype;
+        let cle_id = match version_mappee.cle_id.as_ref() {
+            Some(inner) => *inner,
+            None => fuuid_ref
+        };
 
         // Creer ou mettre a jour la job
         let instances = version_mappee.visites.into_keys().map(|s| s.to_owned()).collect::<Vec<String>>();
@@ -509,6 +513,7 @@ async fn entretien_jobs_versions<J,G,M>(middleware: &M, gestionnaire: &G, job_ha
         champs_cles.insert("mimetype".to_string(), mimetype_ref.to_string());
         // champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
         let mut parametres = HashMap::new();
+        parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_string()));
         // parametres.insert("mimetype".to_string(), Bson::String(mimetype_ref.to_string()));
         parametres.insert("tuuid".to_string(), Bson::String(tuuid_ref.to_string()));
         if let Err(e) = job_handler.sauvegarder_job(
@@ -643,10 +648,15 @@ async fn entretien_jobs_fichiersrep<J,G,M>(middleware: &M, gestionnaire: &G, job
                 // Charger info de version
                 let filtre_version = doc!{ CHAMP_USER_ID: user_id, CHAMP_FUUID: fuuid_ref };
                 let mut curseur_version = collection_versions.find(filtre_version, None).await?;
-                let visites: Vec<String> = match curseur_version.advance().await? {
+                let (visites, cle_id) = match curseur_version.advance().await? {
                     true => {
                         let r = curseur_version.deserialize_current()?;
-                        r.visites.into_keys().map(|f| f.to_string()).collect()
+                        let visites: Vec<String> = r.visites.into_keys().map(|f| f.to_string()).collect();
+                        let cle_id = match r.cle_id {
+                            Some(inner) => inner.to_owned(),
+                            None => r.fuuid.to_owned()
+                        };
+                        (visites, cle_id)
                     },
                     false => {
                         warn!("entretien_jobs_fichiersrep Aucune information de version pour pour user_id {}, fuuid {} - SKIP", user_id, fuuid_ref);
@@ -661,6 +671,7 @@ async fn entretien_jobs_fichiersrep<J,G,M>(middleware: &M, gestionnaire: &G, job
                 // champs_cles.insert("tuuid".to_string(), tuuid_ref.to_string());
                 let mut champs_parametres = HashMap::new();
                 champs_parametres.insert("fuuid".to_string(), Bson::String(fuuid_ref.to_string()));
+                champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_string()));
                 match version_mappee.path_cuuids.as_ref() {
                     Some(inner) => {
                         let array_cuuids: Vec<Bson> = inner.iter().map(|v| Bson::String(v.to_string())).collect();
@@ -680,15 +691,18 @@ async fn entretien_jobs_fichiersrep<J,G,M>(middleware: &M, gestionnaire: &G, job
             },
             _ => {
                 // Repertoire
-                let ref_hachage_bytes = match version_mappee.metadata.ref_hachage_bytes {
-                    Some(inner) => inner,
-                    None => {
-                        warn!("Repertoire sans metadata/ref_hachage_bytes ne peut etre indexe : {}", tuuid_ref);
-                        continue
+                let cle_id = match version_mappee.metadata.cle_id.as_ref() {
+                    Some(inner) => *inner,
+                    None => match version_mappee.metadata.ref_hachage_bytes.as_ref() {
+                        Some(inner) => *inner,
+                        None => {
+                            warn!("Repertoire metadata sans cle_id/ref_hachage_bytes ne peut etre indexe : {}", tuuid_ref);
+                            continue
+                        }
                     }
                 };
                 let mut parametres = HashMap::new();
-                parametres.insert("ref_hachage_bytes".to_string(), Bson::String(ref_hachage_bytes.to_string()));
+                parametres.insert("cle_id".to_string(), Bson::from(cle_id));
                 if let Err(e) = job_handler.sauvegarder_job(
                     middleware, tuuid_ref, user_id,
                     None, None, Some(parametres),
@@ -977,7 +991,7 @@ pub struct CommandeGetJob {
 #[derive(Clone, Debug, Deserialize)]
 pub struct BackgroundJob {
     pub tuuid: String,
-    pub fuuid: String,
+    pub fuuid: Option<String>,
     pub user_id: String,
     pub etat: i32,
     #[serde(rename="_mg-derniere-modification", skip_serializing)]
@@ -1115,7 +1129,7 @@ impl From<BackgroundJob> for ReponseJob {
             ok: true,
             err: None,
             tuuid: Some(value.tuuid),
-            fuuid: Some(value.fuuid),
+            fuuid: value.fuuid,
             user_id: Some(value.user_id),
             mimetype,
             metadata: None,
@@ -1151,31 +1165,37 @@ pub async fn get_prochaine_job_versions<M,S>(middleware: &M, nom_collection: S, 
     debug!("get_prochaine_job Prochaine job : {:?}", job);
 
     // let fuuid = match job.fuuid.as_ref() {
-    //     Some(inner) => inner.to_owned(),
+    //     Some(inner) => inner.as_str(),
     //     None => Err(format!("traitement_jobs.get_prochaine_job fuuid manquant"))?
     // };
-    let fuuid = job.fuuid.as_str();
     let tuuid = job.tuuid.as_str();
 
     // Recuperer les metadonnees et information de version
-    let filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_FUUID: fuuid };
+    let filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_TUUID: tuuid };
     let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(
         NOM_COLLECTION_VERSIONS)?;
     let fichier_version = match collection_versions.find_one(filtre, None).await? {
         Some(inner) => inner,
-        None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document inexistant user_id:{} fuuid:{}", job.user_id, fuuid))?
+        None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document inexistant user_id:{} tuuid:{}", job.user_id, tuuid))?
+    };
+
+    // Utiliser la version courante (fuuid[0])
+    let fuuid = fichier_version.fuuid.as_str();
+    let cle_id = match fichier_version.cle_id.as_ref() {
+        Some(inner) => inner.as_str(),
+        None => fuuid
     };
 
     // Recuperer la cle de dechiffrage du fichier
-    let cle = get_cle_job_indexation(middleware, tuuid, fuuid).await?;
+    let mut cle = get_cle_job_indexation(middleware, cle_id).await?;
+
+    if fichier_version.cle_id.is_some() {
+        // Transferer information de dechiffrage symmetrique
+        cle.set_symmetrique(fichier_version.format, fichier_version.nonce, fichier_version.verification)?;
+    }
 
     let metadata = fichier_version.metadata;
     let mimetype = fichier_version.mimetype;
-
-    // let mimetype = match fichier_version.mimetype.as_ref() {
-    //     Some(inner) => inner.as_str(),
-    //     None => "application/octet-stream"
-    // };
 
     let mut reponse_job = ReponseJob::from(job);
     reponse_job.metadata = Some(metadata);
@@ -1205,13 +1225,13 @@ pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: 
 
     let tuuid = job.tuuid.as_str();
 
-    let ref_hachage_bytes = match job.champs_optionnels.get("ref_hachage_bytes") {
-        Some(inner) => match inner.as_str() {
-            Some(inner) => inner,
-            None => Err(format!("get_prochaine_job_fichiersrep Mauvais format ref_hachage_bytes (!str)"))?,
-        },
-        None => job.fuuid.as_str()
-    };
+    // let cle_id = match job.champs_optionnels.get("ref_hachage_bytes") {
+    //     Some(inner) => match inner.as_str() {
+    //         Some(inner) => inner,
+    //         None => Err(format!("get_prochaine_job_fichiersrep Mauvais format ref_hachage_bytes (!str)"))?,
+    //     },
+    //     None => job.fuuid.as_str()
+    // };
 
     // Recuperer les metadonnees et information de version
     let (fichier_rep, cle) = {
@@ -1224,36 +1244,52 @@ pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: 
             None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document inexistant user_id:{} tuuid:{}", job.user_id, tuuid))?
         };
 
-        // Utiliser la version courante (fuuid[0])
-        let fuuid = ref_hachage_bytes;
-        // let fuuid = match ref_hachage_bytes {
-        //     Some(inner) => inner.to_owned(),
-        //     None => {
-        //         match fichier_rep.metadata.ref_hachage_bytes.as_ref() {
-        //             Some(inner) => inner.to_owned(),
-        //             None => {
-        //                 match fichier_rep.fuuids_versions.as_ref() {
-        //                     Some(inner) => match inner.get(0) {
-        //                         Some(inner) => inner.to_owned(),
-        //                         None => Err(format!("traitement_jobs.get_prochaine_job Aucun fuuid courant pour tuuid {}", tuuid))?
-        //                     },
-        //                     None => Err(format!("traitement_jobs.get_prochaine_job Aucuns version_fuuids pour tuuid {}", tuuid))?
-        //                 }
-        //             }
-        //         }
-        //     }
-        // };
+        let fuuid = match fichier_rep.fuuids_versions.as_ref() {
+            Some(inner) => match inner.get(0) {
+                Some(inner) => inner.as_str(),
+                None => Err(format!("traitement_jobs.get_prochaine_job Aucun fuuid courant pour tuuid {}", tuuid))?
+            },
+            None => Err(format!("traitement_jobs.get_prochaine_job Aucuns version_fuuids pour tuuid {}", tuuid))?
+        };
 
-        // let fuuid = match fichier_rep.fuuids_versions.as_ref() {
-        //     Some(mut inner) => match inner.get(0) {
-        //         Some(inner) => inner.to_owned(),
-        //         None => Err(format!("traitement_jobs.get_prochaine_job Aucun fuuid courant pour tuuid {}", tuuid))?
-        //     },
-        //     None => Err(format!("traitement_jobs.get_prochaine_job Aucuns version_fuuids pour tuuid {}", tuuid))?
-        // };
+        let fichier_version = if fichier_rep.type_node.as_str() == "Fichier" {
+            // Charger information de dechiffrage symmetrique
+            let filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_FUUID: fuuid };
+            let collection_version = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+            match collection_version.find_one(filtre, None).await {
+                Ok(inner) => inner,
+                Err(e) => Err(Error::String(format!("traitement_jobs.get_prochaine_job Erreur mapping fichier {} de la table versions", fuuid)))?
+            }
+        } else {
+            None
+        };
+
+        let cle_id = match job.champs_optionnels.get("cle_id") {
+            Some(inner) => match inner.as_str() {
+                Some(inner) => inner,
+                None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job cle_id mauvais format pour user_id:{} tuuid:{}", job.user_id, tuuid))?
+            },
+            None => fuuid
+        };
 
         // Recuperer la cle de dechiffrage du fichier
-        let cle = get_cle_job_indexation(middleware, tuuid, fuuid).await?;
+        // let cle = get_cle_job_indexation(middleware, tuuid, cle_id).await?;
+        let mut cle = match get_cle_job_indexation(middleware, cle_id).await {
+            Ok(inner) => inner,
+            Err(e) => Err(Error::String(format!("Erreur get_cle_job_indexation tuuid {} cle_id {} : {:?}", tuuid, cle_id, e)))?
+        };
+
+        // Injecter information de dechiffrage si applicable
+        if let Some(fichier_version) = fichier_version {
+            if let Some(cle_id) = fichier_version.cle_id {
+                if let Some(cle_id_recue) = cle.cle_id.as_ref() {
+                    if cle_id.as_str() == cle_id_recue.as_str() {
+                        // Inserer information de dechiffrage symmetrique
+                        cle.set_symmetrique(fichier_version.format, fichier_version.nonce, fichier_version.verification)?;
+                    }
+                }
+            }
+        }
 
         (fichier_rep, cle)
     };
@@ -1335,45 +1371,45 @@ pub async fn trouver_prochaine_job_traitement<M,S>(middleware: &M, nom_collectio
     Ok(job)
 }
 
-pub async fn get_cle_job_indexation<M,T,S>(middleware: &M, tuuid: T, fuuid: S)
+pub async fn get_cle_job_indexation<M,S>(middleware: &M, cle_id: S)
     -> Result<CleSecreteSerialisee, CommonError>
     where
         M: GenerateurMessages + MongoDao,
-        T: AsRef<str>,
         S: AsRef<str>
 {
-    let fuuid = fuuid.as_ref();
-    let tuuid = tuuid.as_ref();
+    // let fuuid = fuuid.as_ref();
+    // let tuuid = tuuid.as_ref();
+    let cle_id = cle_id.as_ref();
 
-    // Charger information de rechiffrage symmetrique
-    let filtre = doc!{ CHAMP_FUUID: fuuid, CHAMP_TUUID: tuuid };
-    let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
-    let mut curseur = collection.find(filtre, None).await?;
-    let mut information_dechiffrage = None;
-    while curseur.advance().await? {
-        let fichier = curseur.deserialize_current()?;
-        if let Some(cle_id) = fichier.cle_id {
-            // Chiffrage V2+, extraire information
-            information_dechiffrage = Some(InformationDechiffrageV2 {
-                cle_id: cle_id.to_owned(),
-                format: match fichier.format {
-                    Some(inner) => inner,
-                    None => Err(CommonError::Str("get_cle_job_indexation Information de format manquante de la version de fichier"))?
-                },
-                nonce: match fichier.nonce { Some(inner) => Some(inner.to_owned()), None => None },
-                verification: match fichier.verification { Some(inner) => Some(inner.to_owned()), None => None },
-                fuuid: None,
-            })
-        }
-    };
-
-    // // Utiliser certificat du message client (requete) pour demande de rechiffrage
-    // let pem_rechiffrage = certificat.chaine_pem()?;
-
-    let cle_id = match information_dechiffrage.as_ref() {
-        Some(inner) => inner.cle_id.as_str(),
-        None => fuuid,
-    };
+    // // Charger information de rechiffrage symmetrique
+    // let filtre = doc!{ CHAMP_FUUID: fuuid, CHAMP_TUUID: tuuid };
+    // let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
+    // let mut curseur = collection.find(filtre, None).await?;
+    // let mut information_dechiffrage = None;
+    // while curseur.advance().await? {
+    //     let fichier = curseur.deserialize_current()?;
+    //     if let Some(cle_id) = fichier.cle_id {
+    //         // Chiffrage V2+, extraire information
+    //         information_dechiffrage = Some(InformationDechiffrageV2 {
+    //             cle_id: cle_id.to_owned(),
+    //             format: match fichier.format {
+    //                 Some(inner) => inner,
+    //                 None => Err(CommonError::Str("get_cle_job_indexation Information de format manquante de la version de fichier"))?
+    //             },
+    //             nonce: match fichier.nonce { Some(inner) => Some(inner.to_owned()), None => None },
+    //             verification: match fichier.verification { Some(inner) => Some(inner.to_owned()), None => None },
+    //             fuuid: None,
+    //         })
+    //     }
+    // };
+    //
+    // // // Utiliser certificat du message client (requete) pour demande de rechiffrage
+    // // let pem_rechiffrage = certificat.chaine_pem()?;
+    //
+    // let cle_id = match information_dechiffrage.as_ref() {
+    //     Some(inner) => inner.cle_id.as_str(),
+    //     None => fuuid,
+    // };
 
     let demande_rechiffrage = RequeteDechiffrage {
         domaine: DOMAINE_NOM.to_string(),
@@ -1422,18 +1458,18 @@ pub async fn get_cle_job_indexation<M,T,S>(middleware: &M, tuuid: T, fuuid: S)
         Err(CommonError::Str("get_cle_job_indexation La cle dechiffree ne contient pas de cle_id"))?
     }
 
-    if let Some(information) = information_dechiffrage {
-        // Injecter l'information de dechiffrage
-        cle.format = Some(information.format);
-        cle.nonce = match information.nonce {
-            Some(inner) => Some(inner.as_str().try_into().map_err(|_| CommonError::Str("get_cle_job_indexation Erreur mapping nonce"))?),
-            None => None
-        };
-        cle.verification = match information.verification {
-            Some(inner) => Some(inner.as_str().try_into().map_err(|_| CommonError::Str("get_cle_job_indexation Erreur mapping verification"))?),
-            None => None
-        };
-    }
+    // if let Some(information) = information_dechiffrage {
+    //     // Injecter l'information de dechiffrage
+    //     cle.format = Some(information.format);
+    //     cle.nonce = match information.nonce {
+    //         Some(inner) => Some(inner.as_str().try_into().map_err(|_| CommonError::Str("get_cle_job_indexation Erreur mapping nonce"))?),
+    //         None => None
+    //     };
+    //     cle.verification = match information.verification {
+    //         Some(inner) => Some(inner.as_str().try_into().map_err(|_| CommonError::Str("get_cle_job_indexation Erreur mapping verification"))?),
+    //         None => None
+    //     };
+    // }
 
     Ok(cle)
 

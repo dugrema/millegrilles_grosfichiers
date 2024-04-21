@@ -3,7 +3,7 @@ use std::iter::Map;
 
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
-use millegrilles_common_rust::bson::doc;
+use millegrilles_common_rust::bson::{Bson, doc};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::chrono::{DateTime, Utc};
@@ -260,18 +260,30 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
                     "$currentDate": {CHAMP_MODIFICATION: true}
                 };
                 debug!("commande_decrire_fichier Reset flags media sur changement mimetype pour {} : {:?}", commande.tuuid, ops);
-                let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-                collection.update_one(filtre.clone(), ops, None).await?;
+                let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(
+                    NOM_COLLECTION_VERSIONS)?;
+                let fichier_version = match collection.find_one_and_update(filtre.clone(), ops, None).await? {
+                    Some(inner) => inner,
+                    None => Err(CommonError::Str("commande_decrire_fichier Erreur maj fichier, non trouve"))?
+                };
+
+                let cle_id = match fichier_version.cle_id {
+                    Some(inner) => inner,
+                    None => fichier_version.fuuid
+                };
 
                 let mut champs_cles = HashMap::new();
                 champs_cles.insert("tuuid".to_string(), commande.tuuid.clone());
                 champs_cles.insert("mimetype".to_string(), mimetype.to_owned());
 
+                let mut champs_parametres = HashMap::new();
+                champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_string()));
+
                 // Creer jobs de conversion
                 if flag_media_traite == false {
                     if let Err(e) = gestionnaire.image_job_handler.sauvegarder_job(
                         middleware, &fuuid, &user_id, None,
-                        Some(champs_cles.clone()), None, true).await {
+                        Some(champs_cles.clone()), Some(champs_parametres.clone()), true).await {
                         error!("commande_decrire_fichier Erreur image sauvegarder_job : {:?}", e);
                     }
                 }
@@ -279,7 +291,7 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
                 if flag_video_traite == false {
                     if let Err(e) = gestionnaire.video_job_handler.sauvegarder_job(
                         middleware, fuuid, user_id, None,
-                        Some(champs_cles), None, false).await {
+                        Some(champs_cles), Some(champs_parametres), false).await {
                         error!("commande_decrire_fichier Erreur video sauvegarder_job : {:?}", e);
                     }
                 }
@@ -1242,30 +1254,40 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, gestio
         }
     };
 
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
     let mut curseur = collection.find(filtre, None).await?;
-    while let Some(d) = curseur.next().await {
-        let fichier: RowTuuid = convertir_bson_deserializable(d?)?;
-        if let Some(fuuid) = fichier.fuuid {
-            if let Some(mimetype) = fichier.mimetype {
-                let mut champs_cles = HashMap::new();
-                champs_cles.insert("tuuid".to_string(), fichier.tuuid);
-                champs_cles.insert("mimetype".to_string(), mimetype);
-
-                // Prendre une instance au hasard si present
-                let instances = match fichier.visites {
-                    Some(visites) => {
-                        Some(visites.into_keys().collect::<Vec<String>>())
-                    },
-                    None => None
-                };
-
-                gestionnaire.image_job_handler.sauvegarder_job(
-                    middleware, fuuid, &user_id,
-                    instances, Some(champs_cles), None, true).await?;
+    // while let Some(d) = curseur.next().await {
+    //     let fichier: RowTuuid = convertir_bson_deserializable(d?)?;
+    while curseur.advance().await? {
+        let fichier_version = match curseur.deserialize_current() {
+            Ok(inner) => inner,
+            Err(e) => {
+                error!("commande_completer_previews Erreur mapping fichier version, SKIP");
+                continue
             }
-        }
+        };
 
+        let fuuid = fichier_version.fuuid;
+        let mimetype= fichier_version.mimetype;
+
+        let cle_id = match fichier_version.cle_id {
+            Some(inner) => inner,
+            None => fichier_version.fuuid
+        };
+
+        let mut champs_cles = HashMap::new();
+        champs_cles.insert("tuuid".to_string(), fichier_version.tuuid.to_owned());
+        champs_cles.insert("mimetype".to_string(), mimetype.to_owned());
+
+        // Prendre une instance au hasard si present
+        let instances = fichier_version.visites.into_keys().collect::<Vec<String>>();
+
+        let mut champs_parametres = HashMap::new();
+        champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_string()));
+
+        gestionnaire.image_job_handler.sauvegarder_job(
+            middleware, fuuid, &user_id,
+            Some(instances), Some(champs_cles), Some(champs_parametres), true).await?;
     }
 
     // let reset = match commande.reset {
@@ -1275,7 +1297,7 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, gestio
 
     // Reponse generer preview
     let reponse = json!({ "ok": true });
-    Ok(Some(middleware.build_reponse(reponse)?.0))
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 #[derive(Clone, Deserialize)]

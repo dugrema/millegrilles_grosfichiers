@@ -352,6 +352,15 @@ pub struct NodeFichierRepOwned {
     serialize_with="optionepochseconds::serialize",
     deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
     pub derniere_modification: Option<DateTime<Utc>>,
+
+    // #[serde(skip_serializing_if = "Option::is_none")]
+    // pub cle_id: Option<String>,
+    // #[serde(default, with="optionformatchiffragestr", skip_serializing_if = "Option::is_none")]
+    // pub format: Option<FormatChiffrage>,
+    // #[serde(skip_serializing_if = "Option::is_none")]
+    // pub nonce: Option<String>,
+    // #[serde(skip_serializing_if = "Option::is_none")]
+    // pub verification: Option<String>,
 }
 
 impl NodeFichierRepOwned {
@@ -401,6 +410,10 @@ impl NodeFichierRepOwned {
             path_cuuids: Some(cuuids),
             // map_derniere_modification: Default::default(),
             derniere_modification: None,
+            // cle_id: value.cle_id.clone(),
+            // format: value.format.clone(),
+            // nonce: value.nonce.clone(),
+            // verification: value.verification.clone(),
         })
     }
     
@@ -2425,10 +2438,17 @@ async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &Gestionna
                     None => None
                 };
                 if let Some(fuuid) = fuuid {
+
+                    let cle_id = match doc_fichier.metadata.cle_id.as_ref() {
+                        Some(inner) => inner.as_str(),
+                        None => fuuid.as_str()
+                    };
+
                     if let Some(mimetype) = doc_fichier.mimetype {
                         let mut parametres = HashMap::new();
                         parametres.insert("mimetype".to_string(), Bson::String(mimetype.to_string()));
                         parametres.insert("fuuid".to_string(), Bson::String(fuuid.to_string()));
+                        parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_string()));
                         if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
                             middleware, tuuid, user_id, None,
                             None, Some(parametres), true).await {

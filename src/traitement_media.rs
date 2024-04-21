@@ -53,11 +53,11 @@ impl JobHandler for ImageJobHandler {
     {
         let erreur = erreur.to_string();
 
-        // let fuuid = match job.fuuid {
-        //     Some(inner) => inner,
-        //     None => Err(format!("marquer_job_erreur Fuuid manquant"))?
-        // };
-        let fuuid = job.fuuid;
+        let fuuid = match job.fuuid {
+            Some(inner) => inner,
+            None => Err(format!("marquer_job_erreur Fuuid manquant"))?
+        };
+        // let fuuid = job.fuuid;
         let user_id = job.user_id;
 
         let transaction = TransactionSupprimerJobImage {
@@ -161,11 +161,11 @@ impl JobHandler for VideoJobHandler {
     {
         let erreur = erreur.to_string();
 
-        // let fuuid = match job.fuuid {
-        //     Some(inner) => inner,
-        //     None => Err(format!("VideoJobHandler fuuid manquant"))?
-        // };
-        let fuuid = job.fuuid;
+        let fuuid = match job.fuuid {
+            Some(inner) => inner,
+            None => Err(format!("VideoJobHandler fuuid manquant"))?
+        };
+        // let fuuid = job.fuuid;
         let user_id = job.user_id;
         let champs_cles = job.champs_optionnels;
         let cle_conversion = match champs_cles.get("cle_conversion") {
