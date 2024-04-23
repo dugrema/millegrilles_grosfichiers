@@ -835,7 +835,39 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
                 },
                 None => {
                     // Ancien format, on doit recuperer l'information aupres du maitre des cles
-                    todo!("fix me")
+                    let requete = RequeteDechiffrage {
+                        domaine: DOMAINE_NOM.to_string(),
+                        liste_hachage_bytes: None,
+                        cle_ids: Some(vec![fuuid.to_string()]),
+                        certificat_rechiffrage: None,
+                    };
+                    let routage = RoutageMessageAction::builder(
+                        DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, vec![Securite::L3Protege]
+                    )
+                        .build();
+                    debug!("requetes.get_information_fichier_stream Transmettre requete permission dechiffrage cle : {:?}", requete);
+                    let reponse = middleware.transmettre_requete(routage, &requete).await?;
+                    let info_dechiffrage = if let Some(TypeMessage::Valide(reponse)) = reponse {
+                        debug!("Reponse dechiffrage : {:?}", reponse);
+                        let mut reponse_dechiffrage: ReponseDechiffrage = deser_message_buffer!(reponse.message);
+                        let cle = match reponse_dechiffrage.cles.remove(fuuid) {
+                            Some(inner) => inner,
+                            None => Err(format!("requetes.get_information_fichier_stream Cle fuuid {} manquante", fuuid))?
+                        };
+                        InformationDechiffrageV2 {
+                            format: match cle.format.as_ref() { Some(inner) => FormatChiffrage::try_from(inner.as_str())?, None => FormatChiffrage::MGS4 },
+                            cle_id: fuuid.to_string(),
+                            nonce: match cle.header { Some(inner) => Some(inner.as_str()[1..].to_string()), None => None },
+                            verification: match cle.tag { Some(inner) => Some(inner.as_str()[1..].to_string()), None => None },
+                            fuuid: None,
+                        }
+                    } else {
+                        Err(format!("requetes.get_information_fichier_stream Erreur requete information dechiffrage {}, reponse invalide", fuuid))?
+                    };
+                    InformationFichierStream {
+                        mimetype: fichier.mimetype,
+                        dechiffrage: info_dechiffrage,
+                    }
                 }
             }
 
