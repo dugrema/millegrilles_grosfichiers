@@ -7,6 +7,7 @@ use millegrilles_common_rust::chiffrage_cle::{InformationCle, ReponseDechiffrage
 use millegrilles_common_rust::chrono::{Duration, Utc};
 use millegrilles_common_rust::common_messages::{InformationDechiffrageV2, ReponseRequeteDechiffrageV2, RequeteDechiffrage};
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::dechiffrage::DataChiffre;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};

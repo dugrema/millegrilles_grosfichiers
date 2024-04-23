@@ -13,6 +13,7 @@ use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::common_messages::{InformationDechiffrage, InformationDechiffrageV2, ReponseDechiffrage, RequeteDechiffrage};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
+use millegrilles_common_rust::dechiffrage::{DataChiffre, DataChiffreBorrow};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::jwt_handler::{generer_jwt, verify_jwt};
 use millegrilles_common_rust::messages_generiques::CommandeDechiffrerCle;

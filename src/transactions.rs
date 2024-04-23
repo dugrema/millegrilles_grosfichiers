@@ -11,6 +11,7 @@ use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissi
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::db_structs::TransactionValide;
+use millegrilles_common_rust::dechiffrage::{DataChiffre, DataChiffreBorrow};
 use millegrilles_common_rust::fichiers::is_mimetype_video;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
