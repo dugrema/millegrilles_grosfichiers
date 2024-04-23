@@ -10,7 +10,7 @@ use millegrilles_common_rust::bson::{Bson, doc, Document};
 use millegrilles_common_rust::bson::serde_helpers::deserialize_chrono_datetime_from_bson_datetime;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
-use millegrilles_common_rust::common_messages::{InformationDechiffrage, InformationDechiffrageV2, ReponseDechiffrage, RequeteDechiffrage};
+use millegrilles_common_rust::common_messages::{InformationDechiffrage, InformationDechiffrageV2, ReponseDechiffrage, ReponseRequeteDechiffrageV2, RequeteDechiffrage};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
 use millegrilles_common_rust::dechiffrage::{DataChiffre, DataChiffreBorrow};
@@ -675,7 +675,7 @@ async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValide, gestio
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_verifier_acces_fuuids Message : {:?}", & m.type_message);
+    debug!("requete_verifier_acces_fuuids Message : {:?}\n{}", &m.type_message, from_utf8(m.message.buffer.as_slice())?);
     let requete: RequeteGenererJwtStreaming = {
         let message_ref = m.message.parse()?;
         message_ref.contenu()?.deserialize()?
@@ -684,7 +684,6 @@ async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValide, gestio
     let user_id = match m.certificat.get_user_id()? {
         Some(u) => u,
         None => {
-            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User_id manquant"}), None)?))
             return Ok(Some(middleware.reponse_err(None, None, Some("User_id manquant"))?))
         }
     };
@@ -697,7 +696,6 @@ async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValide, gestio
             let contact = match collection.find_one(filtre, None).await? {
                 Some(inner) => inner,
                 None => {
-                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "contact_id et user_id mismatch ou manquant"}), None)?))
                     return Ok(Some(middleware.reponse_err(None, None, Some("contact_id et user_id mismatch ou manquant"))?))
                 }
             };
@@ -721,6 +719,7 @@ async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValide, gestio
     }
 
     // L'acces aux fuuids est OK. Charger l'information de dechiffrage.
+    debug!("requete_verifier_acces_fuuids Charger information de dechiffrage pour {}", requete.fuuid);
     let info_stream = get_information_fichier_stream(middleware, &user_id, &requete.fuuid, requete.fuuid_ref.as_ref()).await?;
     let jwt_token = generer_jwt(middleware, &user_id, &requete.fuuid, info_stream.mimetype, info_stream.dechiffrage)?;
 
@@ -848,19 +847,26 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
                     debug!("requetes.get_information_fichier_stream Transmettre requete permission dechiffrage cle : {:?}", requete);
                     let reponse = middleware.transmettre_requete(routage, &requete).await?;
                     let info_dechiffrage = if let Some(TypeMessage::Valide(reponse)) = reponse {
-                        debug!("Reponse dechiffrage : {:?}", reponse);
-                        let mut reponse_dechiffrage: ReponseDechiffrage = deser_message_buffer!(reponse.message);
-                        let cle = match reponse_dechiffrage.cles.remove(fuuid) {
-                            Some(inner) => inner,
+                        debug!("requetes.get_information_fichier_stream Reponse dechiffrage\n{}", from_utf8(reponse.message.buffer.as_slice())?);
+                        let message_ref = reponse.message.parse()?;
+                        let enveloppe_privee = middleware.get_enveloppe_signature();
+                        // let mut reponse_dechiffrage: ReponseDechiffrage = deser_message_buffer!(reponse.message);
+                        let mut reponse_dechiffrage: ReponseRequeteDechiffrageV2 = message_ref.dechiffrer(enveloppe_privee.as_ref())?;
+                        let cle = match reponse_dechiffrage.cles.take() {
+                            Some(mut inner) => inner.remove(0),
                             None => Err(format!("requetes.get_information_fichier_stream Cle fuuid {} manquante", fuuid))?
                         };
-                        InformationDechiffrageV2 {
-                            format: match cle.format.as_ref() { Some(inner) => FormatChiffrage::try_from(inner.as_str())?, None => FormatChiffrage::MGS4 },
-                            cle_id: fuuid.to_string(),
-                            nonce: match cle.header { Some(inner) => Some(inner.as_str()[1..].to_string()), None => None },
-                            verification: match cle.tag { Some(inner) => Some(inner.as_str()[1..].to_string()), None => None },
+                        let info = InformationDechiffrageV2 {
+                            format: match cle.format.as_ref() { Some(inner) => inner.clone(), None => FormatChiffrage::MGS4 },
+                            cle_id: match cle.cle_id.as_ref() { Some(inner) => inner.to_string(), None => fuuid.to_string() },
+                            nonce: match cle.nonce.as_ref() { Some(inner) => Some(inner.to_string()), None => None },
+                            verification: match cle.verification.as_ref() { Some(inner) => Some(inner.to_string()), None => None },
                             fuuid: None,
-                        }
+                        };
+
+                        debug!("requetes.get_information_fichier_stream Information dechiffrage recue : {:?}", info);
+
+                        info
                     } else {
                         Err(format!("requetes.get_information_fichier_stream Erreur requete information dechiffrage {}, reponse invalide", fuuid))?
                     };
