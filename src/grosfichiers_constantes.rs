@@ -24,9 +24,11 @@ pub const NOM_COLLECTION_VIDEO_JOBS: &str = "GrosFichiers/jobs/video";
 pub const NOM_COLLECTION_INDEXATION_JOBS: &str = "GrosFichiers/jobs/indexation";
 pub const NOM_COLLECTION_PARTAGE_CONTACT: &str = "GrosFichiers/partage/contacts";
 pub const NOM_COLLECTION_PARTAGE_COLLECTIONS: &str = "GrosFichiers/partage/collections";
+pub const NOM_COLLECTION_QUOTAS_USAGERS: &str = "GrosFichiers/quotas/usagers";
 
 pub const NOM_INDEX_ETAT_JOBS: &str = "etat_jobs_2";
 pub const NOM_INDEX_USER_ID_TUUIDS: &str = "user_id_tuuids";
+pub const NOM_INDEX_USER_ID: &str = "idx_user_id";
 
 pub const DOMAINE_FICHIERS_NOM: &str = "fichiers";
 pub const DOMAINE_MEDIA_NOM: &str = "media";

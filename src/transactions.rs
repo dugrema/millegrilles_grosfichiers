@@ -559,15 +559,6 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GestionnaireGrosFichiers
 {
     debug!("transaction_nouvelle_version Consommer transaction : {}", transaction.transaction.id);
     let transaction_fichier: TransactionNouvelleVersion = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_fichier: TransactionNouvelleVersion = match transaction.clone().convertir::<TransactionNouvelleVersion>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur conversion transaction : {:?}", e))?
-    // };
-
-    // let enveloppe = match transaction.get_enveloppe_certificat() {
-    //     Some(inner) => inner,
-    //     None => Err(format!("grosfichiers.transaction_nouvelle_version Certificat absent (enveloppe)"))?
-    // };
 
     let user_id = match transaction.certificat.get_user_id() {
         Ok(inner) => match inner {
@@ -576,24 +567,6 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GestionnaireGrosFichiers
         },
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur get_user_id() : {:?}", e))?
     };
-
-    // let cuuid = match transaction_fichier.cuuid {
-    //     Some(inner) => inner,
-    //     None => Err(format!("transactions.transaction_nouvelle_version Fichier sans cuuid, SKIP"))?
-    // };
-    // let cuuid = transaction_fichier.cuuid;
-
-    // Determiner tuuid - si non fourni, c'est l'uuid-transaction (implique un nouveau fichier)
-    // let tuuid = match &transaction_fichier.tuuid {
-    //     Some(t) => t.clone(),
-    //     None => String::from(&transaction.transaction.id)
-    // };
-
-    // Conserver champs transaction uniquement (filtrer champs meta)
-    // let mut doc_bson_transaction = match convertir_to_bson(&transaction_fichier) {
-    //     Ok(d) => d,
-    //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur conversion transaction en bson : {:?}", e))?
-    // };
 
     let fichier_rep = match NodeFichierRepOwned::from_nouvelle_version(
         middleware, &transaction_fichier, &transaction.transaction.id, &user_id).await {
@@ -614,13 +587,10 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GestionnaireGrosFichiers
 
     let fuuid = transaction_fichier.fuuid;
     let cuuid = transaction_fichier.cuuid;
-    let mimetype = transaction_fichier.mimetype;
-
-    // Retirer champ CUUID, pas utile dans l'information de version
-    // doc_bson_transaction.remove(CHAMP_CUUID);
 
     // let mut flag_media = false;
     let mut flag_duplication = false;
+    let taille_fichier = fichier_version.taille as i64;
 
     // Inserer document de version
     {
@@ -690,30 +660,30 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GestionnaireGrosFichiers
     }
 
     if flag_duplication == false {
-        // On emet les messages de traitement uniquement si la transaction est nouvelle
-        // Conserver information pour indexer le fichier
-        // let mut parametres = HashMap::new();
-        // parametres.insert("mimetype".to_string(), Bson::String(mimetype.clone()));
-        // if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
-        //     middleware, &fuuid, &user_id, None,
-        //     None, Some(parametres), false).await {
-        //     error!("transaction_nouvelle_version Erreur ajout_job_indexation : {:?}", e);
-        // }
-        // if let Err(e) = ajout_job_indexation(middleware, &tuuid, &fuuid, &user_id, &mimetype).await {
-        //     error!("transaction_nouvelle_version Erreur ajout_job_indexation : {:?}", e);
-        // }
+
+        // Mettre a jour le quota usager (ou inserer au besoin)
+        {
+            let collection_quotas = middleware.get_collection(NOM_COLLECTION_QUOTAS_USAGERS)?;
+            let filtre = doc!{"user_id": &user_id};
+            let ops = doc!{
+                "$setOnInsert": {CHAMP_CREATION: Utc::now()},
+                "$inc": {"bytes_total_versions": taille_fichier, "nombre_total_versions": 1},
+                "$currentDate": {CHAMP_MODIFICATION: true},
+            };
+            let options = UpdateOptions::builder().upsert(true).build();
+            if let Err(e) = collection_quotas.update_one(filtre, ops, options).await {
+                error!("transaction_nouvelle_version Erreur mise a jour quota usager : {:?}", e);
+            }
+        }
 
         // Emettre fichier pour que tous les clients recoivent la mise a jour
         if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await {
             warn!("transaction_nouvelle_version Erreur emettre_evenement_maj_fichier : {:?}", e);
         }
 
-        // if let Some(cuuid) = cuuid.as_ref() {
-            let mut evenement_contenu = EvenementContenuCollection::new(cuuid.clone());
-            // evenement_contenu.cuuid = Some(cuuid.clone());
-            evenement_contenu.fichiers_ajoutes = Some(vec![tuuid.clone()]);
-            emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
-        // }
+        let mut evenement_contenu = EvenementContenuCollection::new(cuuid.clone());
+        evenement_contenu.fichiers_ajoutes = Some(vec![tuuid.clone()]);
+        emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
     }
 
     Ok(Some(middleware.reponse_ok(None, None)?))

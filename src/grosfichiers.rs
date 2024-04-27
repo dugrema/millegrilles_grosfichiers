@@ -29,7 +29,7 @@ use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio::time::{Duration, sleep};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::{TraiterTransaction, Transaction};
-use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 
 use crate::commandes::consommer_commande;
@@ -643,6 +643,20 @@ pub async fn preparer_index_mongodb_custom<M>(middleware: &M) -> Result<(), Comm
         Some(options_indexation_user_id_tuuids)
     ).await?;
 
+    let options_indexation_quotas_user_id = IndexOptions {
+        nom_index: Some(NOM_INDEX_USER_ID.to_string()),
+        unique: true
+    };
+    let champs_indexation_user_id_quotas = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_USER_ID), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_QUOTAS_USAGERS,
+        champs_indexation_user_id_quotas,
+        Some(options_indexation_quotas_user_id)
+    ).await?;
+
     Ok(())
 }
 
@@ -671,7 +685,7 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
 
     let date_epoch = trigger.get_date();
     let minutes = date_epoch.minute();
-    // let hours = date_epoch.get_datetime().hour();
+    let hours = date_epoch.hour();
 
     // Executer a intervalle regulier
     if minutes % 5 == 2 {
@@ -679,6 +693,11 @@ pub async fn traiter_cedule<M>(gestionnaire: &GestionnaireGrosFichiers, middlewa
         gestionnaire.image_job_handler.entretien(middleware, gestionnaire, None).await;
         gestionnaire.video_job_handler.entretien(middleware, gestionnaire, None).await;
         gestionnaire.indexation_job_handler.entretien(middleware, gestionnaire, None).await;
+    }
+
+    // Recalculer les quotas a toutes les 3 heures
+    if hours % 3 == 1 && minutes == 14 {
+        calculer_quotas(middleware).await;
     }
 
     Ok(())
@@ -874,6 +893,57 @@ where
 
         debug!("grosfichiers.emettre_evenement_contenu_collection Emettre evenement maj pour collection immediatement {:?}", routage);
         middleware.emettre_evenement(routage, &inner).await?;
+    }
+
+    Ok(())
+}
+
+async fn calculer_quotas<M>(middleware: &M)
+    where M: MongoDao
+{
+    if let Err(e) = calculer_quotas_fichiers_usagers(middleware).await {
+        error!("calculer_quotas Erreur calculer_quotas_fichiers_usagers : {:?}", e)
+    }
+}
+
+#[derive(Deserialize)]
+struct QuotaFichiersAggregateRow {
+    #[serde(rename="_id")]
+    user_id: String,
+    bytes_total_versions: i64,
+    nombre_total_versions: i64,
+}
+
+async fn calculer_quotas_fichiers_usagers<M>(middleware: &M)
+    -> Result<(), Error>
+    where M: MongoDao
+{
+    let pipeline = vec! [
+        doc!{"$match": {"supprime": false}},
+        doc!{"$group": {
+            "_id": "$user_id",
+            "bytes_total_versions": {"$sum": "$taille"},
+            "nombre_total_versions": {"$count": {}},
+        }},
+    ];
+
+    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let collection_quotas = middleware.get_collection(NOM_COLLECTION_QUOTAS_USAGERS)?;
+    let mut result = collection_versions.aggregate(pipeline, None).await?;
+    while let Some(row) = result.next().await {
+        let row = row?;
+        let row: QuotaFichiersAggregateRow = convertir_bson_deserializable(row)?;
+        let filtre_upsert = doc!{"user_id": row.user_id};
+        let ops = doc!{
+            "$setOnInsert": {CHAMP_CREATION: Utc::now()},
+            "$set": {
+                "bytes_total_versions": row.bytes_total_versions,
+                "nombre_total_versions": row.nombre_total_versions,
+            },
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        let options = UpdateOptions::builder().upsert(true).build();
+        collection_quotas.update_one(filtre_upsert, ops, options).await?;
     }
 
     Ok(())

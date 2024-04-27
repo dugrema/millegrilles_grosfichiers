@@ -1753,7 +1753,7 @@ async fn commande_image_get_job<M>(middleware: &M, m: MessageValide, gestionnair
         middleware, certificat, commande_get_job).await?;
 
     debug!("commande_image_get_job Prochaine job : tuuid {:?}", reponse_prochaine_job.tuuid);
-    Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, middleware.get_enveloppe_signature().as_ref(), m.certificat.as_ref())?.0))
+    Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, m.certificat.as_ref())?.0))
 }
 
 async fn commande_video_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
@@ -1785,7 +1785,7 @@ async fn commande_video_get_job<M>(middleware: &M, m: MessageValide, gestionnair
         middleware, certificat, commande_get_job).await?;
 
     debug!("commande_video_get_job Prochaine job : {:?}", reponse_prochaine_job.tuuid);
-    Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, middleware.get_enveloppe_signature().as_ref(), m.certificat.as_ref())?.0))
+    Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, m.certificat.as_ref())?.0))
 }
 
 async fn commande_supprimer_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)

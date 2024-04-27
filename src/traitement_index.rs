@@ -564,7 +564,7 @@ pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValide, ge
 
     debug!("commande_indexation_get_job Prochaine job : {:?}", reponse_prochaine_job.tuuid);
     let enveloppe_privee = middleware.get_enveloppe_signature();
-    Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, enveloppe_privee.as_ref(), m.certificat.as_ref())?.0))
+    Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, m.certificat.as_ref())?.0))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
