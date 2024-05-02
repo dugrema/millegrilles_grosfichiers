@@ -1245,24 +1245,31 @@ pub async fn get_prochaine_job_fichiersrep<M,S>(middleware: &M, nom_collection: 
             None => Err(format!("traitement_jobs.get_prochaine_job Erreur traitement - job pour document inexistant user_id:{} tuuid:{}", job.user_id, tuuid))?
         };
 
-        let fuuid = match fichier_rep.fuuids_versions.as_ref() {
-            Some(inner) => match inner.get(0) {
-                Some(inner) => inner.as_str(),
-                None => Err(format!("traitement_jobs.get_prochaine_job Aucun fuuid courant pour tuuid {}", tuuid))?
-            },
-            None => Err(format!("traitement_jobs.get_prochaine_job Aucuns version_fuuids pour tuuid {}", tuuid))?
-        };
-
-        let fichier_version = if fichier_rep.type_node.as_str() == "Fichier" {
+        let (fichier_version, fuuid) = if fichier_rep.type_node.as_str() == "Fichier" {
             // Charger information de dechiffrage symmetrique
+            let fuuid = match fichier_rep.fuuids_versions.as_ref() {
+                Some(inner) => match inner.get(0) {
+                    Some(inner) => inner.as_str(),
+                    None => Err(format!("traitement_jobs.get_prochaine_job Aucun fuuid courant pour tuuid {}", tuuid))?
+                },
+                None => Err(format!("traitement_jobs.get_prochaine_job Aucuns version_fuuids pour tuuid {}", tuuid))?
+            };
+
             let filtre = doc! { CHAMP_USER_ID: &job.user_id, CHAMP_FUUID: fuuid };
             let collection_version = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
             match collection_version.find_one(filtre, None).await {
-                Ok(inner) => inner,
+                Ok(inner) => (inner, fuuid),
                 Err(e) => Err(Error::String(format!("traitement_jobs.get_prochaine_job Erreur mapping fichier {} de la table versions", fuuid)))?
             }
         } else {
-            None
+            let ref_hachage_bytes = match fichier_rep.metadata.cle_id.as_ref() {
+                Some(inner) => inner.as_str(),
+                None => match fichier_rep.metadata.ref_hachage_bytes.as_ref() {
+                    Some(inner) => inner.as_str(),
+                    None => Err(Error::Str("traitement_jobs.get_prochaine_job Erreur repertoire sans cle_id/ref_hachage_bytes"))?
+                }
+            };
+            (None, ref_hachage_bytes)
         };
 
         let cle_id = match job.champs_optionnels.get("cle_id") {

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::iter::Map;
+use std::str::from_utf8;
 
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::{serde_json, serde_json::json};
@@ -1753,7 +1754,9 @@ async fn commande_image_get_job<M>(middleware: &M, m: MessageValide, gestionnair
         middleware, certificat, commande_get_job).await?;
 
     debug!("commande_image_get_job Prochaine job : tuuid {:?}", reponse_prochaine_job.tuuid);
-    Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, m.certificat.as_ref())?.0))
+    let reponse_chiffree = middleware.build_reponse_chiffree(reponse_prochaine_job, m.certificat.as_ref())?.0;
+    debug!("commande_image_get_job Reponse chiffree\n{}", from_utf8(reponse_chiffree.buffer.as_slice())?);
+    Ok(Some(reponse_chiffree))
 }
 
 async fn commande_video_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
