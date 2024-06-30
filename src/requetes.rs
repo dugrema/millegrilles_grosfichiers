@@ -307,6 +307,8 @@ pub struct ReponseFichierRepVersion {
 
     #[serde(default, skip_serializing_if="Option::is_none", with="optionepochseconds")]
     pub derniere_modification: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if="Option::is_none", with="optionepochseconds")]
+    pub date_creation: Option<DateTime<Utc>>,
 
     // Information de chiffrage symmetrique (depuis 2024.3.0)
     #[serde(skip_serializing_if="Option::is_none")]
@@ -334,6 +336,7 @@ impl From<NodeFichierRepOwned> for ReponseFichierRepVersion {
             path_cuuids: value.path_cuuids,
             version_courante: None,
             derniere_modification: value.derniere_modification,
+            date_creation: value.date_creation,
             cle_id: None,
             format: None,
             nonce: None,

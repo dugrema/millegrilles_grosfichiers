@@ -1,12 +1,12 @@
 [package]
 name = "millegrilles_grosfichiers"
-version = "2024.4.0"
+version = "2024.5.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", branch = "2024.4" }
+millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", branch = "2024.5" }
 # millegrilles_common_rust = { path = "/home/mathieu/RustroverProjects/millegrilles_common_rust" }
 
 log = { version = "0.4", features = ["max_level_debug", "release_max_level_info"] }

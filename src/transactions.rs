@@ -353,6 +353,10 @@ pub struct NodeFichierRepOwned {
     serialize_with="optionepochseconds::serialize",
     deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
     pub derniere_modification: Option<DateTime<Utc>>,
+    #[serde(default, rename(deserialize="_mg-creation"), skip_serializing_if = "Option::is_none",
+        serialize_with="optionepochseconds::serialize",
+        deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
+    pub date_creation: Option<DateTime<Utc>>,
 
     // #[serde(skip_serializing_if = "Option::is_none")]
     // pub cle_id: Option<String>,
@@ -411,6 +415,7 @@ impl NodeFichierRepOwned {
             path_cuuids: Some(cuuids),
             // map_derniere_modification: Default::default(),
             derniere_modification: None,
+            date_creation: None,
             // cle_id: value.cle_id.clone(),
             // format: value.format.clone(),
             // nonce: value.nonce.clone(),
