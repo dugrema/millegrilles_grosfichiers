@@ -2540,13 +2540,19 @@ async fn requete_info_statistiques<M>(middleware: &M, m: MessageValide, gestionn
         Some(cuuid) => {
             doc! {
                 CHAMP_USER_ID: &user_id,
+                CHAMP_SUPPRIME: false,
+                CHAMP_SUPPRIME_INDIRECT: false,
                 "$or": [
                     {CHAMP_TUUID: cuuid},
                     {CHAMP_PATH_CUUIDS: cuuid}
                 ]
             }
         },
-        None => doc! { CHAMP_USER_ID: &user_id }
+        None => doc! {
+            CHAMP_USER_ID: &user_id,
+            CHAMP_SUPPRIME: false,
+            CHAMP_SUPPRIME_INDIRECT: false,
+        }
     };
 
     let pipeline = vec![
