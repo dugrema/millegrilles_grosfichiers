@@ -2068,11 +2068,19 @@ async fn transmettre_cle_attachee<M>(middleware: &M, cle: Value)
     )
         .correlation_id(&message_cle.id);
 
-    let routage = routage_builder.build();
+    let routage = routage_builder
+        .timeout_blocking(3_000)
+        .build();
     let type_message = TypeMessageOut::Commande(routage);
 
     let buffer_message: MessageMilleGrillesBufferDefault = message_cle.try_into()?;
-    let reponse = middleware.emettre_message(type_message, buffer_message).await?;
+    let reponse = match middleware.emettre_message(type_message, buffer_message).await {
+        Ok(inner) => inner,
+        Err(e) => {
+            error!("transmettre_cle_attachee Erreur sauvegarde cle : {:?}", e);
+            return Ok(Some(middleware.reponse_err(4, None, Some(format!("Erreur: {:?}", e).as_str()))?))
+        }
+    };
 
     match reponse {
         Some(inner) => match inner {
