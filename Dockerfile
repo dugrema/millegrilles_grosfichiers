@@ -17,8 +17,12 @@ WORKDIR $APP_FOLDER
 
 COPY target/release/millegrilles_grosfichiers .
 
+RUN mkdir -p /var/opt/millegrilles/archives && chown 983:980 /var/opt/millegrilles/archives
+
 # UID 983 mgissuer et code
 # GID 980 millegrilles
 USER 983:980
+
+VOLUME /var/opt/millegrilles/archives
 
 CMD ./millegrilles_grosfichiers
