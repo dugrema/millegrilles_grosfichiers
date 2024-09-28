@@ -35,8 +35,7 @@ use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
-
-use crate::grosfichiers::GestionnaireGrosFichiers;
+use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::traitement_index::{ParametresGetClesStream, ParametresGetPermission, ParametresRecherche, ResultatHits, ResultatHitsDetail};
 use crate::traitement_media::requete_jobs_video;
@@ -46,7 +45,7 @@ const CONST_LIMITE_TAILLE_ZIP: u64 = 1024 * 1024 * 1024 * 100;   // Limite 100 G
 const CONST_LIMITE_NOMBRE_ZIP: u64 = 1_000;
 const CONST_LIMITE_NOMBRE_SOUS_REPERTOIRES: u64 = 10_000;
 
-pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestionnaire: &GestionnaireGrosFichiers) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestionnaire: &GrosFichiersDomainManager) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
     debug!("Consommer requete : {:?}", &message.type_message);
@@ -160,7 +159,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
 
 }
 
-async fn requete_activite_recente<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_activite_recente<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -231,7 +230,7 @@ pub fn mapper_fichier_db(fichier: Document) -> Result<FichierDetail, CommonError
     Ok(fichier_mappe)
 }
 
-async fn requete_favoris<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_favoris<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -350,7 +349,7 @@ struct ReponseDocumentsParTuuid {
     fichiers: Vec<ReponseFichierRepVersion>
 }
 
-async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -489,7 +488,7 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn requete_documents_par_fuuid<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_documents_par_fuuid<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -547,7 +546,7 @@ struct ReponseVerifierAccesTuuids {
 }
 
 /// Requete pour verifier si un contact_id ou user_id a acces aux tuuids listes.
-async fn requete_verifier_acces_tuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_verifier_acces_tuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -609,7 +608,7 @@ async fn requete_verifier_acces_tuuids<M>(middleware: &M, m: MessageValide, gest
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -674,7 +673,7 @@ struct ReponseCreerJwtStreaming {
     jwt_token: Option<String>,
 }
 
-async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -842,6 +841,7 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
                         liste_hachage_bytes: None,
                         cle_ids: Some(vec![fuuid.to_string()]),
                         certificat_rechiffrage: None,
+                        inclure_signature: None,
                     };
                     let routage = RoutageMessageAction::builder(
                         DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, vec![Securite::L3Protege]
@@ -918,7 +918,7 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
     Ok(resultat)
 }
 
-async fn requete_contenu_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_contenu_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -996,7 +996,7 @@ async fn requete_contenu_collection<M>(middleware: &M, m: MessageValide, gestion
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn requete_get_corbeille<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_get_corbeille<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1124,7 +1124,7 @@ async fn get_tuuids_partages_user<M,U>(middleware: &M, user_id: U) -> Result<Vec
     Ok(tuuids_partages)
 }
 
-async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
                                       -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1253,6 +1253,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, gestionn
         liste_hachage_bytes: None,
         cle_ids: Some(cle_ids_approuves),
         certificat_rechiffrage: Some(pem_rechiffrage),
+        inclure_signature: None,
     };
 
     // Emettre requete de rechiffrage de cle, reponse acheminee directement au demandeur
@@ -1300,7 +1301,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, gestionn
     Ok(None)  // Aucune reponse a transmettre, c'est le maitre des cles qui va repondre
 }
 
-async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
                                     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -1411,6 +1412,7 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnai
         liste_hachage_bytes: None,
         cle_ids: Some(hachage_bytes),
         certificat_rechiffrage: Some(pem_rechiffrage),
+        inclure_signature: None,
     };
 
     // let permission = json!({
@@ -1736,7 +1738,7 @@ struct ResultatDocsVersionsFuuidsBorrow<'a> {
     cle_id: Option<&'a str>,
 }
 
-async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1984,7 +1986,7 @@ struct ReponseRequeteSyncCollection {
     liste: Vec<FichierSync>
 }
 
-async fn requete_sync_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_sync_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2080,7 +2082,7 @@ async fn requete_sync_collection<M>(middleware: &M, m: MessageValide, gestionnai
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2147,7 +2149,7 @@ struct ReponseRequeteSyncCuuids {
     liste: Vec<CuuidsSync>
 }
 
-async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2308,7 +2310,7 @@ async fn map_user_ids_nom_usager<M,U>(middleware: &M, user_ids_in: &Vec<U>) -> R
     Ok(reponse.usagers)
 }
 
-async fn requete_charger_contacts<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_charger_contacts<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2386,7 +2388,7 @@ struct ReponsePartagesUsager {
     usagers: Option<Vec<ReponseUsager>>,
 }
 
-async fn requete_partages_usager<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_partages_usager<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2428,7 +2430,7 @@ async fn requete_partages_usager<M>(middleware: &M, m: MessageValide, gestionnai
 struct RequetePartagesContact { user_id: Option<String> }
 
 /// Retourne la liste de tuuids partages avec l'usager qui fait la requete
-async fn requete_partages_contact<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_partages_contact<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
                                      -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2499,7 +2501,7 @@ struct ReponseInfoStatistiques {
     info: Vec<ResultatStatistiquesRow>,
 }
 
-async fn requete_info_statistiques<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_info_statistiques<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2645,7 +2647,7 @@ struct ReponseStructureRepertoire {
     liste: Vec<NodeFichierRepVersionCouranteOwned>,
 }
 
-async fn requete_structure_repertoire<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_structure_repertoire<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2783,7 +2785,7 @@ struct ReponseSousRepertoires {
     liste: Vec<NodeFichierRepOwned>,
 }
 
-async fn requete_sous_repertoires<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn requete_sous_repertoires<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2866,7 +2868,7 @@ impl TransfertRequeteRechercheIndex {
     }
 }
 
-pub async fn requete_recherche_index<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+pub async fn requete_recherche_index<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {

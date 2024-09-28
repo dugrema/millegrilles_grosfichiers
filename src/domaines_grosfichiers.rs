@@ -111,8 +111,9 @@ async fn build(gestionnaire: &'static TypeGestionnaire) -> FuturesUnordered<Join
         TypeGestionnaire::None => {panic!("Gestionnaire non configure");}
     }
 
-    // ** Thread d'entretien **
+    // ** Threads d'entretien **
     futures.push(spawn(entretien(middleware.clone(), vec![gestionnaire])));
+    futures.push(thread_entretien_evenements(middleware.clone(), gestionnaire.clone()));
 
     // Thread ecoute et validation des messages
     info!("domaines_maitredescles.build Ajout {} futures dans middleware_hooks", futures.len());
@@ -130,22 +131,22 @@ async fn executer(mut futures: FuturesUnordered<JoinHandle<()>>) {
 }
 
 /// Thread d'entretien
-async fn entretien<M>(middleware: Arc<M>, gestionnaires: Vec<&'static TypeGestionnaire>)
-    where M: Middleware + 'static
-{
-    let gestionnaire = match gestionnaires.get(0) {
-        Some(TypeGestionnaire::PartitionConsignation(gestionnaire)) => gestionnaire.clone(),
-        _ => panic!("Mauvaise configuration gestionnaire")
-    };
-    let mut futures = FuturesUnordered::new();
-    let thread_entretien = entretien_grosfichiers(middleware.clone(), gestionnaire.clone());
-    let thread_evenements = thread_entretien_evenements(middleware.clone(), gestionnaire.clone());
-
-    futures.push(spawn(thread_entretien));
-    futures.push(spawn(thread_evenements));
-
-    let arret = futures.next().await;
-}
+// async fn entretien<M>(middleware: Arc<M>, gestionnaires: Vec<&'static TypeGestionnaire>)
+//     where M: Middleware + 'static
+// {
+//     let gestionnaire = match gestionnaires.get(0) {
+//         Some(TypeGestionnaire::PartitionConsignation(gestionnaire)) => gestionnaire.clone(),
+//         _ => panic!("Mauvaise configuration gestionnaire")
+//     };
+//     let mut futures = FuturesUnordered::new();
+//     let thread_entretien = entretien_grosfichiers(middleware.clone(), gestionnaire.clone());
+//     let thread_evenements = thread_entretien_evenements(middleware.clone(), gestionnaire.clone());
+//
+//     futures.push(spawn(thread_entretien));
+//     futures.push(spawn(thread_evenements));
+//
+//     let arret = futures.next().await;
+// }
 
 async fn thread_entretien_evenements<M>(middleware: Arc<M>, gestionnaire: Arc<GestionnaireGrosFichiers>)
     where M: Middleware + 'static
@@ -161,137 +162,137 @@ async fn thread_entretien_evenements<M>(middleware: Arc<M>, gestionnaire: Arc<Ge
     }
 }
 
-async fn entretien_grosfichiers<M>(middleware: Arc<M>, gestionnaire_arc: Arc<GestionnaireGrosFichiers>)
-    where M: Middleware + CleChiffrageHandler + 'static
-{
-    let mut certificat_emis = false;
-
-    let gestionnaire = gestionnaire_arc.as_ref();
-
-    // Liste de collections de transactions pour tous les domaines geres par Core
-    let collections_transaction = {
-        let mut coll_docs_strings = Vec::new();
-        coll_docs_strings.push(String::from(gestionnaire.get_collection_transactions()
-            .expect("collection transactions")));
-        // for g in &gestionnaires {
-        //     match g {
-        //         TypeGestionnaire::PartitionConsignation(g) => {
-        //             coll_docs_strings.push(String::from(g.get_collection_transactions().expect("collection transactions")));
-        //         },
-        //         TypeGestionnaire::None => ()
-        //     }
-        // }
-        coll_docs_strings
-    };
-
-    let mut rechiffrage_complete = false;
-
-    let mut prochain_chargement_certificats_maitredescles = chrono::Utc::now();
-    let intervalle_chargement_certificats_maitredescles = chrono::Duration::minutes(5);
-
-    let mut prochain_entretien_transactions = chrono::Utc::now();
-    let intervalle_entretien_transactions = chrono::Duration::minutes(5);
-
-    let mut prochain_sync = chrono::Utc::now();
-    let intervalle_sync = chrono::Duration::hours(6);
-
-    let mut prochaine_confirmation_ca = chrono::Utc::now();
-    let intervalle_confirmation_ca = chrono::Duration::minutes(15);
-
-    let mut prochain_chargement_certificats_autres = chrono::Utc::now();
-    let intervalle_chargement_certificats_autres = chrono::Duration::minutes(5);
-
-    let mut prochain_entretien_elasticsearch = chrono::Utc::now();
-    let intervalle_entretien_elasticsearch = chrono::Duration::minutes(5);
-
-    info!("domaines_grosfichiers.entretien : Debut thread dans 5 secondes");
-
-    // Donner 5 secondes pour que les Q soient pretes (e.g. Q reponse)
-    sleep(DurationTokio::new(5, 0)).await;
-
-    loop {
-        let maintenant = chrono::Utc::now();
-        debug!("domaines_grosfichiers.entretien  Execution task d'entretien Core {:?}", maintenant);
-
-        if prochain_chargement_certificats_maitredescles < maintenant {
-            match charger_certificats_chiffrage(middleware.as_ref()).await {
-                Ok(()) => {
-                    prochain_chargement_certificats_maitredescles = maintenant + intervalle_chargement_certificats_maitredescles;
-                    debug!("domaines_core.entretien Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_maitredescles);
-                },
-                Err(e) => warn!("domaines_core.entretien Erreur chargement certificats de maitre des cles : {:?}", e)
-            }
-            // let public_keys = middleware.get_publickeys_chiffrage();
-            // if public_keys.len() > 0 {
-            //     prochain_chargement_certificats_maitredescles = maintenant + intervalle_chargement_certificats_maitredescles;
-            //     debug!("Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_maitredescles);
-            // } else {
-            //     warn!("Erreur chargement certificats de maitre des cles, aucunes cles recues")
-            // }
-        }
-
-        // Sleep jusqu'au prochain entretien ou evenement MQ (e.g. connexion)
-        debug!("domaines_grosfichiers.entretien Fin cycle, sleep {} secondes", DUREE_ATTENTE / 1000);
-        let duration = DurationTokio::from_millis(DUREE_ATTENTE);
-        sleep(duration).await;
-        if middleware.get_mode_regeneration() == true {
-            debug!("domaines_grosfichiers.entretien Mode regeneration, skip entretien");
-            continue;
-        }
-
-        middleware.entretien_validateur().await;
-
-        if prochain_entretien_transactions < maintenant {
-            let resultat = resoumettre_transactions(
-                middleware.as_ref(),
-                &collections_transaction
-            ).await;
-
-            match resultat {
-                Ok(_) => {
-                    prochain_entretien_transactions = maintenant + intervalle_entretien_transactions;
-                },
-                Err(e) => {
-                    warn!("domaines_grosfichiers.entretien Erreur resoumission transactions (entretien) : {:?}", e);
-                }
-            }
-        }
-
-        if certificat_emis == false {
-            debug!("domaines_grosfichiers.entretien Emettre certificat");
-            match middleware.emettre_certificat(middleware.as_ref()).await {
-                Ok(()) => certificat_emis = true,
-                Err(e) => error!("Erreur emission certificat local : {:?}", e),
-            }
-            debug!("domaines_grosfichiers.entretien Fin emission traitement certificat local, resultat : {}", certificat_emis);
-        }
-
-        // for g in &gestionnaires {
-        //     match g {
-        //         TypeGestionnaire::PartitionConsignation(g) => {
-        //             debug!("Entretien GestionnaireGrosFichiers");
-        //             // if prochain_entretien_elasticsearch < maintenant {
-        //             //     prochain_entretien_elasticsearch = maintenant + intervalle_entretien_elasticsearch;
-        //             //     if !g.es_est_pret() {
-        //             //         info!("Preparer ElasticSearch");
-        //             //         match g.es_preparer().await {
-        //             //             Ok(()) => {
-        //             //                 info!("Index ElasticSearch prets");
-        //             //             },
-        //             //             Err(e) => warn!("domaines_grosfichiers.entretien Erreur preparation ElasticSearch : {:?}", e)
-        //             //         }
-        //             //     }
-        //             // }
-        //         },
-        //         _ => ()
-        //     }
-        // }
-
-    }
-
-    // panic!("Forcer fermeture");
-    info!("domaines_grosfichiers.entretien : Fin thread");
-}
+// async fn entretien_grosfichiers<M>(middleware: Arc<M>, gestionnaire_arc: Arc<GestionnaireGrosFichiers>)
+//     where M: Middleware + CleChiffrageHandler + 'static
+// {
+//     let mut certificat_emis = false;
+//
+//     let gestionnaire = gestionnaire_arc.as_ref();
+//
+//     // Liste de collections de transactions pour tous les domaines geres par Core
+//     let collections_transaction = {
+//         let mut coll_docs_strings = Vec::new();
+//         coll_docs_strings.push(String::from(gestionnaire.get_collection_transactions()
+//             .expect("collection transactions")));
+//         // for g in &gestionnaires {
+//         //     match g {
+//         //         TypeGestionnaire::PartitionConsignation(g) => {
+//         //             coll_docs_strings.push(String::from(g.get_collection_transactions().expect("collection transactions")));
+//         //         },
+//         //         TypeGestionnaire::None => ()
+//         //     }
+//         // }
+//         coll_docs_strings
+//     };
+//
+//     let mut rechiffrage_complete = false;
+//
+//     let mut prochain_chargement_certificats_maitredescles = chrono::Utc::now();
+//     let intervalle_chargement_certificats_maitredescles = chrono::Duration::minutes(5);
+//
+//     let mut prochain_entretien_transactions = chrono::Utc::now();
+//     let intervalle_entretien_transactions = chrono::Duration::minutes(5);
+//
+//     let mut prochain_sync = chrono::Utc::now();
+//     let intervalle_sync = chrono::Duration::hours(6);
+//
+//     let mut prochaine_confirmation_ca = chrono::Utc::now();
+//     let intervalle_confirmation_ca = chrono::Duration::minutes(15);
+//
+//     let mut prochain_chargement_certificats_autres = chrono::Utc::now();
+//     let intervalle_chargement_certificats_autres = chrono::Duration::minutes(5);
+//
+//     let mut prochain_entretien_elasticsearch = chrono::Utc::now();
+//     let intervalle_entretien_elasticsearch = chrono::Duration::minutes(5);
+//
+//     info!("domaines_grosfichiers.entretien : Debut thread dans 5 secondes");
+//
+//     // Donner 5 secondes pour que les Q soient pretes (e.g. Q reponse)
+//     sleep(DurationTokio::new(5, 0)).await;
+//
+//     loop {
+//         let maintenant = chrono::Utc::now();
+//         debug!("domaines_grosfichiers.entretien  Execution task d'entretien Core {:?}", maintenant);
+//
+//         if prochain_chargement_certificats_maitredescles < maintenant {
+//             match charger_certificats_chiffrage(middleware.as_ref()).await {
+//                 Ok(()) => {
+//                     prochain_chargement_certificats_maitredescles = maintenant + intervalle_chargement_certificats_maitredescles;
+//                     debug!("domaines_core.entretien Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_maitredescles);
+//                 },
+//                 Err(e) => warn!("domaines_core.entretien Erreur chargement certificats de maitre des cles : {:?}", e)
+//             }
+//             // let public_keys = middleware.get_publickeys_chiffrage();
+//             // if public_keys.len() > 0 {
+//             //     prochain_chargement_certificats_maitredescles = maintenant + intervalle_chargement_certificats_maitredescles;
+//             //     debug!("Prochain chargement cert maitredescles: {:?}", prochain_chargement_certificats_maitredescles);
+//             // } else {
+//             //     warn!("Erreur chargement certificats de maitre des cles, aucunes cles recues")
+//             // }
+//         }
+//
+//         // Sleep jusqu'au prochain entretien ou evenement MQ (e.g. connexion)
+//         debug!("domaines_grosfichiers.entretien Fin cycle, sleep {} secondes", DUREE_ATTENTE / 1000);
+//         let duration = DurationTokio::from_millis(DUREE_ATTENTE);
+//         sleep(duration).await;
+//         if middleware.get_mode_regeneration() == true {
+//             debug!("domaines_grosfichiers.entretien Mode regeneration, skip entretien");
+//             continue;
+//         }
+//
+//         middleware.entretien_validateur().await;
+//
+//         if prochain_entretien_transactions < maintenant {
+//             let resultat = resoumettre_transactions(
+//                 middleware.as_ref(),
+//                 &collections_transaction
+//             ).await;
+//
+//             match resultat {
+//                 Ok(_) => {
+//                     prochain_entretien_transactions = maintenant + intervalle_entretien_transactions;
+//                 },
+//                 Err(e) => {
+//                     warn!("domaines_grosfichiers.entretien Erreur resoumission transactions (entretien) : {:?}", e);
+//                 }
+//             }
+//         }
+//
+//         if certificat_emis == false {
+//             debug!("domaines_grosfichiers.entretien Emettre certificat");
+//             match middleware.emettre_certificat(middleware.as_ref()).await {
+//                 Ok(()) => certificat_emis = true,
+//                 Err(e) => error!("Erreur emission certificat local : {:?}", e),
+//             }
+//             debug!("domaines_grosfichiers.entretien Fin emission traitement certificat local, resultat : {}", certificat_emis);
+//         }
+//
+//         // for g in &gestionnaires {
+//         //     match g {
+//         //         TypeGestionnaire::PartitionConsignation(g) => {
+//         //             debug!("Entretien GestionnaireGrosFichiers");
+//         //             // if prochain_entretien_elasticsearch < maintenant {
+//         //             //     prochain_entretien_elasticsearch = maintenant + intervalle_entretien_elasticsearch;
+//         //             //     if !g.es_est_pret() {
+//         //             //         info!("Preparer ElasticSearch");
+//         //             //         match g.es_preparer().await {
+//         //             //             Ok(()) => {
+//         //             //                 info!("Index ElasticSearch prets");
+//         //             //             },
+//         //             //             Err(e) => warn!("domaines_grosfichiers.entretien Erreur preparation ElasticSearch : {:?}", e)
+//         //             //         }
+//         //             //     }
+//         //             // }
+//         //         },
+//         //         _ => ()
+//         //     }
+//         // }
+//
+//     }
+//
+//     // panic!("Forcer fermeture");
+//     info!("domaines_grosfichiers.entretien : Fin thread");
+// }
 
 // async fn consommer(
 //     _middleware: Arc<impl ValidateurX509 + GenerateurMessages + MongoDao>,

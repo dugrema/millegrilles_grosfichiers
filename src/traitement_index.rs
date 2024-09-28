@@ -14,8 +14,9 @@ use millegrilles_common_rust::chrono::{DateTime, Duration, Utc};
 use millegrilles_common_rust::common_messages::RequeteDechiffrage;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
+use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
-use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable;
+use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction_serializable, sauvegarder_traiter_transaction_serializable_v2};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
@@ -23,8 +24,7 @@ use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::error::Error as CommonError;
-
-use crate::grosfichiers::GestionnaireGrosFichiers;
+use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::traitement_jobs::{BackgroundJob, CommandeGetJob, get_prochaine_job_versions, JobHandler, JobHandlerFichiersRep, JobHandlerVersions, ReponseJob};
 use crate::transactions::{NodeFichierRepBorrowed, TransactionSupprimerOrphelins};
@@ -48,7 +48,7 @@ impl JobHandler for IndexationJobHandler {
         -> Result<(), CommonError>
         where
             M: ValidateurX509 + GenerateurMessages + MongoDao,
-            G: GestionnaireDomaine,
+            G: GestionnaireDomaineV2,
             S: ToString + Send
     {
         let erreur = erreur.to_string();
@@ -100,7 +100,7 @@ impl JobHandlerFichiersRep for IndexationJobHandler {}
 pub async fn reset_flag_indexe<M,G>(middleware: &M, gestionnaire: &G, job_handler: &IndexationJobHandler) -> Result<(), CommonError>
     where
         M: GenerateurMessages + MongoDao + ValidateurX509,
-        G: GestionnaireDomaine
+        G: GestionnaireDomaineV2 + AiguillageTransactions
 {
     debug!("reset_flag_indexe Reset flags pour tous les fichiers");
 
@@ -539,7 +539,7 @@ pub fn index_grosfichiers() -> Value {
     })
 }
 
-pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
@@ -595,7 +595,7 @@ struct SupprimerIndexTuuids {
     tuuids: Vec<String>,
 }
 
-pub async fn entretien_supprimer_fichiersrep<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers)
+pub async fn entretien_supprimer_fichiersrep<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager)
     -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
@@ -718,7 +718,7 @@ async fn entretien_supprimer_fichiersrep_index<M>(middleware: &M)
     Ok(())
 }
 
-// pub async fn traiter_index_manquant<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, limite: i64)
+// pub async fn traiter_index_manquant<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, limite: i64)
 //     -> Result<Vec<String>, CommonError>
 //     where M: GenerateurMessages + MongoDao + ValidateurX509
 // {
@@ -816,7 +816,7 @@ async fn entretien_supprimer_fichiersrep_index<M>(middleware: &M)
 //
 // }
 
-async fn entretien_retirer_supprimes_sans_visites<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers)
+async fn entretien_retirer_supprimes_sans_visites<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager)
     -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
@@ -845,7 +845,7 @@ async fn entretien_retirer_supprimes_sans_visites<M>(middleware: &M, gestionnair
     debug!("entretien_retirer_supprimes_sans_visites Nouvelle transaction orphelins : {:?}", fuuids_supprimes);
     let transaction = TransactionSupprimerOrphelins { fuuids: fuuids_supprimes };
 
-    sauvegarder_traiter_transaction_serializable(
+    sauvegarder_traiter_transaction_serializable_v2(
         middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_SUPPRIMER_ORPHELINS).await?;
 
     Ok(())

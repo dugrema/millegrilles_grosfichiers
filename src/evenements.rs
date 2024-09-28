@@ -13,7 +13,7 @@ use millegrilles_common_rust::constantes::Securite::L2Prive;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
-use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint};
+use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::time as tokio_time;
@@ -21,17 +21,18 @@ use millegrilles_common_rust::tokio::time::{Duration as DurationTokio, timeout};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
-
-use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
+use crate::domain_manager::GrosFichiersDomainManager;
+// use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_fichier, EvenementContenuCollection};
 
 use crate::grosfichiers_constantes::*;
+use crate::requetes::mapper_fichier_db;
 use crate::traitement_index::entretien_supprimer_fichiersrep;
 use crate::traitement_jobs::{JobHandler, JobHandlerFichiersRep, JobHandlerVersions};
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
 const EXPIRATION_THROTTLING_EVENEMENT_CUUID_CONTENU: i64 = 1;
 
-pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValide)
+pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
@@ -60,6 +61,7 @@ pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GestionnaireG
         EVENEMENT_FICHIERS_VISITER_FUUIDS => evenement_visiter_fuuids(middleware, m).await,
         EVENEMENT_FICHIERS_CONSIGNE => evenement_fichier_consigne(middleware, gestionnaire, m).await,
         EVENEMENT_FICHIERS_SYNC_PRIMAIRE => evenement_fichier_sync_primaire(middleware, gestionnaire, m).await,
+        EVENEMENT_CEDULE => Ok(None),  // Obsolete
         _ => Err(format!("grosfichiers.consommer_evenement: Mauvais type d'action pour un evenement : {}", action))?,
     }
 }
@@ -314,7 +316,7 @@ struct DocumentFichierDetailIds {
     cle_id: Option<String>,
 }
 
-async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValide)
+async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -538,7 +540,7 @@ impl HandlerEvenements {
         return Ok(Some(holders))
     }
 
-    pub async fn emettre_cuuid_content_expires<M>(&self, middleware: &M, gestionnaire: &GestionnaireGrosFichiers) -> Result<(), CommonError>
+    pub async fn emettre_cuuid_content_expires<M>(&self, middleware: &M, gestionnaire: &GrosFichiersDomainManager) -> Result<(), CommonError>
         where M: MongoDao + GenerateurMessages
     {
         if let Some(evenements_expires) = HandlerEvenements::extraire_liste_expires(
@@ -604,7 +606,7 @@ impl HandlerEvenements {
         }
     }
 
-    // pub async fn thread<M>(&self, middleware: &M, gestionnaire: Arc<GestionnaireGrosFichiers>)
+    // pub async fn thread<M>(&self, middleware: &M, gestionnaire: Arc<GrosFichiersDomainManager>)
     //     where M: GenerateurMessages + MongoDao
     // {
     //     loop {
@@ -621,7 +623,7 @@ impl HandlerEvenements {
 #[derive(Clone, Deserialize)]
 struct EvenementFichierSyncPrimaire { termine: Option<bool> }
 
-async fn evenement_fichier_sync_primaire<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, m: MessageValide)
+async fn evenement_fichier_sync_primaire<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -646,4 +648,250 @@ async fn evenement_fichier_sync_primaire<M>(middleware: &M, gestionnaire: &Gesti
     }
 
     Ok(None)
+}
+
+pub async fn emettre_evenement_contenu_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, evenement: EvenementContenuCollection)
+                                                     -> Result<(), CommonError>
+where
+    M: GenerateurMessages + MongoDao
+{
+    debug!("grosfichiers.emettre_evenement_contenu_collection Emettre evenement maj pour collection {:?}", evenement);
+
+    // let evenement_ref = evenement.borrow();
+
+    // Voir si on throttle le message. Si l'evenement est retourne, on l'emet immediatement.
+    // Si on recoit None, l'evenement a ete conserve pour re-emission plus tard.
+    if let Some(inner) = gestionnaire.evenements_handler.verifier_evenement_cuuid_contenu(evenement)? {
+        let routage = {
+            let mut routage_builder = RoutageMessageAction::builder(
+                DOMAINE_NOM, EVENEMENT_MAJ_CONTENU_COLLECTION, vec![Securite::L2Prive]);
+            routage_builder = routage_builder.partition(inner.cuuid.clone());
+            routage_builder.build()
+        };
+
+        debug!("grosfichiers.emettre_evenement_contenu_collection Emettre evenement maj pour collection immediatement {:?}", routage);
+        middleware.emettre_evenement(routage, &inner).await?;
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EvenementContenuCollection {
+    pub cuuid: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fichiers_ajoutes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fichiers_modifies: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collections_ajoutees: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collections_modifiees: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retires: Option<Vec<String>>,
+}
+
+impl EvenementContenuCollection {
+    pub fn new<S>(cuuid: S) -> Self
+    where S: ToString
+    {
+        Self {
+            cuuid: cuuid.to_string(),
+            fichiers_ajoutes: None,
+            fichiers_modifies: None,
+            collections_ajoutees: None,
+            collections_modifiees: None,
+            retires: None,
+        }
+    }
+
+    /// Combine deux instances de EvenementContenuCollection
+    pub fn merge(&mut self, mut other: Self) -> Result<(), CommonError> {
+        if self.cuuid.as_str() != other.cuuid.as_str() {
+            Err(format!("EvenementContenuCollection.merge cuuid mismatch"))?
+        }
+
+        match self.fichiers_ajoutes.as_mut() {
+            Some(inner) => match other.fichiers_ajoutes {
+                Some(inner_other) => inner.extend(inner_other),
+                None => () // Rien a faire
+            },
+            None => self.fichiers_ajoutes = other.fichiers_ajoutes
+        }
+
+        match self.fichiers_modifies.as_mut() {
+            Some(inner) => match other.fichiers_modifies {
+                Some(inner_other) => inner.extend(inner_other),
+                None => () // Rien a faire
+            },
+            None => self.fichiers_modifies = other.fichiers_modifies
+        }
+
+        match self.collections_ajoutees.as_mut() {
+            Some(inner) => match other.collections_ajoutees {
+                Some(inner_other) => inner.extend(inner_other),
+                None => () // Rien a faire
+            },
+            None => self.collections_ajoutees = other.collections_ajoutees
+        }
+
+        match self.collections_modifiees.as_mut() {
+            Some(inner) => match other.collections_modifiees {
+                Some(inner_other) => inner.extend(inner_other),
+                None => () // Rien a faire
+            },
+            None => self.collections_modifiees = other.collections_modifiees
+        }
+
+        match self.retires.as_mut() {
+            Some(inner) => match other.retires {
+                Some(inner_other) => inner.extend(inner_other),
+                None => () // Rien a faire
+            },
+            None => self.retires = other.retires
+        }
+
+        Ok(())
+    }
+}
+
+pub async fn calculer_quotas<M>(middleware: &M)
+where M: MongoDao
+{
+    if let Err(e) = calculer_quotas_fichiers_usagers(middleware).await {
+        error!("calculer_quotas Erreur calculer_quotas_fichiers_usagers : {:?}", e)
+    }
+}
+
+#[derive(Deserialize)]
+struct QuotaFichiersAggregateRow {
+    #[serde(rename="_id")]
+    user_id: String,
+    bytes_total_versions: i64,
+    nombre_total_versions: i64,
+}
+
+async fn calculer_quotas_fichiers_usagers<M>(middleware: &M)
+    -> Result<(), CommonError>
+    where M: MongoDao
+{
+    let pipeline = vec! [
+        doc!{"$match": {"supprime": false}},
+        doc!{"$group": {
+            "_id": "$user_id",
+            "bytes_total_versions": {"$sum": "$taille"},
+            "nombre_total_versions": {"$count": {}},
+        }},
+    ];
+
+    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let collection_quotas = middleware.get_collection(NOM_COLLECTION_QUOTAS_USAGERS)?;
+    let mut result = collection_versions.aggregate(pipeline, None).await?;
+    while let Some(row) = result.next().await {
+        let row = row?;
+        let row: QuotaFichiersAggregateRow = convertir_bson_deserializable(row)?;
+        let filtre_upsert = doc!{"user_id": row.user_id};
+        let ops = doc!{
+            "$setOnInsert": {CHAMP_CREATION: Utc::now()},
+            "$set": {
+                "bytes_total_versions": row.bytes_total_versions,
+                "nombre_total_versions": row.nombre_total_versions,
+            },
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        let options = UpdateOptions::builder().upsert(true).build();
+        collection_quotas.update_one(filtre_upsert, ops, options).await?;
+    }
+
+    Ok(())
+}
+
+pub async fn emettre_evenement_maj_fichier<M, S, T>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, tuuid: S, action: T)
+                                                    -> Result<(), CommonError>
+where
+    M: GenerateurMessages + MongoDao,
+    S: AsRef<str>,
+    T: AsRef<str>
+{
+    let tuuid_str = tuuid.as_ref();
+    let action_str = action.as_ref();
+    debug!("grosfichiers.emettre_evenement_maj_fichier Emettre evenement maj pour fichier {} (action: {})", tuuid_str, action_str);
+
+    // Charger fichier
+    let filtre = doc! {CHAMP_TUUID: tuuid_str};
+    let collection = middleware.get_collection_typed::<NodeFichiersRepBorrow>(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut curseur = collection.find(filtre, None).await?;
+    if curseur.advance().await? {
+        let doc_fichier = curseur.deserialize_current()?;
+
+        // Extraire liste de fuuids directement
+        // if let Some(fuuids) = doc_fichier.fuuids_versions.as_ref() {
+        //     if let Some(fuuid) = fuuids.first() {
+        //         let routage_action = RoutageMessageAction::builder(DOMAINE_NOM, action_str)
+        //             .exchanges(vec![Securite::L2Prive])
+        //             .build();
+        //
+        //         middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: vec![*fuuid]})).await?;
+        //     }
+        // }
+
+        if let Some(cuuids) = doc_fichier.path_cuuids.as_ref() {
+            if let Some(cuuid) = cuuids.first() {
+                let mut evenement = EvenementContenuCollection::new(*cuuid);
+                // evenement.cuuid = Some((*cuuid).to_owned());
+                evenement.fichiers_modifies = Some(vec![tuuid_str.to_owned()]);
+                emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
+            }
+        }
+
+    } else {
+        Err(format!("grosfichiers.emettre_evenement_maj_fichier Document {} introuvable", tuuid_str))?
+    }
+
+    Ok(())
+}
+
+pub async fn emettre_evenement_maj_collection<M, S>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, tuuid: S) -> Result<(), CommonError>
+where
+    M: GenerateurMessages + MongoDao,
+    S: AsRef<str>
+{
+    let tuuid_str = tuuid.as_ref();
+    debug!("grosfichiers.emettre_evenement_maj_collection Emettre evenement maj pour collection {}", tuuid_str);
+
+    // Charger fichier
+    let filtre = doc! {CHAMP_TUUID: tuuid_str};
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let doc_fichier = match collection.find_one(filtre, None).await {
+        Ok(inner) => inner,
+        Err(e) => Err(format!("grosfichiers.where Erreur collection.find_one pour {} : {:?}", tuuid_str, e))?
+    };
+    match doc_fichier {
+        Some(inner) => {
+            let fichier_mappe = match mapper_fichier_db(inner) {
+                Ok(inner) => inner,
+                Err(e) => Err(format!("grosfichiers.emettre_evenement_maj_collection Erreur mapper_fichier_db : {:?}", e))?
+            };
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_MAJ_COLLECTION, vec![Securite::L2Prive])
+                .partition(tuuid_str)
+                .build();
+            middleware.emettre_evenement(routage, &fichier_mappe).await?;
+
+            if let Some(cuuid) = fichier_mappe.cuuid {
+                // Emettre evenement de mise a jour de la collection parent.
+                let mut evenement_modif = EvenementContenuCollection::new(cuuid.clone());
+                // evenement_modif.cuuid = Some(cuuid.clone());
+                evenement_modif.collections_modifiees = Some(vec![tuuid_str.to_string()]);
+                emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_modif).await?;
+                // let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_MAJ_CONTENU_COLLECTION)
+                //     .exchanges(vec![Securite::L2Prive])
+                //     .partition(cuuid)
+                //     .build();
+                // middleware.emettre_evenement(routage, &evenement_modif).await?;
+            }
+        },
+        None => Err(format!("grosfichiers.emettre_evenement_maj_collection Collection {} introuvable", tuuid_str))?
+    };
+
+    Ok(())
 }

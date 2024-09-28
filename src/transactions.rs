@@ -15,7 +15,7 @@ use millegrilles_common_rust::dechiffrage::{DataChiffre, DataChiffreBorrow};
 use millegrilles_common_rust::fichiers::is_mimetype_video;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
-use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
+use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_v2};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao, verifier_erreur_duplication_mongo};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
@@ -32,7 +32,9 @@ use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epo
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::mapstringepochseconds;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
-use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
+use crate::domain_manager::GrosFichiersDomainManager;
+use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection};
+// use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection};
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, verifier_acces_usager, verifier_acces_usager_tuuids};
@@ -40,7 +42,7 @@ use crate::traitement_jobs::{JobHandler, JobHandlerFichiersRep, JobHandlerVersio
 // use crate::traitement_media::emettre_commande_media;
 // use crate::traitement_index::emettre_commande_indexation;
 
-pub async fn consommer_transaction<M>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, m: MessageValide)
+pub async fn consommer_transaction<M>(gestionnaire: &GrosFichiersDomainManager, middleware: &M, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where
     M: ValidateurX509 + GenerateurMessages + MongoDao
@@ -84,10 +86,10 @@ where
         _ => Err(format!("transactions.consommer_transaction: Mauvais type d'action pour une transaction : {:?}", m.type_message))?,
     }
 
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
-pub async fn aiguillage_transaction<M, T>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: T)
+pub async fn aiguillage_transaction<M, T>(gestionnaire: &GrosFichiersDomainManager, middleware: &M, transaction: T)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao,
@@ -558,7 +560,7 @@ impl NodeFichierVersionOwned {
     // }
 }
 
-async fn transaction_nouvelle_version<M>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: TransactionValide)
+async fn transaction_nouvelle_version<M>(gestionnaire: &GrosFichiersDomainManager, middleware: &M, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -694,7 +696,7 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GestionnaireGrosFichiers
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -942,7 +944,7 @@ pub struct RowFichiersRepCuuidNode {
 //     Ok(())
 // }
 
-async fn transaction_ajouter_fichiers_collection<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_ajouter_fichiers_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1236,7 +1238,7 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
     Ok(())
 }
 
-async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1310,7 +1312,7 @@ async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnair
 }
 
 /// Obsolete - conserver pour support legacy
-async fn transaction_retirer_documents_collection<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+async fn transaction_retirer_documents_collection<M, T>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: T) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: GenerateurMessages + MongoDao,
         T: Transaction
@@ -1544,7 +1546,7 @@ async fn supprimer_tuuids<M,U,T>(middleware: &M, user_id_in: U, tuuids_in: Vec<T
     Ok(tuuids_retires_par_cuuid)
 }
 
-async fn transaction_supprimer_documents<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_supprimer_documents<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1582,7 +1584,7 @@ async fn transaction_supprimer_documents<M>(middleware: &M, gestionnaire: &Gesti
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_recuperer_documents<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_recuperer_documents<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1870,7 +1872,7 @@ async fn transaction_recuperer_documents_v2<M>(middleware: &M, transaction: Tran
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_archiver_documents<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_archiver_documents<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1914,7 +1916,7 @@ async fn transaction_archiver_documents<M>(middleware: &M, gestionnaire: &Gestio
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_changer_favoris<M, T>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: T) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+async fn transaction_changer_favoris<M, T>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: T) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: GenerateurMessages + MongoDao,
         T: Transaction
@@ -2011,7 +2013,7 @@ async fn touch_fichiers_rep<M,U,S,V>(middleware: &M, user_id: Option<U>, fuuids_
     Ok(())
 }
 
-async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2129,7 +2131,7 @@ async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &Gest
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2345,7 +2347,7 @@ async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &Gestionnai
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2445,7 +2447,7 @@ async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &Gestionna
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_decire_collection<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_decire_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2516,7 +2518,7 @@ async fn transaction_decire_collection<M>(middleware: &M, gestionnaire: &Gestion
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_copier_fichier_tiers<M>(gestionnaire: &GestionnaireGrosFichiers, middleware: &M, transaction: TransactionValide)
+async fn transaction_copier_fichier_tiers<M>(gestionnaire: &GrosFichiersDomainManager, middleware: &M, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2900,7 +2902,7 @@ pub struct InformationCollection {
     pub favoris: Option<bool>,
 }
 
-async fn transaction_supprimer_video<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_supprimer_video<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2981,7 +2983,7 @@ async fn transaction_supprimer_video<M>(middleware: &M, gestionnaire: &Gestionna
 }
 
 
-async fn transaction_supprimer_job_image<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_supprimer_job_image<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -3015,7 +3017,7 @@ async fn transaction_supprimer_job_image<M>(middleware: &M, gestionnaire: &Gesti
     }
 }
 
-async fn transaction_supprimer_job_video<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_supprimer_job_video<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -3053,7 +3055,7 @@ pub struct TransactionAjouterContactLocal {
     pub contact_user_id: String,
 }
 
-async fn transaction_ajouter_contact_local<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_ajouter_contact_local<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -3097,7 +3099,7 @@ pub struct TransactionSupprimerContacts {
     pub contact_ids: Vec<String>,
 }
 
-async fn transaction_supprimer_contacts<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_supprimer_contacts<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -3142,7 +3144,7 @@ pub struct TransactionPartagerCollections {
     pub contact_ids: Vec<String>,
 }
 
-async fn transaction_partager_collections<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_partager_collections<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -3198,7 +3200,7 @@ pub struct TransactionSupprimerPartageUsager {
     pub tuuid: String,
 }
 
-async fn transaction_supprimer_partage_usager<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_supprimer_partage_usager<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -3307,7 +3309,7 @@ pub async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &Transacti
     Ok(resultat)
 }
 
-async fn transaction_supprimer_orphelins<M>(middleware: &M, gestionnaire: &GestionnaireGrosFichiers, transaction: TransactionValide)
+async fn transaction_supprimer_orphelins<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {

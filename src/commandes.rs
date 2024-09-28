@@ -11,7 +11,7 @@ use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L4Secure};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
-use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable};
+use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable, sauvegarder_traiter_transaction_serializable_v2, sauvegarder_traiter_transaction_v2};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{MessageMilleGrillesBufferDefault, MessageMilleGrillesOwned};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
 use millegrilles_common_rust::mongodb::Collection;
@@ -26,10 +26,10 @@ use millegrilles_common_rust::messages_generiques::ReponseCommande;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
+use crate::domain_manager::GrosFichiersDomainManager;
+use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_maj_fichier, evenement_fichiers_syncpret, EvenementContenuCollection};
 
-use crate::evenements::evenement_fichiers_syncpret;
-
-use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection, GestionnaireGrosFichiers};
+// use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection};
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids};
 use crate::traitement_index::{commande_indexation_get_job, reset_flag_indexe};
@@ -39,7 +39,7 @@ use crate::transactions::*;
 
 const REQUETE_MAITREDESCLES_VERIFIER_PREUVE: &str = "verifierPreuve";
 
-pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -121,7 +121,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
     }
 }
 
-async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -182,10 +182,10 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gest
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -243,7 +243,7 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
     };
 
     // Traiter la transaction
-    let resultat = sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?;
+    let resultat = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
 
     if changement_media {
         if let Some(mimetype) = commande.mimetype.as_ref() {
@@ -307,7 +307,7 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
     Ok(resultat)
 }
 
-async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -362,10 +362,10 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, g
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -390,10 +390,10 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gest
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_associer_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_associer_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -411,7 +411,7 @@ async fn commande_associer_video<M>(middleware: &M, m: MessageValide, gestionnai
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
 pub struct InformationAutorisation {
@@ -535,7 +535,7 @@ async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuid
     Ok(reponse)
 }
 
-async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -589,10 +589,10 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -625,10 +625,10 @@ async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageVali
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
@@ -662,7 +662,7 @@ async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageVali
     // Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -697,7 +697,7 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -705,7 +705,7 @@ struct RowFuuids {
     fuuids: Option<Vec<String>>
 }
 
-async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -765,7 +765,7 @@ async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValide, gesti
                 TypeMessage::Valide(reponse) => {
                     // Traiter la transaction
                     debug!("commande_recuperer_documents Reponse recuperer document OK : {:?}", reponse);
-                    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+                    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
                 },
                 _ => {
                     debug!("commande_recuperer_documents Reponse recuperer document est invalide");
@@ -794,7 +794,7 @@ struct ReponseRecupererFichiers {
     recuperes: Option<Vec<String>>,
 }
 
-async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -839,7 +839,7 @@ async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValide, ge
 
     if resultat.fuuids.len() == 0 {
         debug!("commande_recuperer_documents_v2 Aucuns fichiers a restaurer - juste des repertoires. Aucunes verifications additionnelles requises");
-        return Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+        return Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
     }
 
     // Emettre une commande de reactivation a fichiers (consignation)
@@ -878,7 +878,7 @@ async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValide, ge
                         // return Ok(Some(middleware.formatter_reponse(&reponse, None)?))
                         return Ok(Some(middleware.build_reponse(reponse)?.0))
                     }
-                    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+                    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
                 },
                 _ => {
                     debug!("commande_recuperer_documents_v2 Reponse recuperer document est invalide");
@@ -900,7 +900,7 @@ async fn commande_recuperer_documents_v2<M>(middleware: &M, m: MessageValide, ge
     }
 }
 
-async fn commande_archiver_documents<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_archiver_documents<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -926,10 +926,10 @@ async fn commande_archiver_documents<M>(middleware: &M, m: MessageValide, gestio
         Err(format!("commandes.commande_archiver_documents: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_changer_favoris<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_changer_favoris<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -956,10 +956,10 @@ async fn commande_changer_favoris<M>(middleware: &M, m: MessageValide, gestionna
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -986,11 +986,11 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestio
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
 // commande_copier_fichier_tiers est OBSOLETE
-// async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+// async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
 //     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 //     where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
 // {
@@ -1138,7 +1138,7 @@ pub struct ReponsePreuvePossessionCles {
     pub verification: HashMap<String, bool>,
 }
 
-async fn commande_reindexer<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_reindexer<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -1173,7 +1173,7 @@ struct ReponseCommandeReindexer {
     ok: bool,
 }
 
-async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
@@ -1322,7 +1322,7 @@ struct ReponseCompleterPreviews {
     tuuids: Option<Vec<String>>,
 }
 
-async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
@@ -1354,7 +1354,7 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValide, 
 
 /// Commande qui indique la creation _en cours_ d'un nouveau fichier. Permet de creer un
 /// placeholder a l'ecran en attendant le traitement du fichier.
-async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
@@ -1432,7 +1432,7 @@ async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValide, gestionna
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -1535,11 +1535,11 @@ async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValide, gestion
     } else {
         // Poursuivre le traitement sous forme de transaction
         debug!("commande_favoris_creerpath Path incomplet, poursuivre avec la transaction");
-        Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+        Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
     }
 }
 
-async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -1725,7 +1725,7 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, gestionna
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn commande_image_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_image_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
@@ -1759,7 +1759,7 @@ async fn commande_image_get_job<M>(middleware: &M, m: MessageValide, gestionnair
     Ok(Some(reponse_chiffree))
 }
 
-async fn commande_video_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_video_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509,
 {
@@ -1791,7 +1791,7 @@ async fn commande_video_get_job<M>(middleware: &M, m: MessageValide, gestionnair
     Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, m.certificat.as_ref())?.0))
 }
 
-async fn commande_supprimer_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_supprimer_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -1829,7 +1829,7 @@ async fn commande_supprimer_video<M>(middleware: &M, m: MessageValide, gestionna
 
     if result > 0 {
         // Traiter la transaction
-        Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+        Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
     } else {
         Ok(Some(middleware.reponse_ok(None, None)?))
     }
@@ -1845,7 +1845,7 @@ struct ReponseChargerUserIdParNomUsager {
     usagers: Option<HashMap<String, Option<String>>>
 }
 
-async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -1935,12 +1935,12 @@ async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, ges
     let transaction = TransactionAjouterContactLocal { user_id, contact_user_id: user_contact_id };
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction_serializable(
-        middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_AJOUTER_CONTACT_LOCAL).await?)
+    Ok(sauvegarder_traiter_transaction_serializable_v2(
+        middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_AJOUTER_CONTACT_LOCAL).await?.0)
     // Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_supprimer_contacts<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_supprimer_contacts<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -1959,10 +1959,10 @@ async fn commande_supprimer_contacts<M>(middleware: &M, mut m: MessageValide, ge
         }
     };
 
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_partager_collections<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_partager_collections<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2001,10 +2001,10 @@ async fn commande_partager_collections<M>(middleware: &M, mut m: MessageValide, 
         return Ok(Some(middleware.reponse_err(None, None, Some("Au moins un repertoire est invalide"))?))
     }
 
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_supprimer_partage_usager<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_supprimer_partage_usager<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2023,10 +2023,10 @@ async fn commande_supprimer_partage_usager<M>(middleware: &M, mut m: MessageVali
         }
     };
 
-    Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
 }
 
-async fn commande_supprimer_orphelins<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+async fn commande_supprimer_orphelins<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2049,7 +2049,7 @@ async fn commande_supprimer_orphelins<M>(middleware: &M, mut m: MessageValide, g
     if fuuids_supprimes > 0 {
         // On execute la transaction pour supprimer les fichiers dans la base de donnes
         debug!("commande_supprimer_orphelins Au moins une version supprimer (count: {}), executer la transaction", fuuids_supprimes);
-        sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?;
+        sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
     }
 
     let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };

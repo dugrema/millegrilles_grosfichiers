@@ -1,5 +1,5 @@
-mod grosfichiers;
-mod domaines_grosfichiers;
+// mod grosfichiers;
+// mod domaines_grosfichiers;
 mod traitement_media;
 mod transactions;
 mod grosfichiers_constantes;
@@ -8,10 +8,13 @@ mod requetes;
 mod traitement_index;
 mod evenements;
 mod traitement_jobs;
+mod builder;
+mod domain_manager;
 
 use log::{info};
 use millegrilles_common_rust::tokio as tokio;
-use crate::domaines_grosfichiers::run;
+// use crate::domaines_grosfichiers::run;
+use crate::builder::run;
 
 fn main() {
     env_logger::init();

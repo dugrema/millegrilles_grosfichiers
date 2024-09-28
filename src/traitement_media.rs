@@ -8,18 +8,19 @@ use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissi
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
+use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
 use millegrilles_common_rust::fichiers::is_mimetype_video;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::messages_generiques::CommandeUsager;
-use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable};
+use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable_v2, sauvegarder_traiter_transaction_v2};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::error::Error as CommonError;
-
-use crate::grosfichiers::GestionnaireGrosFichiers;
+use crate::domain_manager::GrosFichiersDomainManager;
+// use crate::grosfichiers::GrosFichiersDomainManager;
 
 use crate::grosfichiers_constantes::*;
 use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job};
@@ -48,7 +49,7 @@ impl JobHandler for ImageJobHandler {
         -> Result<(), CommonError>
         where
             M: ValidateurX509 + GenerateurMessages + MongoDao,
-            G: GestionnaireDomaine,
+            G: GestionnaireDomaineV2 + AiguillageTransactions,
             S: ToString + Send
     {
         let erreur = erreur.to_string();
@@ -66,7 +67,7 @@ impl JobHandler for ImageJobHandler {
             err: Some(erreur),
         };
 
-        sauvegarder_traiter_transaction_serializable(
+        sauvegarder_traiter_transaction_serializable_v2(
             middleware, &transaction, gestionnaire_domaine,
             DOMAINE_NOM, TRANSACTION_IMAGE_SUPPRIMER_JOB).await?;
 
@@ -156,7 +157,7 @@ impl JobHandler for VideoJobHandler {
         -> Result<(), CommonError>
         where
             M: ValidateurX509 + GenerateurMessages + MongoDao,
-            G: GestionnaireDomaine,
+            G: GestionnaireDomaineV2 + AiguillageTransactions,
             S: ToString + Send
     {
         let erreur = erreur.to_string();
@@ -182,7 +183,7 @@ impl JobHandler for VideoJobHandler {
             err: Some(erreur),
         };
 
-        sauvegarder_traiter_transaction_serializable(
+        sauvegarder_traiter_transaction_serializable_v2(
             middleware, &transaction, gestionnaire_domaine,
             DOMAINE_NOM, TRANSACTION_VIDEO_SUPPRIMER_JOB).await?;
 
@@ -320,7 +321,7 @@ struct RequeteJobsVideo {
     toutes_jobs: Option<bool>,
 }
 
-pub async fn requete_jobs_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+pub async fn requete_jobs_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -373,7 +374,7 @@ struct CommandeSupprimerJobImage {
     fuuid: String,
 }
 
-pub async fn commande_supprimer_job_image<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+pub async fn commande_supprimer_job_image<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -398,7 +399,7 @@ pub async fn commande_supprimer_job_image<M>(middleware: &M, m: MessageValide, g
             Some(inner) => {
                 let info_fichier: DBFichierVersionDetail = convertir_bson_deserializable(inner)?;
                 if let Some(false) = info_fichier.flag_media_traite {
-                    sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?;
+                    sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
                 }
             },
             None => warn!("Recu message annuler job image sans doc fichier version")
@@ -426,7 +427,7 @@ impl<'a> CommandeUsager<'a> for CommandeSupprimerJobVideo {
     }
 }
 
-pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GestionnaireGrosFichiers)
+pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -474,7 +475,7 @@ pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValide, g
             Some(inner) => {
                 let info_fichier: DBFichierVersionDetail = convertir_bson_deserializable(inner)?;
                 if let Some(false) = info_fichier.flag_video_traite {
-                    sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?;
+                    sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
                 }
             },
             None => warn!("Recu message annuler job video sans doc fichier version")

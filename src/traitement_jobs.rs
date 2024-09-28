@@ -9,6 +9,7 @@ use millegrilles_common_rust::common_messages::{InformationDechiffrageV2, Repons
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::dechiffrage::DataChiffre;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
+use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
@@ -51,7 +52,7 @@ pub trait JobHandler: Clone + Sized + Sync {
         -> Result<(), CommonError>
         where
             M: ValidateurX509 + GenerateurMessages + MongoDao,
-            G: GestionnaireDomaine,
+            G: GestionnaireDomaineV2 + AiguillageTransactions,
             S: ToString + Send;
 
     /// Emettre un evenement de job disponible.
@@ -182,7 +183,7 @@ pub trait JobHandlerVersions: JobHandler {
     async fn entretien<M,G>(&self, middleware: &M, gestionnaire: &G, limite_batch: Option<i64>)
         where
             M: GenerateurMessages + MongoDao + ValidateurX509,
-            G: GestionnaireDomaine
+            G: GestionnaireDomaineV2 + AiguillageTransactions
     {
         debug!("entretien Cycle entretien JobHandler {}", self.get_nom_flag());
 
@@ -246,7 +247,7 @@ pub trait JobHandlerFichiersRep: JobHandler {
     async fn entretien<M,G>(&self, middleware: &M, gestionnaire: &G, limite_batch: Option<i64>)
         where
             M: GenerateurMessages + MongoDao + ValidateurX509,
-            G: GestionnaireDomaine
+            G: GestionnaireDomaineV2 + AiguillageTransactions
     {
         debug!("entretien Cycle entretien JobHandler {}", self.get_nom_flag());
 
@@ -440,7 +441,7 @@ struct RowVersionsIds {
 async fn entretien_jobs_versions<J,G,M>(middleware: &M, gestionnaire: &G, job_handler: &J, limite_batch: i64) -> Result<(), CommonError>
     where
         M: GenerateurMessages + MongoDao + ValidateurX509,
-        G: GestionnaireDomaine,
+        G: GestionnaireDomaineV2 + AiguillageTransactions,
         J: JobHandler + JobHandlerVersions
 {
     debug!("entretien_jobs Debut");
@@ -555,7 +556,7 @@ async fn entretien_jobs_versions<J,G,M>(middleware: &M, gestionnaire: &G, job_ha
 async fn entretien_jobs_fichiersrep<J,G,M>(middleware: &M, gestionnaire: &G, job_handler: &J, limite_batch: i64) -> Result<(), CommonError>
     where
         M: GenerateurMessages + MongoDao + ValidateurX509,
-        G: GestionnaireDomaine,
+        G: GestionnaireDomaineV2 + AiguillageTransactions,
         J: JobHandler + JobHandlerFichiersRep
 {
     debug!("entretien_jobs_fichiersrep Debut");
@@ -1424,7 +1425,7 @@ pub async fn get_cle_job_indexation<M,S>(middleware: &M, cle_id: S)
         liste_hachage_bytes: None,
         cle_ids: Some(vec![cle_id.to_owned()]),
         certificat_rechiffrage: None,
-        // certificat_rechiffrage: Some(pem_rechiffrage),
+        inclure_signature: None,
     };
     let routage = RoutageMessageAction::builder(
         DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, vec![Securite::L3Protege]
@@ -1479,7 +1480,7 @@ pub async fn get_cle_job_indexation<M,S>(middleware: &M, cle_id: S)
     //     };
     // }
 
-    Ok(cle)
+    Ok(cle.try_into()?)
 
     // debug!("get_cle_job_indexation Transmettre requete permission dechiffrage cle : {:?}", permission);
     // let cle = if let Some(TypeMessage::Valide(reponse)) = middleware.transmettre_requete(routage, &permission).await? {
