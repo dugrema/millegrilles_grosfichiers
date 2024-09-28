@@ -1684,6 +1684,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2506,8 +2516,8 @@ checksum = "6c8640c5d730cb13ebd907d8d04b52f55ac9a2eec55b440c8892f40d56c76c1d"
 
 [[package]]
 name = "millegrilles_common_rust"
-version = "2024.5.1"
-source = "git+https://github.com/dugrema/millegrilles_common_rust.git?branch=2024.5#e97e34c5dae5d1e12db1bfce8d14df28954639c8"
+version = "2024.7.4"
+source = "git+https://github.com/dugrema/millegrilles_common_rust.git?branch=master#3e3cade7d0f8973766789b75403af1b97657421d"
 dependencies = [
  "async-compression",
  "async-recursion",
@@ -2523,6 +2533,7 @@ dependencies = [
  "dryoc",
  "env_logger 0.11.3",
  "flate2",
+ "fs2",
  "futures 0.3.30",
  "futures-util",
  "hex",
@@ -2559,7 +2570,7 @@ dependencies = [
 [[package]]
 name = "millegrilles_cryptographie"
 version = "2024.5.0"
-source = "git+https://github.com/dugrema/millegrilles_cryptographie.git?branch=2024.5#54534f187bbc5d72d5338510d1e89c2be7aad612"
+source = "git+https://github.com/dugrema/millegrilles_cryptographie.git?tag=2024.6-release#c6233a0baa16124c061b41442a582f0af4cbea70"
 dependencies = [
  "base64 0.22.1",
  "blake2",
@@ -2586,7 +2597,7 @@ dependencies = [
 
 [[package]]
 name = "millegrilles_grosfichiers"
-version = "2024.5.0"
+version = "2024.7.0"
 dependencies = [
  "env_logger 0.9.3",
  "log",
