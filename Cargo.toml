@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 # millegrilles_common_rust = { git = "https://github.com/dugrema/millegrilles_common_rust.git", tag = "2024.6-release" }
-millegrilles_common_rust = { git = "ssh://fs1.maple.maceroc.com/git/millegrilles_common_rust.git", branch = "master" }
+millegrilles_common_rust = { git = "ssh://git.maple.maceroc.com/git/millegrilles_common_rust.git", branch = "master" }
 # millegrilles_common_rust = { path = "/home/mathieu/RustroverProjects/millegrilles_common_rust" }
 
 log = { version = "0.4", features = ["max_level_debug", "release_max_level_info"] }
