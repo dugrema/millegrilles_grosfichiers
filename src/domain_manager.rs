@@ -68,6 +68,10 @@ impl GestionnaireDomaineV2 for GrosFichiersDomainManager {
             String::from(NOM_COLLECTION_PARTAGE_CONTACT),
         ])
     }
+
+    fn reclame_fuuids(&self) -> bool {
+        true
+    }
 }
 
 impl GestionnaireBusMillegrilles for GrosFichiersDomainManager {
