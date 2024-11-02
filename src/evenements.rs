@@ -9,7 +9,7 @@ use millegrilles_common_rust::bson::{Bson, doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
-use millegrilles_common_rust::constantes::Securite::L2Prive;
+use millegrilles_common_rust::constantes::Securite::{L1Public, L2Prive};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
@@ -39,7 +39,7 @@ pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GrosFichiersD
     debug!("consommer_evenement Consommer evenement : {:?}", &m.type_message);
 
     // Autorisation : doit etre de niveau 3.protege ou 4.secure
-    match m.certificat.verifier_exchanges(vec![Securite::L2Prive])? {
+    match m.certificat.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive])? {
         true => Ok(()),
         false => Err(format!("grosfichiers.consommer_evenement: Exchange evenement invalide (pas 2.prive)")),
     }?;
@@ -59,7 +59,9 @@ pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GrosFichiersD
         EVENEMENT_TRANSCODAGE_PROGRES => evenement_transcodage_progres(middleware, m).await,
         EVENEMENT_FICHIERS_SYNCPRET => evenement_fichiers_syncpret(middleware, m).await,
         EVENEMENT_FICHIERS_VISITER_FUUIDS => evenement_visiter_fuuids(middleware, m).await,
-        EVENEMENT_FICHIERS_CONSIGNE => evenement_fichier_consigne(middleware, gestionnaire, m).await,
+        // TODO => evenement_filecontroler_visiter_fuuids(middleware, m).await,
+        // EVENEMENT_FICHIERS_CONSIGNE => evenement_fichier_consigne(middleware, gestionnaire, m).await,
+        EVENEMENT_FILEHOST_NEWFUUID => evenement_filehost_newfuuid(middleware, gestionnaire, m).await,
         EVENEMENT_FICHIERS_SYNC_PRIMAIRE => evenement_fichier_sync_primaire(middleware, gestionnaire, m).await,
         EVENEMENT_CEDULE => Ok(None),  // Obsolete
         _ => Err(format!("grosfichiers.consommer_evenement: Mauvais type d'action pour un evenement : {}", action))?,
@@ -299,6 +301,31 @@ async fn evenement_visiter_fuuids<M>(middleware: &M, m: MessageValide)
     Ok(None)
 }
 
+// async fn evenement_filecontroler_visiter_fuuids<M>(middleware: &M, m: MessageValide)
+//     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+//     where M: GenerateurMessages + MongoDao
+// {
+//     if !m.certificat.verifier_exchanges(vec![L1Public])? {
+//         error!("evenement_filecontroler_visiter_fuuids Acces refuse, certificat n'est pas d'un exchange L1");
+//         return Ok(None)
+//     }
+//
+//     if !m.certificat.verifier_roles_string(vec![DOMAINE_FILECONTROLER_NOM.into()])? {
+//         error!("evenement_filecontroler_visiter_fuuids Acces refuse, certificat n'est pas de role filecontroler");
+//         return Ok(None)
+//     }
+//
+//     debug!("evenement_filecontroler_visiter_fuuids Mapper EvenementVisiterFuuids a partir de {:?}", m.type_message);
+//     let message_ref = m.message.parse()?;
+//     let evenement: FilecontrolerVisitEvent = message_ref.contenu()?.deserialize()?;
+//     let date_visite = &message_ref.estampille;
+//
+//     debug!("evenement_filecontroler_visiter_fuuids Visiter fuuid {} de filehost_id {}", evenement.fuuid, evenement.filehost_id);
+//     marquer_visites_fuuids_filecontroler(middleware, &vec![evenement.fuuid], date_visite, evenement.filehost_id).await?;
+//
+//     Ok(None)
+// }
+
 #[derive(Clone, Deserialize)]
 struct EvenementFichierConsigne { hachage_bytes: String }
 
@@ -316,34 +343,42 @@ struct DocumentFichierDetailIds {
     cle_id: Option<String>,
 }
 
-async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, m: MessageValide)
+#[derive(Deserialize)]
+struct FilecontrolerNewFuuidEvent {
+    filehost_id: String,
+    fuuid: String,
+}
+
+// async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, m: MessageValide)
+async fn evenement_filehost_newfuuid<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
-    if !m.certificat.verifier_exchanges(vec![L2Prive])? {
-        error!("evenement_fichier_consigne Acces refuse, certificat n'est pas d'un exchange L2");
+    if !m.certificat.verifier_exchanges(vec![L1Public])? {
+        error!("evenement_filehost_newfuuid Acces refuse, certificat n'est pas d'un exchange L2");
         return Ok(None)
     }
-    if !m.certificat.verifier_roles(vec![RolesCertificats::Fichiers])? {
-        error!("evenement_fichier_consigne Acces refuse, certificat n'est pas de role fichiers");
+    if !m.certificat.verifier_roles_string(vec![DOMAINE_FILECONTROLER_NOM.into()])? {
+        error!("evenement_filehost_newfuuid Acces refuse, certificat n'est pas de role filecontroler");
         return Ok(None)
     }
 
-    debug!("evenements.evenement_fichier_consigne Mapper EvenementVisiterFuuids a partir de {:?}", m.type_message);
+    debug!("evenement_filehost_newfuuid Mapper EvenementVisiterFuuids a partir de {:?}", m.type_message);
     let message_ref = m.message.parse()?;
-    let evenement: EvenementFichierConsigne = message_ref.contenu()?.deserialize()?;
+    let evenement: FilecontrolerNewFuuidEvent = message_ref.contenu()?.deserialize()?;
     let date_visite = &message_ref.estampille;
 
-    // Recuperer instance_id
-    let instance_id = match m.certificat.subject()?.get("commonName") {
-        Some(inner) => inner.clone(),
-        None => Err(CommonError::Str("evenements.evenement_visiter_fuuids Certificat sans commonName"))?
-    };
+    // // Recuperer instance_id
+    // let instance_id = match m.certificat.subject()?.get("commonName") {
+    //     Some(inner) => inner.clone(),
+    //     None => Err(CommonError::Str("evenements.evenement_visiter_fuuids Certificat sans commonName"))?
+    // };
+    let filehost_id = evenement.filehost_id;
 
     // Marquer la visite courante
-    marquer_visites_fuuids(middleware, &vec![evenement.hachage_bytes.clone()], date_visite, instance_id.clone()).await?;
+    marquer_visites_fuuids(middleware, &vec![evenement.fuuid.clone()], date_visite, filehost_id.clone()).await?;
 
-    let filtre = doc! { "fuuids": &evenement.hachage_bytes };
+    let filtre = doc! { "fuuids": &evenement.fuuid };
     let projection = doc! {
         "user_id": 1, "tuuid": 1, "fuuid": 1, "flag_media": 1, "mimetype": 1, "visites": 1,
         CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_FLAG_INDEX: 1, CHAMP_FLAG_VIDEO_TRAITE: 1,
@@ -357,7 +392,7 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GrosFichie
         let doc_fuuid = curseur.deserialize_current()?;
 
         let fuuids = vec![doc_fuuid.fuuid.clone()];
-        let instances: Vec<String> = match doc_fuuid.visites {
+        let filehost_ids: Vec<String> = match doc_fuuid.visites {
             Some(inner) => inner.into_keys().collect(),
             None => {
                 debug!("Aucunes visites sur {}, skip", doc_fuuid.fuuid);
@@ -380,7 +415,7 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GrosFichie
             None => false
         };
 
-        for instance in &instances {
+        for instance in &filehost_ids {
             marquer_visites_fuuids(middleware, &fuuids, date_visite, instance.clone()).await?;
         }
 
@@ -392,7 +427,7 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GrosFichie
             parametres_index.insert("fuuid".to_string(), Bson::String(doc_fuuid.fuuid.clone()));
             parametres_index.insert("cle_id".to_string(), Bson::String(cle_id.to_owned()));
             gestionnaire.indexation_job_handler.sauvegarder_job(
-                middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(vec![instance_id.clone()]),
+                middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(vec![filehost_id.clone()]),
                 None, Some(parametres_index), true
             ).await?;
 
@@ -405,7 +440,7 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GrosFichie
             if ! image_traitee {
                 // Note : La job est uniquement creee si le format est une image
                 gestionnaire.image_job_handler.sauvegarder_job(
-                    middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), Some(vec![instance_id.clone()]),
+                    middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), Some(vec![filehost_id.clone()]),
                     Some(champs_cles.clone()), Some(champs_parametres.clone()), true
                 ).await?;
             }
@@ -413,7 +448,7 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GrosFichie
             if ! video_traite {
                 // Note : La job est uniquement creee si le format est une image
                 gestionnaire.video_job_handler.sauvegarder_job(
-                    middleware, doc_fuuid.fuuid, doc_fuuid.user_id, Some(vec![instance_id.clone()]),
+                    middleware, doc_fuuid.fuuid, doc_fuuid.user_id, Some(vec![filehost_id.clone()]),
                     Some(champs_cles), Some(champs_parametres), true
                 ).await?;
             }
@@ -426,11 +461,11 @@ async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GrosFichie
 }
 
 async fn marquer_visites_fuuids<M>(
-    middleware: &M, fuuids: &Vec<String>, date_visite: &DateTime<Utc>, instance_id: String)
+    middleware: &M, fuuids: &Vec<String>, date_visite: &DateTime<Utc>, filehost_id: String)
     -> Result<(), CommonError>
     where M: MongoDao
 {
-    debug!("marquer_visites_fuuids  Visiter {} fuuids de l'instance {}", fuuids.len(), instance_id);
+    debug!("marquer_visites_fuuids  Visiter {} fuuids du filehost_id {}", fuuids.len(), filehost_id);
 
     // Marquer versions
     {
@@ -439,6 +474,49 @@ async fn marquer_visites_fuuids<M>(
             // "fuuid": {"$in": fuuids}
         };
         debug!("marquer_visites_fuuids Filtre versions {:?}", filtre_versions);
+
+        let ops = doc! {
+            "$set": {format!("visites.{}", filehost_id): date_visite.timestamp()},
+            "$unset": {"visites.nouveau": true},
+            "$currentDate": { CHAMP_MODIFICATION: true },
+        };
+
+        let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        collection_versions.update_many(filtre_versions, ops, None).await?;
+    }
+
+    // Marquer fichiersrep (date modification, requis pour pour sync)
+    {
+        let filtre_rep = doc! {
+            CHAMP_FUUIDS_VERSIONS: {"$in": fuuids},  // Utiliser index
+        };
+        debug!("marquer_visites_fuuids Filtre fichierrep {:?}", filtre_rep);
+        let collection_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+        let ops = doc! {
+            "$currentDate": { CHAMP_MODIFICATION: true },
+        };
+
+        collection_rep.update_many(filtre_rep, ops, None).await?;
+    }
+
+    Ok(())
+}
+
+async fn marquer_visites_fuuids_filecontroler<M>(
+    middleware: &M, fuuids: &Vec<String>, date_visite: &DateTime<Utc>, instance_id: String)
+    -> Result<(), CommonError>
+where M: MongoDao
+{
+    debug!("marquer_visites_fuuids_filecontroler  Visiter {} fuuids de l'instance {}", fuuids.len(), instance_id);
+
+    // Marquer versions
+    {
+        let filtre_versions = doc! {
+            "fuuids": {"$in": fuuids},  // Utiliser index
+            // "fuuid": {"$in": fuuids}
+        };
+        debug!("marquer_visites_fuuids_filecontroler Filtre versions {:?}", filtre_versions);
 
         let ops = doc! {
             "$set": {format!("visites.{}", instance_id): date_visite.timestamp()},
@@ -455,7 +533,7 @@ async fn marquer_visites_fuuids<M>(
         let filtre_rep = doc! {
             CHAMP_FUUIDS_VERSIONS: {"$in": fuuids},  // Utiliser index
         };
-        debug!("marquer_visites_fuuids Filtre fichierrep {:?}", filtre_rep);
+        debug!("marquer_visites_fuuids_filecontroler Filtre fichierrep {:?}", filtre_rep);
         let collection_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
 
         let ops = doc! {

@@ -93,7 +93,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         COMMANDE_RECLAMER_FUUIDS => evenement_fichiers_syncpret(middleware, m).await,
 
         COMMANDE_COMPLETER_PREVIEWS => commande_completer_previews(middleware, m, gestionnaire).await,
-        COMMANDE_NOUVEAU_FICHIER => commande_nouveau_fichier(middleware, m, gestionnaire).await,
+        // COMMANDE_NOUVEAU_FICHIER => commande_nouveau_fichier(middleware, m, gestionnaire).await,
         // COMMANDE_GET_CLE_JOB_CONVERSION => commande_get_cle_job_conversion(middleware, m, gestionnaire).await,
 
         COMMANDE_IMAGE_GET_JOB => commande_image_get_job(middleware, m, gestionnaire).await,
@@ -157,6 +157,14 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gest
             Ok(inner) => inner,
             Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
         };
+
+        let fuuid = fichier_version.fuuid.as_str();
+        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        let filtre = doc!{"fuuid": fuuid};
+        let count = collection.count_documents(filtre, None).await?;
+        if count > 0 {
+            return Ok(Some(middleware.reponse_err(Some(409), None, Some("Fuuid exists"))?))
+        }
     }
 
     // Traiter la cle
@@ -1350,86 +1358,6 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValide, 
     }
 
     Ok(None)
-}
-
-/// Commande qui indique la creation _en cours_ d'un nouveau fichier. Permet de creer un
-/// placeholder a l'ecran en attendant le traitement du fichier.
-async fn commande_nouveau_fichier<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
-{
-    debug!("commande_nouveau_fichier Consommer commande : {:?}", & m.type_message);
-    let commande: TransactionNouvelleVersion = {
-        let message_ref = m.message.parse()?;
-        message_ref.contenu()?.deserialize()?
-    };
-
-    // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.certificat.get_user_id()?;
-    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
-    let delegation_proprietaire = m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)?;
-    if ! (role_prive || delegation_proprietaire) && user_id.is_none() {
-        let reponse = json!({"ok": false, "err": "Non autorise"});
-        return Ok(Some(middleware.build_reponse(&reponse)?.0));
-    }
-
-    let fuuid = commande.fuuid;
-    let mimetype = commande.mimetype;
-    let tuuid = match commande.tuuid {
-        Some(t) => t,
-        None => {
-            let reponse = json!({"ok": false, "err": "tuuid manquant"});
-            return Ok(Some(middleware.build_reponse(&reponse)?.0));
-        }
-    };
-    let cuuid = commande.cuuid;
-    // let nom_fichier = commande.nom;
-
-    let filtre = doc! {CHAMP_TUUID: &tuuid};
-    let mut add_to_set = doc!{"fuuids": &fuuid};
-    // Ajouter collection au besoin
-    // if let Some(c) = cuuid.as_ref() {
-    //     add_to_set.insert("cuuids", c);
-    // }
-    todo!("fix me - get path_cuuids");
-    //add_to_set.insert("path_cuuids", cuuid.to_owned());
-    //add_to_set.insert("cuuids", cuuid.to_owned());
-
-    let ops = doc! {
-        "$set": {
-            CHAMP_FUUID_V_COURANTE: &fuuid,
-            CHAMP_MIMETYPE: &mimetype,
-            CHAMP_SUPPRIME: false,
-        },
-        "$addToSet": add_to_set,
-        "$setOnInsert": {
-            // "nom": &nom_fichier,
-            "tuuid": &tuuid,
-            CHAMP_CREATION: Utc::now(),
-            CHAMP_USER_ID: &user_id,
-        },
-        "$currentDate": {CHAMP_MODIFICATION: true}
-    };
-    let opts = UpdateOptions::builder().upsert(true).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    debug!("commande_nouveau_fichier update ops : {:?}", ops);
-    let resultat = match collection.update_one(filtre, ops, opts).await {
-        Ok(r) => r,
-        Err(e) => Err(format!("commande_nouveau_fichier.transaction_cle Erreur update_one sur transcation : {:?}", e))?
-    };
-    debug!("commande_nouveau_fichier Resultat transaction update : {:?}", resultat);
-
-    // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_fichier(middleware, gestionnaire, tuuid.as_str(), EVENEMENT_AJOUTER_FICHIER).await?;
-    //if let Some(c) = cuuid.as_ref() {
-        let mut event = EvenementContenuCollection::new(cuuid.to_string());
-        let fichiers_ajoutes = vec![tuuid.to_owned()];
-        // event.cuuid = cuuid.into();
-        event.fichiers_ajoutes = Some(fichiers_ajoutes);
-        emettre_evenement_contenu_collection(middleware, gestionnaire, event).await?;
-    //}
-
-    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)

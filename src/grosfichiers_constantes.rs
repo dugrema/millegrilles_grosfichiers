@@ -31,6 +31,7 @@ pub const NOM_INDEX_USER_ID_TUUIDS: &str = "user_id_tuuids";
 pub const NOM_INDEX_USER_ID: &str = "idx_user_id";
 
 pub const DOMAINE_FICHIERS_NOM: &str = "fichiers";
+pub const DOMAINE_FILECONTROLER_NOM: &str = "filecontroler";
 pub const DOMAINE_MEDIA_NOM: &str = "media";
 
 pub const NOM_Q_TRANSACTIONS: &str = "GrosFichiers/transactions";
@@ -122,6 +123,7 @@ pub const EVENEMENT_CONFIRMER_ETAT_FUUIDS: &str = "confirmerEtatFuuids";
 pub const EVENEMENT_TRANSCODAGE_PROGRES: &str = "transcodageProgres";
 pub const EVENEMENT_FICHIERS_SYNCPRET: &str = "syncPret";
 pub const EVENEMENT_FICHIERS_VISITER_FUUIDS: &str = "visiterFuuids";
+pub const EVENEMENT_FILEHOST_NEWFUUID: &str = "filehostNewFuuid";
 pub const EVENEMENT_FICHIERS_CONSIGNE: &str = "consigne";
 pub const EVENEMENT_FICHIERS_SYNC_PRIMAIRE: &str = "syncPrimaire";
 pub const EVENEMENT_REINDEXER_CONSIGNATION: &str = "reindexerConsignation";
