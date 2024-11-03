@@ -985,7 +985,8 @@ pub async fn sauvegarder_job_fichiersrep<M,J,S,U>(
 
 #[derive(Debug)]
 pub struct CommandeGetJob {
-    pub instance_id: Option<String>,
+    // pub instance_id: Option<String>,
+    pub filehost_id: Option<String>,
     /// Filtre format de fallback uniquement pour les videos
     pub fallback: Option<bool>,
 }
@@ -1343,7 +1344,7 @@ pub async fn trouver_prochaine_job_traitement<M,S>(middleware: &M, nom_collectio
 
         // Si le champ instances n'existe pas, l'instance de s'applique pas (e.g. repertoire).
         // Sinon on attend qu'au moins une instance soit disponible.
-        match commande.instance_id.as_ref() {
+        match commande.filehost_id.as_ref() {
             Some(instance_id) => {
                 filtre.insert("$or", vec![doc!{"instances": {"$exists": false}}, doc!{"instances": instance_id}]);
             },

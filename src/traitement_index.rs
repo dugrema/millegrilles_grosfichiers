@@ -558,7 +558,7 @@ pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValide, ge
         return Ok(Some(middleware.build_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre solrrelai)"}))?.0))
     }
 
-    let commande_get_job = CommandeGetJob { instance_id: commande.instance_id, fallback: None };
+    let commande_get_job = CommandeGetJob { filehost_id: commande.filehost_id, fallback: None };
     let reponse_prochaine_job = gestionnaire.indexation_job_handler.get_prochaine_job(
         middleware, m.certificat.as_ref(), commande_get_job).await?;
 

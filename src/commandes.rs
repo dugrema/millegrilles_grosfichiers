@@ -1677,7 +1677,7 @@ async fn commande_image_get_job<M>(middleware: &M, m: MessageValide, gestionnair
         return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (role doit etre media)"))?))
     }
 
-    let commande_get_job = CommandeGetJob { instance_id: commande.instance_id, fallback: None };
+    let commande_get_job = CommandeGetJob { filehost_id: commande.filehost_id, fallback: None };
     let reponse_prochaine_job = gestionnaire.image_job_handler.get_prochaine_job(
         middleware, certificat, commande_get_job).await?;
 
@@ -1711,7 +1711,7 @@ async fn commande_video_get_job<M>(middleware: &M, m: MessageValide, gestionnair
         return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (role doit etre media)"))?))
     }
 
-    let commande_get_job = CommandeGetJob { instance_id: commande.instance_id, fallback: commande.fallback };
+    let commande_get_job = CommandeGetJob { filehost_id: commande.filehost_id, fallback: commande.fallback };
     let reponse_prochaine_job = gestionnaire.video_job_handler.get_prochaine_job(
         middleware, certificat, commande_get_job).await?;
 
