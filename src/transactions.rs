@@ -620,6 +620,10 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GrosFichiersDomainManage
         doc_version_bson.insert(CHAMP_MODIFICATION, Utc::now());  // Remplacer champ
         doc_version_bson.insert(CHAMP_VISITES, visites);  // Override visites avec date i64
 
+        // Creer date de verification anterieure pour forcer reclamation initiale
+        let date_initial_verification = DateTime::from_timestamp(1704085200, 0).expect("from_timestamp");
+        doc_version_bson.insert(CONST_FIELD_LAST_VISIT_VERIFICATION, date_initial_verification);
+
         let ops = doc!{
             "$setOnInsert": doc_version_bson,
             // "$currentDate": { CHAMP_MODIFICATION: true }

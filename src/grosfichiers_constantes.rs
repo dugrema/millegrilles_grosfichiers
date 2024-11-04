@@ -175,6 +175,9 @@ pub const CHAMP_INSTANCES: &str = "instances";
 pub const CHAMP_DATE_MAJ: &str = "date_maj";
 pub const CHAMP_VISITES: &str = "visites";
 
+pub const CONST_FIELD_LAST_VISIT_VERIFICATION: &str = "last_visit_verification";
+
+
 pub const ERREUR_MEDIA_TOOMANYRETRIES: i32 = 1;
 
 pub const MEDIA_RETRY_LIMIT: i32 = 5;

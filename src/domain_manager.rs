@@ -24,7 +24,8 @@ use millegrilles_common_rust::tokio::time::{Duration as DurationTokio, timeout};
 use crate::grosfichiers_constantes::*;
 use crate::commandes::consommer_commande;
 use crate::requetes::consommer_requete;
-use crate::evenements::{calculer_quotas, consommer_evenement, HandlerEvenements};
+use crate::evenements::{consommer_evenement, HandlerEvenements};
+use crate::traitement_entretien::{calculer_quotas, verifier_visites};
 use crate::traitement_index::IndexationJobHandler;
 use crate::traitement_jobs::{JobHandlerFichiersRep, JobHandlerVersions};
 use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
@@ -552,6 +553,21 @@ where M: MongoDao + ConfigMessages
         Some(options_index_video_traite)
     ).await?;
 
+    let options_index_last_visits = IndexOptions {
+        nom_index: Some("last_visits".to_string()),
+        unique: false
+    };
+    let champs_index_last_visits = vec!(
+        ChampIndex {nom_champ: String::from(CONST_FIELD_LAST_VISIT_VERIFICATION), direction: 1},
+        ChampIndex {nom_champ: String::from("visites.nouveau"), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_VERSIONS,
+        champs_index_last_visits,
+        Some(options_index_last_visits)
+    ).await?;
+
     // Index conversion video cles
     let options_fuuids_params = IndexOptions {
         nom_index: Some(format!("fuuid_params")),
@@ -707,6 +723,12 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     // Recalculer les quotas a toutes les 3 heures
     if hours % 3 == 1 && minutes == 14 {
         calculer_quotas(middleware).await;
+    }
+
+    // Verifier visites fichiers
+    // if minutes % 3 {
+    {
+        verifier_visites(middleware, gestionnaire, true).await;
     }
 
     Ok(())

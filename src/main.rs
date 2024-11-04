@@ -10,6 +10,7 @@ mod evenements;
 mod traitement_jobs;
 mod builder;
 mod domain_manager;
+mod traitement_entretien;
 
 use log::{info};
 use millegrilles_common_rust::tokio as tokio;

@@ -378,7 +378,96 @@ async fn evenement_filehost_newfuuid<M>(middleware: &M, gestionnaire: &GrosFichi
     // Marquer la visite courante
     marquer_visites_fuuids(middleware, &vec![evenement.fuuid.clone()], date_visite, filehost_id.clone()).await?;
 
-    let filtre = doc! { "fuuids": &evenement.fuuid };
+    let fuuid = &evenement.fuuid;
+    declencher_traitement_nouveau_fuuid(middleware, gestionnaire, fuuid).await?;
+
+    // let filtre = doc! { "fuuids": &evenement.fuuid };
+    // let projection = doc! {
+    //     "user_id": 1, "tuuid": 1, "fuuid": 1, "flag_media": 1, "mimetype": 1, "visites": 1,
+    //     CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_FLAG_INDEX: 1, CHAMP_FLAG_VIDEO_TRAITE: 1,
+    //     "cle_id": 1,
+    // };
+    // let options = FindOptions::builder().projection(projection).build();
+    // let collection = middleware.get_collection_typed::<DocumentFichierDetailIds>(NOM_COLLECTION_VERSIONS)?;
+    //
+    // let mut curseur = collection.find(filtre, Some(options)).await?;
+    // while curseur.advance().await? {
+    //     let doc_fuuid = curseur.deserialize_current()?;
+    //
+    //     let fuuids = vec![doc_fuuid.fuuid.clone()];
+    //     let filehost_ids: Vec<String> = match doc_fuuid.visites {
+    //         Some(inner) => inner.into_keys().collect(),
+    //         None => {
+    //             debug!("Aucunes visites sur {}, skip", doc_fuuid.fuuid);
+    //             continue;
+    //         }
+    //     };
+    //
+    //     let cle_id = match doc_fuuid.cle_id.as_ref() {
+    //         Some(inner) => inner.as_str(),
+    //         None => doc_fuuid.fuuid.as_str()
+    //     };
+    //
+    //     let image_traitee = match doc_fuuid.flag_media_traite {
+    //         Some(inner) => inner,
+    //         None => false
+    //     };
+    //
+    //     let video_traite = match doc_fuuid.flag_video_traite {
+    //         Some(inner) => inner,
+    //         None => false
+    //     };
+    //
+    //     for instance in &filehost_ids {
+    //         marquer_visites_fuuids(middleware, &fuuids, date_visite, instance.clone()).await?;
+    //     }
+    //
+    //     emettre_evenement_maj_fichier(middleware, gestionnaire, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
+    //
+    //     if let Some(mimetype) = doc_fuuid.mimetype {
+    //         let mut parametres_index = HashMap::new();
+    //         parametres_index.insert("mimetype".to_string(), Bson::String(mimetype.to_string()));
+    //         parametres_index.insert("fuuid".to_string(), Bson::String(doc_fuuid.fuuid.clone()));
+    //         parametres_index.insert("cle_id".to_string(), Bson::String(cle_id.to_owned()));
+    //         gestionnaire.indexation_job_handler.sauvegarder_job(
+    //             middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(vec![filehost_id.clone()]),
+    //             None, Some(parametres_index), true
+    //         ).await?;
+    //
+    //         let mut champs_cles = HashMap::new();
+    //         champs_cles.insert("mimetype".to_string(), mimetype);
+    //         let mut champs_parametres = HashMap::new();
+    //         champs_parametres.insert("tuuid".to_string(), Bson::String(doc_fuuid.tuuid.clone()));
+    //         champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_owned()));
+    //
+    //         if ! image_traitee {
+    //             // Note : La job est uniquement creee si le format est une image
+    //             gestionnaire.image_job_handler.sauvegarder_job(
+    //                 middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), Some(vec![filehost_id.clone()]),
+    //                 Some(champs_cles.clone()), Some(champs_parametres.clone()), true
+    //             ).await?;
+    //         }
+    //
+    //         if ! video_traite {
+    //             // Note : La job est uniquement creee si le format est une image
+    //             gestionnaire.video_job_handler.sauvegarder_job(
+    //                 middleware, doc_fuuid.fuuid, doc_fuuid.user_id, Some(vec![filehost_id.clone()]),
+    //                 Some(champs_cles), Some(champs_parametres), true
+    //             ).await?;
+    //         }
+    //
+    //     }
+    //
+    // }
+
+    Ok(None)
+}
+
+pub async fn declencher_traitement_nouveau_fuuid<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, fuuid: &str)
+    -> Result<(), CommonError>
+    where M: GenerateurMessages + MongoDao
+{
+    let filtre = doc! { "fuuids": fuuid };
     let projection = doc! {
         "user_id": 1, "tuuid": 1, "fuuid": 1, "flag_media": 1, "mimetype": 1, "visites": 1,
         CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_FLAG_INDEX: 1, CHAMP_FLAG_VIDEO_TRAITE: 1,
@@ -391,7 +480,6 @@ async fn evenement_filehost_newfuuid<M>(middleware: &M, gestionnaire: &GrosFichi
     while curseur.advance().await? {
         let doc_fuuid = curseur.deserialize_current()?;
 
-        let fuuids = vec![doc_fuuid.fuuid.clone()];
         let filehost_ids: Vec<String> = match doc_fuuid.visites {
             Some(inner) => inner.into_keys().collect(),
             None => {
@@ -415,10 +503,6 @@ async fn evenement_filehost_newfuuid<M>(middleware: &M, gestionnaire: &GrosFichi
             None => false
         };
 
-        for instance in &filehost_ids {
-            marquer_visites_fuuids(middleware, &fuuids, date_visite, instance.clone()).await?;
-        }
-
         emettre_evenement_maj_fichier(middleware, gestionnaire, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
 
         if let Some(mimetype) = doc_fuuid.mimetype {
@@ -427,7 +511,7 @@ async fn evenement_filehost_newfuuid<M>(middleware: &M, gestionnaire: &GrosFichi
             parametres_index.insert("fuuid".to_string(), Bson::String(doc_fuuid.fuuid.clone()));
             parametres_index.insert("cle_id".to_string(), Bson::String(cle_id.to_owned()));
             gestionnaire.indexation_job_handler.sauvegarder_job(
-                middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(vec![filehost_id.clone()]),
+                middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(filehost_ids.clone()),
                 None, Some(parametres_index), true
             ).await?;
 
@@ -440,7 +524,7 @@ async fn evenement_filehost_newfuuid<M>(middleware: &M, gestionnaire: &GrosFichi
             if ! image_traitee {
                 // Note : La job est uniquement creee si le format est une image
                 gestionnaire.image_job_handler.sauvegarder_job(
-                    middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), Some(vec![filehost_id.clone()]),
+                    middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), Some(filehost_ids.clone()),
                     Some(champs_cles.clone()), Some(champs_parametres.clone()), true
                 ).await?;
             }
@@ -448,7 +532,7 @@ async fn evenement_filehost_newfuuid<M>(middleware: &M, gestionnaire: &GrosFichi
             if ! video_traite {
                 // Note : La job est uniquement creee si le format est une image
                 gestionnaire.video_job_handler.sauvegarder_job(
-                    middleware, doc_fuuid.fuuid, doc_fuuid.user_id, Some(vec![filehost_id.clone()]),
+                    middleware, doc_fuuid.fuuid, doc_fuuid.user_id, Some(filehost_ids.clone()),
                     Some(champs_cles), Some(champs_parametres), true
                 ).await?;
             }
@@ -457,7 +541,7 @@ async fn evenement_filehost_newfuuid<M>(middleware: &M, gestionnaire: &GrosFichi
 
     }
 
-    Ok(None)
+    Ok(())
 }
 
 async fn marquer_visites_fuuids<M>(
@@ -831,57 +915,6 @@ impl EvenementContenuCollection {
 
         Ok(())
     }
-}
-
-pub async fn calculer_quotas<M>(middleware: &M)
-where M: MongoDao
-{
-    if let Err(e) = calculer_quotas_fichiers_usagers(middleware).await {
-        error!("calculer_quotas Erreur calculer_quotas_fichiers_usagers : {:?}", e)
-    }
-}
-
-#[derive(Deserialize)]
-struct QuotaFichiersAggregateRow {
-    #[serde(rename="_id")]
-    user_id: String,
-    bytes_total_versions: i64,
-    nombre_total_versions: i64,
-}
-
-async fn calculer_quotas_fichiers_usagers<M>(middleware: &M)
-    -> Result<(), CommonError>
-    where M: MongoDao
-{
-    let pipeline = vec! [
-        doc!{"$match": {"supprime": false}},
-        doc!{"$group": {
-            "_id": "$user_id",
-            "bytes_total_versions": {"$sum": "$taille"},
-            "nombre_total_versions": {"$count": {}},
-        }},
-    ];
-
-    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    let collection_quotas = middleware.get_collection(NOM_COLLECTION_QUOTAS_USAGERS)?;
-    let mut result = collection_versions.aggregate(pipeline, None).await?;
-    while let Some(row) = result.next().await {
-        let row = row?;
-        let row: QuotaFichiersAggregateRow = convertir_bson_deserializable(row)?;
-        let filtre_upsert = doc!{"user_id": row.user_id};
-        let ops = doc!{
-            "$setOnInsert": {CHAMP_CREATION: Utc::now()},
-            "$set": {
-                "bytes_total_versions": row.bytes_total_versions,
-                "nombre_total_versions": row.nombre_total_versions,
-            },
-            "$currentDate": {CHAMP_MODIFICATION: true}
-        };
-        let options = UpdateOptions::builder().upsert(true).build();
-        collection_quotas.update_one(filtre_upsert, ops, options).await?;
-    }
-
-    Ok(())
 }
 
 pub async fn emettre_evenement_maj_fichier<M, S, T>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, tuuid: S, action: T)
