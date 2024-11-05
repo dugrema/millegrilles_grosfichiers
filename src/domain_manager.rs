@@ -25,7 +25,7 @@ use crate::grosfichiers_constantes::*;
 use crate::commandes::consommer_commande;
 use crate::requetes::consommer_requete;
 use crate::evenements::{consommer_evenement, HandlerEvenements};
-use crate::traitement_entretien::{calculer_quotas, verifier_visites};
+use crate::traitement_entretien::{calculer_quotas, reclamer_fichiers};
 use crate::traitement_index::IndexationJobHandler;
 use crate::traitement_jobs::{JobHandlerFichiersRep, JobHandlerVersions};
 use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
@@ -725,10 +725,11 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
         calculer_quotas(middleware).await;
     }
 
-    // Verifier visites fichiers
-    // if minutes % 3 {
-    {
-        verifier_visites(middleware, gestionnaire, true).await;
+    // Reclamer les fichiers pour eviter qu'ils soient supprimes. Execute des petites batch toutes
+    // les 3 minutes pour s'assurer que tous les fichiers sont identifies aux 3 jours.
+    if minutes % 3 == 2 {
+    //{
+        reclamer_fichiers(middleware, gestionnaire, true).await;
     }
 
     Ok(())

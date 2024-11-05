@@ -69,7 +69,7 @@ where M: MongoDao
     Ok(())
 }
 
-pub async fn verifier_visites<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, nouveau: bool)
+pub async fn reclamer_fichiers<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, nouveau: bool)
 where M: GenerateurMessages + MongoDao
 {
     debug!("verifier_visites Debut");
@@ -93,6 +93,8 @@ struct FuuidRow {
     fuuids_reclames: Vec<String>
 }
 
+const VISIT_BATCH_SIZE: usize = 1000;
+
 async fn verifier_visites_nouvelles<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager) -> Result<(), CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -104,7 +106,7 @@ async fn verifier_visites_nouvelles<M>(middleware: &M, gestionnaire: &GrosFichie
     let expiration = now - delai_expiration;
     let expiration_secs = expiration.timestamp();
 
-    debug!("verifier_visites_nouvelles Verifier nouveaux (visites.nouveau < 3 jours, epoch {})", expiration_secs);
+    debug!("verifier_visites_nouvelles Verifier nouveaux (visites.nouveau, epoch {} et plus recent)", expiration_secs);
 
     let filtre = doc!{
         "visites.nouveau": {"$gte": expiration_secs},
@@ -113,18 +115,18 @@ async fn verifier_visites_nouvelles<M>(middleware: &M, gestionnaire: &GrosFichie
 
     let collection_versions = middleware.get_collection_typed::<FuuidRow>(NOM_COLLECTION_VERSIONS)?;
     let options = FindOptions::builder()
-        .limit(1000)
+        .limit(VISIT_BATCH_SIZE as i64)
         .hint(Hint::Name("last_visits".to_string()))  // Sorts by last_visit ASC
         .projection(doc!{"fuuids_reclames": 1})
         .build();
 
     let visits = {
         let mut curseur = collection_versions.find(filtre, options).await?;
-        let mut visits = Vec::with_capacity(1000);
+        let mut visits = Vec::with_capacity(VISIT_BATCH_SIZE);
         while let Some(row) = curseur.next().await {
             let fuuids = row?.fuuids_reclames;
             visits.extend(fuuids);
-            if visits.len() > 1000 {
+            if visits.len() > VISIT_BATCH_SIZE {
                 // Already 1000 items, break and continue with another batch later
                 break
             }
@@ -134,6 +136,11 @@ async fn verifier_visites_nouvelles<M>(middleware: &M, gestionnaire: &GrosFichie
     };
 
     debug!("verifier_visites_nouvelles Verifier {} fuuids", visits.len());
+
+    if visits.len() == 0 {
+        return Ok(())  // Nothing to do
+    }
+
     let reponse = verifier_visites_topologies(middleware, &visits).await?;
     if let Some(visites) = reponse.visits {
         debug!("verifier_visites_nouvelles Visite {} nouveaux fuuids", visites.len());
@@ -158,10 +165,10 @@ where M: GenerateurMessages + MongoDao
 
     let now = Utc::now();
 
-    // Faire une verification des fichiers qui sont encore "nouveaux" avec une date de
-    // creation recente (< 3 jours).
-    // let delai_expiration = Duration::from_secs(86_400*3);
-    let delai_expiration = Duration::from_secs(3 * 60);
+    // Faire une reclamation des fichiers regulierement (tous les 3 jours) pour eviter qu'ils soient
+    // consideres comme orphelins (et supprimes).
+    let delai_expiration = Duration::from_secs(86_400*3);
+    // let delai_expiration = Duration::from_secs(3 * 60);
     let expiration = now - delai_expiration;
 
     let filtre = doc!{
@@ -174,37 +181,48 @@ where M: GenerateurMessages + MongoDao
 
     let collection_versions = middleware.get_collection_typed::<FuuidRow>(NOM_COLLECTION_VERSIONS)?;
     let options = FindOptions::builder()
-        .limit(1000)
+        .limit(VISIT_BATCH_SIZE as i64)
         .hint(Hint::Name("last_visits".to_string()))
         .projection(doc!{"fuuids_reclames": 1})
         .build();
 
-    let visits = {
-        let mut curseur = collection_versions.find(filtre, options).await?;
-        let mut visits = Vec::with_capacity(1000);
-        while let Some(row) = curseur.next().await {
-            let fuuids = row?.fuuids_reclames;
-            visits.extend(fuuids);
-            if visits.len() > 1000 {
-                // Already 1000 items, break and continue with another batch later
-                break
+    for batch_no in 1..11 {  // Max of 10 batches at once
+        let visits = {
+            let mut curseur = collection_versions.find(filtre.clone(), options.clone()).await?;
+            let mut visits = Vec::with_capacity(VISIT_BATCH_SIZE);
+            while let Some(row) = curseur.next().await {
+                let fuuids = row?.fuuids_reclames;
+                visits.extend(fuuids);
+                if visits.len() > VISIT_BATCH_SIZE {
+                    // Already 1000 items, break and continue with another batch later
+                    break
+                }
+            }
+
+            visits
+        };
+
+        debug!("verifier_visites_expirees Batch {} verifier {} fuuids", batch_no, visits.len());
+
+        if visits.len() == 0 {
+            break  // Nothing to do
+        }
+
+        let reponse = verifier_visites_topologies(middleware, &visits).await?;
+        if let Some(visites) = reponse.visits {
+            debug!("verifier_visites_expirees Visite {} fuuids", visites.len());
+            for item in visites {
+                sauvegarder_visites(middleware, item.fuuid.as_str(), &item.visits).await?;
             }
         }
-
-        visits
-    };
-
-    debug!("verifier_visites_expirees Verifier {} fuuids", visits.len());
-    let reponse = verifier_visites_topologies(middleware, &visits).await?;
-    if let Some(visites) = reponse.visits {
-        debug!("verifier_visites_expirees Visite {} fuuids", visites.len());
-        for item in visites {
-            sauvegarder_visites(middleware, item.fuuid.as_str(), &item.visits).await?;
+        if let Some(unknown) = reponse.unknown {
+            debug!("verifier_visites_expirees {} fuuids inconnus", unknown.len());
+            sauvegarder_fuuid_inconnu(middleware, &unknown).await?;
         }
-    }
-    if let Some(unknown) = reponse.unknown {
-        debug!("verifier_visites_expirees {} fuuids inconnus", unknown.len());
-        sauvegarder_fuuid_inconnu(middleware, &unknown).await?;
+
+        if visits.len() < VISIT_BATCH_SIZE {
+            break  // All current files covered
+        }
     }
 
     Ok(())
