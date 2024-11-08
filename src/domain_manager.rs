@@ -7,7 +7,7 @@ use millegrilles_common_rust::backup::BackupStarter;
 use millegrilles_common_rust::certificats::ValidateurX509;
 use millegrilles_common_rust::chrono::Timelike;
 use millegrilles_common_rust::configuration::ConfigMessages;
-use millegrilles_common_rust::constantes::{Securite, CHAMP_CREATION, CHAMP_MODIFICATION, DEFAULT_Q_TTL};
+use millegrilles_common_rust::constantes::{Securite, CHAMP_CREATION, CHAMP_MODIFICATION, DEFAULT_Q_TTL, TOPOLOGIE_NOM_DOMAINE};
 use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, ConsommateurMessagesBus, GestionnaireBusMillegrilles, GestionnaireDomaineV2};
 use millegrilles_common_rust::domaines_v2::GestionnaireDomaineSimple;
@@ -248,6 +248,8 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_FICHIERS_SYNC_PRIMAIRE), exchange: Securite::L2Prive});
 
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FILECONTROLER_NOM, EVENEMENT_FILEHOST_NEWFUUID), exchange: Securite::L1Public});
+    rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", TOPOLOGIE_NOM_DOMAINE, EVENEMENT_RESET_VISITS_CLAIMS), exchange: Securite::L1Public});
+
 
     let mut queues = Vec::new();
 
@@ -727,8 +729,8 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
 
     // Reclamer les fichiers pour eviter qu'ils soient supprimes. Execute des petites batch toutes
     // les 3 minutes pour s'assurer que tous les fichiers sont identifies aux 3 jours.
-    if minutes % 3 == 2 {
-    //{
+    if minutes % 3 == 2
+    {
         reclamer_fichiers(middleware, gestionnaire, true).await;
     }
 

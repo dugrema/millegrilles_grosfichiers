@@ -128,6 +128,7 @@ pub const EVENEMENT_FICHIERS_CONSIGNE: &str = "consigne";
 pub const EVENEMENT_FICHIERS_SYNC_PRIMAIRE: &str = "syncPrimaire";
 pub const EVENEMENT_REINDEXER_CONSIGNATION: &str = "reindexerConsignation";
 pub const EVENEMENT_ANNULER_JOB_VIDEO: &str = "annulerJobVideo";
+pub const EVENEMENT_RESET_VISITS_CLAIMS: &str = "resetVisitsClaims";
 
 pub const CHAMP_FUUID: &str = "fuuid";  // UUID fichier
 pub const CHAMP_FUUIDS: &str = "fuuids";

@@ -172,10 +172,7 @@ where M: GenerateurMessages + MongoDao
     let expiration = now - delai_expiration;
 
     let filtre = doc!{
-        "$or": [
-            {CONST_FIELD_LAST_VISIT_VERIFICATION: {"$lte": expiration}},
-            {CONST_FIELD_LAST_VISIT_VERIFICATION: None::<DateTime<Utc>>}  // Required for migration - TODO Remove when done.
-        ],
+        CONST_FIELD_LAST_VISIT_VERIFICATION: {"$lte": expiration},
         "supprime": false,
     };
 

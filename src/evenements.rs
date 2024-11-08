@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use millegrilles_common_rust::{chrono, serde_json, serde_json::json};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{Bson, doc, Document};
@@ -9,7 +9,7 @@ use millegrilles_common_rust::bson::{Bson, doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::constantes::*;
-use millegrilles_common_rust::constantes::Securite::{L1Public, L2Prive};
+use millegrilles_common_rust::constantes::Securite::{L1Public, L2Prive, L3Protege};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
@@ -64,6 +64,7 @@ pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GrosFichiersD
         EVENEMENT_FILEHOST_NEWFUUID => evenement_filehost_newfuuid(middleware, gestionnaire, m).await,
         EVENEMENT_FICHIERS_SYNC_PRIMAIRE => evenement_fichier_sync_primaire(middleware, gestionnaire, m).await,
         EVENEMENT_CEDULE => Ok(None),  // Obsolete
+        EVENEMENT_RESET_VISITS_CLAIMS => evenement_reset_claims(middleware, gestionnaire, m).await,
         _ => Err(format!("grosfichiers.consommer_evenement: Mauvais type d'action pour un evenement : {}", action))?,
     }
 }
@@ -1005,4 +1006,30 @@ where
     };
 
     Ok(())
+}
+
+async fn evenement_reset_claims<M>(middleware: &M, _gestionnaire: &GrosFichiersDomainManager, m: MessageValide)
+                                   -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    if !m.certificat.verifier_exchanges(vec![L3Protege])? {
+        error!("evenement_reset_claims Acces refuse, certificat n'est pas d'un exchange L1");
+        return Ok(None)
+    }
+    if !m.certificat.verifier_domaines(vec![TOPOLOGIE_NOM_DOMAINE.into()])? {
+        error!("evenement_reset_claims Acces refuse, certificat n'est pas de domaine CoreTopologie");
+        return Ok(None)
+    }
+
+    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let date_initial_verification = DateTime::from_timestamp(1704085200, 0).expect("from_timestamp");
+    let ops = doc! {
+        "$set": {CONST_FIELD_LAST_VISIT_VERIFICATION: date_initial_verification},
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    collection_versions.update_many(doc!{}, ops, None).await?;
+
+    info!("Visits/claims reset done");
+
+    Ok(None)
 }
