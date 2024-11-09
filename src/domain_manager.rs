@@ -728,10 +728,11 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     }
 
     // Reclamer les fichiers pour eviter qu'ils soient supprimes. Execute des petites batch toutes
-    // les 3 minutes pour s'assurer que tous les fichiers sont identifies aux 3 jours.
-    if minutes % 3 == 2
+    // les 5 minutes pour s'assurer que tous les fichiers sont identifies aux 3 jours.
+    //if minutes % 3 == 2
     {
-        reclamer_fichiers(middleware, gestionnaire, true).await;
+        let nouveaux = minutes % 5 != 2;  // Check fichiers presents nul part toutse les minutes
+        reclamer_fichiers(middleware, gestionnaire, nouveaux).await;
     }
 
     Ok(())
