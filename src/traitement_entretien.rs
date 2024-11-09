@@ -74,15 +74,15 @@ where M: GenerateurMessages + MongoDao
 {
     debug!("verifier_visites Debut");
 
-    if nouveau {
-        if let Err(e) = verifier_visites_nouvelles(middleware, gestionnaire).await {
-            error!("verifier_visites Erreur entretien visites nouveaux: {:?}", e);
-        }
+    if let Err(e) = verifier_visites_nouvelles(middleware, gestionnaire).await {
+        error!("verifier_visites Erreur entretien visites nouveaux: {:?}", e);
     }
 
-    // Detecter fichiers
-    if let Err(e) = verifier_visites_expirees(middleware).await {
-        error!("verifier_visites Erreur entretien visites fichiers: {:?}", e);
+    if ! nouveau {
+        // Detecter fichiers
+        if let Err(e) = verifier_visites_expirees(middleware).await {
+            error!("verifier_visites Erreur entretien visites fichiers: {:?}", e);
+        }
     }
 
     debug!("verifier_visites Fin");
