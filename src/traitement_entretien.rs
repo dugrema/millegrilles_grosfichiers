@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use log::{debug, error};
 
@@ -205,17 +205,28 @@ where M: GenerateurMessages + MongoDao
             break  // Nothing to do
         }
 
+        let mut visits_set = HashSet::new();
+        visits_set.extend(visits.iter().map(|v| v.as_str()));
+
         let reponse = verifier_visites_topologies(middleware, &visits).await?;
         if let Some(visites) = reponse.visits {
             debug!("verifier_visites_expirees Visite {} fuuids", visites.len());
             for item in visites {
                 sauvegarder_visites(middleware, item.fuuid.as_str(), &item.visits).await?;
+                visits_set.remove(item.fuuid.as_str());
             }
         }
         if let Some(unknown) = reponse.unknown {
             debug!("verifier_visites_expirees {} fuuids inconnus", unknown.len());
             sauvegarder_fuuid_inconnu(middleware, &unknown).await?;
+            for f in &unknown {
+                visits_set.remove(f.as_str());
+            }
         }
+
+        // Record remaining fuuids as also missing
+        let remaining: Vec<String> = visits_set.iter().map(|v| v.to_string()).collect();
+        sauvegarder_fuuid_inconnu(middleware, &remaining).await?;
 
         if visits.len() < VISIT_BATCH_SIZE {
             break  // All current files covered
