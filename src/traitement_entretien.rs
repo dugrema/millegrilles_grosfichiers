@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use log::{debug, error};
+use log::{debug, error, warn};
 
 use millegrilles_common_rust::bson::doc;
 use millegrilles_common_rust::error::Error as CommonError;
@@ -190,7 +190,7 @@ where M: GenerateurMessages + MongoDao
             while let Some(row) = curseur.next().await {
                 let fuuids = row?.fuuids_reclames;
                 visits.extend(fuuids);
-                if visits.len() > VISIT_BATCH_SIZE {
+                if visits.len() >= VISIT_BATCH_SIZE {
                     // Already 1000 items, break and continue with another batch later
                     break
                 }
@@ -205,6 +205,7 @@ where M: GenerateurMessages + MongoDao
             break  // Nothing to do
         }
 
+        // Faire un set de fuuids pour s'assurer qu'ils sont tous dans les reponses
         let mut visits_set = HashSet::new();
         visits_set.extend(visits.iter().map(|v| v.as_str()));
 
@@ -224,9 +225,12 @@ where M: GenerateurMessages + MongoDao
             }
         }
 
-        // Record remaining fuuids as also missing
-        let remaining: Vec<String> = visits_set.iter().map(|v| v.to_string()).collect();
-        sauvegarder_fuuid_inconnu(middleware, &remaining).await?;
+        if visits_set.len() > 0 {
+            warn!("verifier_visites_expirees {} fuuids sans reponse sur claim, marquer inconnus", visits_set.len());
+            // Record remaining fuuids as also missing
+            let remaining: Vec<String> = visits_set.iter().map(|v| v.to_string()).collect();
+            sauvegarder_fuuid_inconnu(middleware, &remaining).await?;
+        }
 
         if visits.len() < VISIT_BATCH_SIZE {
             break  // All current files covered
@@ -284,7 +288,8 @@ async fn sauvegarder_visites<M>(middleware: &M, fuuid: &str, visites: &HashMap<S
     };
 
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    collection.update_one(filtre, ops, None).await?;
+    // Note : update many - la table de versions est unique par fuuid/user_id et fuuid/tuuid.
+    collection.update_many(filtre, ops, None).await?;
 
     Ok(())
 }
