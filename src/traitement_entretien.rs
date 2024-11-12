@@ -183,7 +183,7 @@ where M: GenerateurMessages + MongoDao
         .projection(doc!{"fuuids_reclames": 1})
         .build();
 
-    for batch_no in 1..101 {  // Max of 100 batches at once
+    for batch_no in 1..3 {  // Max of 100 batches at once
         let visits = {
             let mut curseur = collection_versions.find(filtre.clone(), options.clone()).await?;
             let mut visits = Vec::with_capacity(VISIT_BATCH_SIZE);
