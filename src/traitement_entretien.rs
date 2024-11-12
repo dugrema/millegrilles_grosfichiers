@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 
 use millegrilles_common_rust::bson::doc;
 use millegrilles_common_rust::error::Error as CommonError;
@@ -199,7 +199,7 @@ where M: GenerateurMessages + MongoDao
             visits
         };
 
-        debug!("verifier_visites_expirees Batch {} verifier {} fuuids", batch_no, visits.len());
+        info!("verifier_visites_expirees Batch {} verifier {} fuuids", batch_no, visits.len());
 
         if visits.len() == 0 {
             break  // Nothing to do
