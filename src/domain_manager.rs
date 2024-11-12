@@ -731,7 +731,7 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     // les 5 minutes pour s'assurer que tous les fichiers sont identifies aux 3 jours.
     //if minutes % 3 == 2
     {
-        let nouveaux = minutes % 5 != 2;  // Check fichiers presents nul part toutse les minutes
+        let nouveaux = minutes % 3 != 2;  // Check fichiers presents nul part toutse les minutes
         reclamer_fichiers(middleware, gestionnaire, nouveaux).await;
     }
 
