@@ -1794,7 +1794,9 @@ async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, ges
 
     // Identifier le user_id de l'usager a ajouter
     let user_contact_id = {
-        let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCOMPTES, "getUserIdParNomUsager", vec![Securite::L4Secure])
+        let routage = RoutageMessageAction::builder(
+            DOMAINE_NOM_MAITREDESCOMPTES, "getUserIdParNomUsager", vec![Securite::L3Protege])
+            .timeout_blocking(4_000)
             .build();
         let requete = json!({ "noms_usagers": [commande.nom_usager] });
         match middleware.transmettre_requete(routage, &requete).await {
@@ -1846,7 +1848,7 @@ async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, ges
                 }
         },
             Err(e) => {
-                debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact, SKIP : {:?}", e);;
+                warn!("commande_ajouter_contact_local Erreur chargement user_id pour contact, SKIP : {:?}", e);;
                 // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
                 return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
             }
