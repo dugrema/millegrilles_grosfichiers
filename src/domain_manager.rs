@@ -27,7 +27,6 @@ use crate::requetes::consommer_requete;
 use crate::evenements::{consommer_evenement, HandlerEvenements};
 use crate::traitement_entretien::{calculer_quotas, reclamer_fichiers};
 use crate::traitement_index::IndexationJobHandler;
-use crate::traitement_jobs::{JobHandlerFichiersRep, JobHandlerVersions};
 use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
 use crate::transactions::aiguillage_transaction;
 
@@ -203,7 +202,7 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         COMMANDE_NOUVEAU_FICHIER,
         COMMANDE_VIDEO_TRANSCODER,
         // COMMANDE_VIDEO_ARRETER_CONVERSION,
-        COMMANDE_VIDEO_GET_JOB,
+        // COMMANDE_VIDEO_GET_JOB,
         COMMANDE_COMPLETER_PREVIEWS,
     ];
     for cmd in commandes_privees {
@@ -222,9 +221,9 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         TRANSACTION_IMAGE_SUPPRIMER_JOB,
         TRANSACTION_VIDEO_SUPPRIMER_JOB,
         TRANSACTION_CONFIRMER_FICHIER_INDEXE,
-        COMMANDE_INDEXATION_GET_JOB,
-        COMMANDE_VIDEO_GET_JOB,
-        COMMANDE_IMAGE_GET_JOB,
+        // COMMANDE_INDEXATION_GET_JOB,
+        // COMMANDE_VIDEO_GET_JOB,
+        // COMMANDE_IMAGE_GET_JOB,
     ];
     for cmd in commandes_secures {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L4Secure});
@@ -715,12 +714,12 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     let hours = date_epoch.hour();
 
     // Executer a intervalle regulier
-    if minutes % 5 == 2 {
-        debug!("traiter_cedule Generer index et media manquants");
-        gestionnaire.image_job_handler.entretien(middleware, gestionnaire, None).await;
-        gestionnaire.video_job_handler.entretien(middleware, gestionnaire, None).await;
-        gestionnaire.indexation_job_handler.entretien(middleware, gestionnaire, None).await;
-    }
+    // if minutes % 5 == 2 {
+    //     debug!("traiter_cedule Generer index et media manquants");
+    //     gestionnaire.image_job_handler.entretien(middleware, gestionnaire, None).await;
+    //     gestionnaire.video_job_handler.entretien(middleware, gestionnaire, None).await;
+    //     gestionnaire.indexation_job_handler.entretien(middleware, gestionnaire, None).await;
+    // }
 
     // Recalculer les quotas a toutes les 3 heures
     if hours % 3 == 1 && minutes == 14 {

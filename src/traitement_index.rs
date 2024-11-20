@@ -26,7 +26,7 @@ use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::error::Error as CommonError;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
-use crate::traitement_jobs::{BackgroundJob, CommandeGetJob, get_prochaine_job_versions, JobHandler, JobHandlerFichiersRep, JobHandlerVersions, ReponseJob};
+use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job};
 use crate::transactions::{NodeFichierRepBorrowed, TransactionSupprimerOrphelins};
 
 const EVENEMENT_INDEXATION_DISPONIBLE: &str = "jobIndexationDisponible";
@@ -35,38 +35,38 @@ const REQUETE_LISTE_NOEUDS: &str = "listeNoeuds";
 #[derive(Clone, Debug)]
 pub struct IndexationJobHandler {}
 
-#[async_trait]
-impl JobHandler for IndexationJobHandler {
+// #[async_trait]
+// impl JobHandler for IndexationJobHandler {
+//
+//     fn get_nom_collection(&self) -> &str { NOM_COLLECTION_INDEXATION_JOBS }
+//
+//     fn get_nom_flag(&self) -> &str { CHAMP_FLAG_INDEX }
+//
+//     fn get_action_evenement(&self) -> &str { EVENEMENT_INDEXATION_DISPONIBLE }
+//
+//     async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, job: BackgroundJob, erreur: S)
+//         -> Result<(), CommonError>
+//         where
+//             M: ValidateurX509 + GenerateurMessages + MongoDao,
+//             G: GestionnaireDomaineV2,
+//             S: ToString + Send
+//     {
+//         let erreur = erreur.to_string();
+//
+//         // let tuuid = match job.tuuid {
+//         //     Some(inner) => inner,
+//         //     None => Err(format!("traitement_index.JobHandler Tuuid manquant"))?
+//         // };
+//         let tuuid = job.tuuid;
+//         let user_id = job.user_id;
+//
+//         self.set_flag(middleware, tuuid, Some(user_id), None, true).await?;
+//
+//         Ok(())
+//     }
+// }
 
-    fn get_nom_collection(&self) -> &str { NOM_COLLECTION_INDEXATION_JOBS }
-
-    fn get_nom_flag(&self) -> &str { CHAMP_FLAG_INDEX }
-
-    fn get_action_evenement(&self) -> &str { EVENEMENT_INDEXATION_DISPONIBLE }
-
-    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, job: BackgroundJob, erreur: S)
-        -> Result<(), CommonError>
-        where
-            M: ValidateurX509 + GenerateurMessages + MongoDao,
-            G: GestionnaireDomaineV2,
-            S: ToString + Send
-    {
-        let erreur = erreur.to_string();
-
-        // let tuuid = match job.tuuid {
-        //     Some(inner) => inner,
-        //     None => Err(format!("traitement_index.JobHandler Tuuid manquant"))?
-        // };
-        let tuuid = job.tuuid;
-        let user_id = job.user_id;
-
-        self.set_flag(middleware, tuuid, Some(user_id), None, true).await?;
-
-        Ok(())
-    }
-}
-
-impl JobHandlerFichiersRep for IndexationJobHandler {}
+// impl JobHandlerFichiersRep for IndexationJobHandler {}
 
 // /// Set le flag indexe a true pour le fuuid (version)
 // pub async fn set_flag_indexe<M,S,T>(middleware: &M, fuuid: S, user_id: T) -> Result<(), CommonError>
@@ -120,10 +120,10 @@ pub async fn reset_flag_indexe<M,G>(middleware: &M, gestionnaire: &G, job_handle
 
     // Commencer a creer les jobs d'indexation
     // traiter_indexation_batch(middleware, LIMITE_INDEXATION_BATCH).await?;
-    job_handler.entretien(middleware, gestionnaire, Some(LIMITE_INDEXATION_BATCH)).await;
+    //job_handler.entretien(middleware, gestionnaire, Some(LIMITE_INDEXATION_BATCH)).await;
 
     // Emettre un evenement pour indiquer que de nouvelles jobs sont disponibles
-    let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_REINDEXER_CONSIGNATION, vec![Securite::L4Secure])
+    let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_REINDEXER_CONSIGNATION, vec![Securite::L3Protege])
         .build();
     middleware.emettre_evenement(routage, &json!({})).await?;
 
@@ -539,33 +539,33 @@ pub fn index_grosfichiers() -> Value {
     })
 }
 
-pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
-{
-    debug!("commande_indexation_get_job Consommer commande : {:?}", m.type_message);
-    let message_ref = m.message.parse()?;
-    let commande: CommandeIndexationGetJob = message_ref.contenu()?.deserialize()?;
-
-    // Verifier autorisation
-    if ! m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
-        info!("commande_indexation_get_job Exchange n'est pas de niveau 4");
-        return Ok(Some(middleware.build_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}))?.0))
-    }
-
-    if ! m.certificat.verifier_roles(vec![RolesCertificats::SolrRelai])? {
-        info!("commande_indexation_get_job Role n'est pas solrrelai");
-        return Ok(Some(middleware.build_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre solrrelai)"}))?.0))
-    }
-
-    let commande_get_job = CommandeGetJob { filehost_id: commande.filehost_id, fallback: None };
-    let reponse_prochaine_job = gestionnaire.indexation_job_handler.get_prochaine_job(
-        middleware, m.certificat.as_ref(), commande_get_job).await?;
-
-    debug!("commande_indexation_get_job Prochaine job : {:?}", reponse_prochaine_job.tuuid);
-    let enveloppe_privee = middleware.get_enveloppe_signature();
-    Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, m.certificat.as_ref())?.0))
-}
+// pub async fn commande_indexation_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+//     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+//     where M: GenerateurMessages + MongoDao + ValidateurX509,
+// {
+//     debug!("commande_indexation_get_job Consommer commande : {:?}", m.type_message);
+//     let message_ref = m.message.parse()?;
+//     let commande: CommandeIndexationGetJob = message_ref.contenu()?.deserialize()?;
+//
+//     // Verifier autorisation
+//     if ! m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
+//         info!("commande_indexation_get_job Exchange n'est pas de niveau 4");
+//         return Ok(Some(middleware.build_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}))?.0))
+//     }
+//
+//     if ! m.certificat.verifier_roles(vec![RolesCertificats::SolrRelai])? {
+//         info!("commande_indexation_get_job Role n'est pas solrrelai");
+//         return Ok(Some(middleware.build_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre solrrelai)"}))?.0))
+//     }
+//
+//     let commande_get_job = CommandeGetJob { filehost_id: commande.filehost_id, fallback: None };
+//     let reponse_prochaine_job = gestionnaire.indexation_job_handler.get_prochaine_job(
+//         middleware, m.certificat.as_ref(), commande_get_job).await?;
+//
+//     debug!("commande_indexation_get_job Prochaine job : {:?}", reponse_prochaine_job.tuuid);
+//     let enveloppe_privee = middleware.get_enveloppe_signature();
+//     Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, m.certificat.as_ref())?.0))
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ParametresRecherche {
@@ -849,4 +849,19 @@ async fn entretien_retirer_supprimes_sans_visites<M>(middleware: &M, gestionnair
         middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_SUPPRIMER_ORPHELINS).await?;
 
     Ok(())
+}
+
+pub async fn set_flag_index_traite<M>(middleware: &M, tuuid: &str, fuuid: &str) -> Result<(), CommonError> {
+    todo!()
+
+    // Set flag fichierrep
+    // Set flag versionFichiers
+    // Supprimer job indexation
+
+}
+
+async fn sauvegarder_job_index<M>(middleware: &M, job: &BackgroundJob) -> Result<BackgroundJob, CommonError>
+where M: MongoDao
+{
+    sauvegarder_job(middleware, job, NOM_COLLECTION_INDEXATION_JOBS).await
 }

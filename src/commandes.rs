@@ -29,12 +29,11 @@ use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_maj_fichier, evenement_fichiers_syncpret, EvenementContenuCollection};
 
-// use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection};
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids};
-use crate::traitement_index::{commande_indexation_get_job, reset_flag_indexe};
-use crate::traitement_jobs::{CommandeGetJob, JobHandler, JobHandlerFichiersRep, JobHandlerVersions, ParametresConfirmerJobIndexation, ReponseJob};
-use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_video};
+use crate::traitement_index::{reset_flag_indexe, set_flag_index_traite};
+use crate::traitement_jobs::{JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
+use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2};
 use crate::transactions::*;
 
 const REQUETE_MAITREDESCLES_VERIFIER_PREUVE: &str = "verifierPreuve";
@@ -96,18 +95,20 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         // COMMANDE_NOUVEAU_FICHIER => commande_nouveau_fichier(middleware, m, gestionnaire).await,
         // COMMANDE_GET_CLE_JOB_CONVERSION => commande_get_cle_job_conversion(middleware, m, gestionnaire).await,
 
-        COMMANDE_IMAGE_GET_JOB => commande_image_get_job(middleware, m, gestionnaire).await,
-        TRANSACTION_IMAGE_SUPPRIMER_JOB => commande_supprimer_job_image(middleware, m, gestionnaire).await,
+        // COMMANDE_IMAGE_GET_JOB => commande_image_get_job(middleware, m, gestionnaire).await,
+        // TRANSACTION_IMAGE_SUPPRIMER_JOB => commande_supprimer_job_image(middleware, m, gestionnaire).await,
+        TRANSACTION_IMAGE_SUPPRIMER_JOB_V2 => commande_supprimer_job_image_v2(middleware, m, gestionnaire).await,
 
         // Video
         COMMANDE_VIDEO_TRANSCODER => commande_video_convertir(middleware, m, gestionnaire).await,
         // COMMANDE_VIDEO_ARRETER_CONVERSION => commande_video_arreter_conversion(middleware, m, gestionnaire).await,
-        COMMANDE_VIDEO_GET_JOB => commande_video_get_job(middleware, m, gestionnaire).await,
-        TRANSACTION_VIDEO_SUPPRIMER_JOB => commande_supprimer_job_video(middleware, m, gestionnaire).await,
+        // COMMANDE_VIDEO_GET_JOB => commande_video_get_job(middleware, m, gestionnaire).await,
+        // TRANSACTION_VIDEO_SUPPRIMER_JOB => commande_supprimer_job_video(middleware, m, gestionnaire).await,
+        TRANSACTION_VIDEO_SUPPRIMER_JOB_V2 => commande_supprimer_job_video_v2(middleware, m, gestionnaire).await,
 
         // Indexation
         COMMANDE_REINDEXER => commande_reindexer(middleware, m, gestionnaire).await,
-        COMMANDE_INDEXATION_GET_JOB => commande_indexation_get_job(middleware, m, gestionnaire).await,
+        // COMMANDE_INDEXATION_GET_JOB => commande_indexation_get_job(middleware, m, gestionnaire).await,
         TRANSACTION_CONFIRMER_FICHIER_INDEXE => commande_confirmer_fichier_indexe(middleware, m, gestionnaire).await,
 
         // Partage de collections
@@ -290,19 +291,21 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
 
                 // Creer jobs de conversion
                 if flag_media_traite == false {
-                    if let Err(e) = gestionnaire.image_job_handler.sauvegarder_job(
-                        middleware, &fuuid, &user_id, None,
-                        Some(champs_cles.clone()), Some(champs_parametres.clone()), true).await {
-                        error!("commande_decrire_fichier Erreur image sauvegarder_job : {:?}", e);
-                    }
+                    todo!()
+                    // if let Err(e) = gestionnaire.image_job_handler.sauvegarder_job(
+                    //     middleware, &fuuid, &user_id, None,
+                    //     Some(champs_cles.clone()), Some(champs_parametres.clone()), true).await {
+                    //     error!("commande_decrire_fichier Erreur image sauvegarder_job : {:?}", e);
+                    // }
                 }
 
                 if flag_video_traite == false {
-                    if let Err(e) = gestionnaire.video_job_handler.sauvegarder_job(
-                        middleware, fuuid, user_id, None,
-                        Some(champs_cles), Some(champs_parametres), false).await {
-                        error!("commande_decrire_fichier Erreur video sauvegarder_job : {:?}", e);
-                    }
+                    todo!()
+                    // if let Err(e) = gestionnaire.video_job_handler.sauvegarder_job(
+                    //     middleware, fuuid, user_id, None,
+                    //     Some(champs_cles), Some(champs_parametres), false).await {
+                    //     error!("commande_decrire_fichier Erreur video sauvegarder_job : {:?}", e);
+                    // }
                 }
             } else {
                 warn!("commande_decrire_fichier Erreur utilisation fuuid sur changement (None)");
@@ -1294,9 +1297,10 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, gestio
         let mut champs_parametres = HashMap::new();
         champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_string()));
 
-        gestionnaire.image_job_handler.sauvegarder_job(
-            middleware, fuuid, &user_id,
-            Some(instances), Some(champs_cles), Some(champs_parametres), true).await?;
+        todo!()
+        // gestionnaire.image_job_handler.sauvegarder_job(
+        //     middleware, fuuid, &user_id,
+        //     Some(instances), Some(champs_cles), Some(champs_parametres), true).await?;
     }
 
     // let reset = match commande.reset {
@@ -1341,7 +1345,7 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValide, 
     };
 
     // Autorisation : doit etre un message provenant d'un composant protege
-    match m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
+    match m.certificat.verifier_exchanges(vec![Securite::L3Protege])? {
         true => Ok(()),
         false => Err(format!("commandes.commande_completer_previews: Commande autorisation invalide pour message {:?}", m.type_message)),
     }?;
@@ -1351,11 +1355,15 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValide, 
     //     Some(inner) => inner,
     //     None => Err(format!("commande_confirmer_fichier_indexe Tuuid manquant de la commande pour {:?}", commande))?
     // };
-    let tuuid = commande.tuuid;
-    if let Err(e) = gestionnaire.indexation_job_handler.set_flag(
-        middleware, tuuid, Some(commande.user_id), None, true).await {
+    let tuuid = commande.tuuid.as_str();
+    let fuuid = commande.fuuid.as_str();
+    if let Err(e) = set_flag_index_traite(middleware, tuuid, fuuid).await {
         error!("commande_confirmer_fichier_indexe Erreur traitement flag : {:?}", e);
     }
+    // if let Err(e) = gestionnaire.indexation_job_handler.set_flag(
+    //     middleware, tuuid, Some(commande.user_id), None, true).await {
+    //     error!("commande_confirmer_fichier_indexe Erreur traitement flag : {:?}", e);
+    // }
 
     Ok(None)
 }
@@ -1653,71 +1661,71 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, gestionna
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn commande_image_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
-{
-    debug!("commande_image_get_job Consommer commande : {:?}", m.type_message);
-    let commande: CommandeImageGetJob = {
-        let message_ref = m.message.parse()?;
-        message_ref.contenu()?.deserialize()?
-    };
+// async fn commande_image_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+//     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+//     where M: GenerateurMessages + MongoDao + ValidateurX509,
+// {
+//     debug!("commande_image_get_job Consommer commande : {:?}", m.type_message);
+//     let commande: CommandeImageGetJob = {
+//         let message_ref = m.message.parse()?;
+//         message_ref.contenu()?.deserialize()?
+//     };
+//
+//     let certificat = m.certificat.as_ref();
+//
+//     // Verifier autorisation
+//     if ! m.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
+//         info!("commande_image_get_job Exchange n'est pas de niveau 3 ou 4");
+//         // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
+//         return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (exchange)"))?))
+//     }
+//     if ! m.certificat.verifier_roles(vec![RolesCertificats::Media])? {
+//         info!("commande_image_get_job Role n'est pas media");
+//         // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre media)"}), None)?))
+//         return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (role doit etre media)"))?))
+//     }
+//
+//     let commande_get_job = CommandeGetJob { filehost_id: commande.filehost_id, fallback: None };
+//     let reponse_prochaine_job = gestionnaire.image_job_handler.get_prochaine_job(
+//         middleware, certificat, commande_get_job).await?;
+//
+//     debug!("commande_image_get_job Prochaine job : tuuid {:?}", reponse_prochaine_job.tuuid);
+//     let reponse_chiffree = middleware.build_reponse_chiffree(reponse_prochaine_job, m.certificat.as_ref())?.0;
+//     debug!("commande_image_get_job Reponse chiffree\n{}", from_utf8(reponse_chiffree.buffer.as_slice())?);
+//     Ok(Some(reponse_chiffree))
+// }
 
-    let certificat = m.certificat.as_ref();
-
-    // Verifier autorisation
-    if ! m.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
-        info!("commande_image_get_job Exchange n'est pas de niveau 3 ou 4");
-        // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
-        return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (exchange)"))?))
-    }
-    if ! m.certificat.verifier_roles(vec![RolesCertificats::Media])? {
-        info!("commande_image_get_job Role n'est pas media");
-        // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre media)"}), None)?))
-        return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (role doit etre media)"))?))
-    }
-
-    let commande_get_job = CommandeGetJob { filehost_id: commande.filehost_id, fallback: None };
-    let reponse_prochaine_job = gestionnaire.image_job_handler.get_prochaine_job(
-        middleware, certificat, commande_get_job).await?;
-
-    debug!("commande_image_get_job Prochaine job : tuuid {:?}", reponse_prochaine_job.tuuid);
-    let reponse_chiffree = middleware.build_reponse_chiffree(reponse_prochaine_job, m.certificat.as_ref())?.0;
-    debug!("commande_image_get_job Reponse chiffree\n{}", from_utf8(reponse_chiffree.buffer.as_slice())?);
-    Ok(Some(reponse_chiffree))
-}
-
-async fn commande_video_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
-{
-    debug!("commande_video_get_job Consommer commande : {:?}", & m.type_message);
-    let commande: CommandeVideoGetJob = {
-        let message_ref = m.message.parse()?;
-        message_ref.contenu()?.deserialize()?
-    };
-
-    let certificat = m.certificat.as_ref();
-
-    // Verifier autorisation
-    if ! m.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
-        info!("commande_video_get_job Exchange n'est pas de niveau 3 ou 4");
-        // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
-        return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (exchange)"))?))
-    }
-    if ! m.certificat.verifier_roles(vec![RolesCertificats::Media])? {
-        info!("commande_video_get_job Role n'est pas media");
-        // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre media)"}), None)?))
-        return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (role doit etre media)"))?))
-    }
-
-    let commande_get_job = CommandeGetJob { filehost_id: commande.filehost_id, fallback: commande.fallback };
-    let reponse_prochaine_job = gestionnaire.video_job_handler.get_prochaine_job(
-        middleware, certificat, commande_get_job).await?;
-
-    debug!("commande_video_get_job Prochaine job : {:?}", reponse_prochaine_job.tuuid);
-    Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, m.certificat.as_ref())?.0))
-}
+// async fn commande_video_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+//     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+//     where M: GenerateurMessages + MongoDao + ValidateurX509,
+// {
+//     debug!("commande_video_get_job Consommer commande : {:?}", & m.type_message);
+//     let commande: CommandeVideoGetJob = {
+//         let message_ref = m.message.parse()?;
+//         message_ref.contenu()?.deserialize()?
+//     };
+//
+//     let certificat = m.certificat.as_ref();
+//
+//     // Verifier autorisation
+//     if ! m.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
+//         info!("commande_video_get_job Exchange n'est pas de niveau 3 ou 4");
+//         // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (exchange)"}), None)?))
+//         return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (exchange)"))?))
+//     }
+//     if ! m.certificat.verifier_roles(vec![RolesCertificats::Media])? {
+//         info!("commande_video_get_job Role n'est pas media");
+//         // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces refuse (role doit etre media)"}), None)?))
+//         return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (role doit etre media)"))?))
+//     }
+//
+//     let commande_get_job = CommandeGetJob { filehost_id: commande.filehost_id, fallback: commande.fallback };
+//     let reponse_prochaine_job = gestionnaire.video_job_handler.get_prochaine_job(
+//         middleware, certificat, commande_get_job).await?;
+//
+//     debug!("commande_video_get_job Prochaine job : {:?}", reponse_prochaine_job.tuuid);
+//     Ok(Some(middleware.build_reponse_chiffree(reponse_prochaine_job, m.certificat.as_ref())?.0))
+// }
 
 async fn commande_supprimer_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>

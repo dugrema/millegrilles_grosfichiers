@@ -38,7 +38,8 @@ use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, verifier_acces_usager, verifier_acces_usager_tuuids};
-use crate::traitement_jobs::{JobHandler, JobHandlerFichiersRep, JobHandlerVersions};
+use crate::traitement_jobs::{JobHandler, JobHandlerVersions};
+use crate::traitement_media::{set_flag_image_traitee, set_flag_video_traite};
 // use crate::traitement_media::emettre_commande_media;
 // use crate::traitement_index::emettre_commande_indexation;
 
@@ -2113,12 +2114,15 @@ async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &Gros
             Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
         }
 
-        if let Err(e) = gestionnaire.image_job_handler.set_flag(middleware, fuuid, user_id, None, true).await {
+        if let Err(e) = set_flag_image_traitee(middleware, tuuid.as_ref(), fuuid).await {
             error!("transaction_associer_conversions Erreur set flag true pour traitement job images {:?}/{} : {:?}", user_id, fuuid, e);
         }
+        // if let Err(e) = gestionnaire.image_job_handler.set_flag(middleware, fuuid, user_id, None, true).await {
+        //     error!("transaction_associer_conversions Erreur set flag true pour traitement job images {:?}/{} : {:?}", user_id, fuuid, e);
+        // }
     }
 
-    // S'assurer d'appliquer le fitre sur la version courante
+    // S'assurer d'appliquer le filtre sur la version courante
     {
         if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), &fuuids).await {
             error!("transaction_associer_conversions Erreur touch_fichiers_rep {:?}/{} : {:?}", user_id, fuuid, e);
@@ -2324,17 +2328,9 @@ async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichie
         // Traiter la commande
         let mut cles_supplementaires = HashMap::new();
         cles_supplementaires.insert(CHAMP_CLE_CONVERSION.to_string(), cle_video.clone());
-        if let Err(e) = gestionnaire.video_job_handler.set_flag(
-            middleware, &transaction_mappee.fuuid, Some(&transaction_mappee.user_id), Some(cles_supplementaires), true).await {
+        if let Err(e) = set_flag_video_traite(middleware, tuuid.as_ref(), &transaction_mappee.fuuid).await {
             error!("transaction_associer_video Erreur traitement flag : {:?}", e);
         }
-
-        // let collection_video = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
-        // let filtre = doc! {CHAMP_FUUID: &transaction_mappee.fuuid, CHAMP_CLE_CONVERSION: &cle_video};
-        // if let Err(e) = collection_video.delete_one(filtre, None).await {
-        //     error!("transactions.transaction_associer_conversions Erreur suppression job video fuuid {:?} cle {} : {:?}",
-        //         &transaction_mappee.fuuid, &cle_video, e);
-        // }
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
@@ -2431,11 +2427,12 @@ async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &GrosFichi
                         parametres.insert("mimetype".to_string(), Bson::String(mimetype.to_string()));
                         parametres.insert("fuuid".to_string(), Bson::String(fuuid.to_string()));
                         parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_string()));
-                        if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
-                            middleware, tuuid, user_id, None,
-                            None, Some(parametres), true).await {
-                            error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
-                        }
+                        todo!()
+                        // if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
+                        //     middleware, tuuid, user_id, None,
+                        //     None, Some(parametres), true).await {
+                        //     error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
+                        // }
                     }
                 }
             }
@@ -2991,26 +2988,14 @@ async fn transaction_supprimer_job_image<M>(middleware: &M, gestionnaire: &GrosF
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
+    // NOTE : OBSOLETE
     debug!("transaction_supprimer_job_image Consommer transaction : {}", transaction.transaction.id);
     let transaction_supprimer_job: TransactionSupprimerJobImage = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_supprimer_job: TransactionSupprimerJobImage = match transaction.clone().convertir() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(CommonError::String(format!("grosfichiers.transaction_supprimer_job_video Erreur conversion transaction : {:?}", e)))?
-    // };
-
-    let user_id = get_user_effectif(&transaction, &transaction_supprimer_job)?;
-
+    // let user_id = get_user_effectif(&transaction, &transaction_supprimer_job)?;
     let fuuid = &transaction_supprimer_job.fuuid;
 
-    // let enveloppe = match transaction.get_enveloppe_certificat() {
-    //     Some(e) => e,
-    //     None => Err(format!("transaction_supprimer_video Certificat inconnu, transaction ignoree"))?
-    // };
-    //
-    // let user_id = enveloppe.get_user_id()?;
-
     // Indiquer que la job a ete completee et ne doit pas etre redemarree.
-    if let Err(e) = gestionnaire.image_job_handler.set_flag(middleware, fuuid, Some(user_id),None, true).await {
+    if let Err(e) = set_flag_image_traitee(middleware, None::<&str>, fuuid).await {
         Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag image : {:?}", e))?
     }
 
@@ -3040,7 +3025,8 @@ async fn transaction_supprimer_job_video<M>(middleware: &M, gestionnaire: &GrosF
     cles_supplementaires.insert("cle_conversion".to_string(), transaction_supprimer.cle_conversion.clone());
 
     // Indiquer que la job a ete completee et ne doit pas etre redemarree.
-    if let Err(e) = gestionnaire.video_job_handler.set_flag(middleware, fuuid, Some(user_id),Some(cles_supplementaires), true).await {
+    if let Err(e) = set_flag_video_traite(middleware, None::<&str>, fuuid).await {
+    // if let Err(e) = gestionnaire.video_job_handler.set_flag(middleware, fuuid, Some(user_id),Some(cles_supplementaires), true).await {
         Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag video : {:?}", e))?
     }
 

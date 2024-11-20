@@ -81,7 +81,9 @@ pub const TRANSACTION_COPIER_FICHIER_TIERS: &str = "copierFichierTiers";
 // pub const TRANSACTION_FAVORIS_CREERPATH: &str = "favorisCreerPath";
 pub const TRANSACTION_SUPPRIMER_VIDEO: &str = "supprimerVideo";
 pub const TRANSACTION_IMAGE_SUPPRIMER_JOB: &str = "supprimerJobImage";
+pub const TRANSACTION_IMAGE_SUPPRIMER_JOB_V2: &str = "supprimerJobImageV2";
 pub const TRANSACTION_VIDEO_SUPPRIMER_JOB: &str = "supprimerJobVideo";
+pub const TRANSACTION_VIDEO_SUPPRIMER_JOB_V2: &str = "supprimerJobVideoV2";
 pub const TRANSACTION_CONFIRMER_FICHIER_INDEXE: &str = "confirmerFichierIndexe";
 pub const TRANSACTION_AJOUTER_CONTACT_LOCAL: &str = "ajouterContactLocal";
 pub const TRANSACTION_SUPPRIMER_CONTACTS: &str = "supprimerContacts";
@@ -93,14 +95,14 @@ pub const COMMANDE_REINDEXER: &str = "reindexerConsignation";
 pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";
 pub const COMMANDE_NOUVEAU_FICHIER: &str = "commandeNouveauFichier";
 // pub const COMMANDE_ACTIVITE_FUUIDS: &str = "confirmerActiviteFuuids";
-pub const COMMANDE_IMAGE_GET_JOB: &str = "getJobImage";
+// pub const COMMANDE_IMAGE_GET_JOB: &str = "getJobImage";
 pub const COMMANDE_VIDEO_TRANSCODER: &str = "transcoderVideo";
 pub const COMMANDE_VIDEO_ARRETER_CONVERSION: &str = "arreterVideo";
 pub const COMMANDE_VIDEO_DISPONIBLE: &str = "jobConversionVideoDisponible";
-pub const COMMANDE_VIDEO_GET_JOB: &str = "getJobVideo";
+// pub const COMMANDE_VIDEO_GET_JOB: &str = "getJobVideo";
 pub const COMMANDE_FUUIDS_DOMAINE_LISTE: &str = "fuuidsDomaineListe";
 pub const COMMANDE_GET_CLE_JOB_CONVERSION: &str = "getCleJobConversion";
-pub const COMMANDE_INDEXATION_GET_JOB: &str = "getJobIndexation";
+// pub const COMMANDE_INDEXATION_GET_JOB: &str = "getJobIndexation";
 pub const COMMANDE_RECLAMER_FUUIDS: &str = "reclamerFuuids";
 
 // pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
@@ -502,6 +504,13 @@ impl<'a> CommandeUsager<'a> for TransactionSupprimerJobImage {
             None => None
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionSupprimerJobImageV2 {
+    pub tuuid: String,
+    pub fuuid: String,
+    pub err: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

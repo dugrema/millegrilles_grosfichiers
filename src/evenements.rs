@@ -27,7 +27,6 @@ use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::mapper_fichier_db;
 use crate::traitement_index::entretien_supprimer_fichiersrep;
-use crate::traitement_jobs::{JobHandler, JobHandlerFichiersRep, JobHandlerVersions};
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
 const EXPIRATION_THROTTLING_EVENEMENT_CUUID_CONTENU: i64 = 1;
@@ -511,32 +510,33 @@ pub async fn declencher_traitement_nouveau_fuuid<M>(middleware: &M, gestionnaire
             parametres_index.insert("mimetype".to_string(), Bson::String(mimetype.to_string()));
             parametres_index.insert("fuuid".to_string(), Bson::String(doc_fuuid.fuuid.clone()));
             parametres_index.insert("cle_id".to_string(), Bson::String(cle_id.to_owned()));
-            gestionnaire.indexation_job_handler.sauvegarder_job(
-                middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(filehost_ids.clone()),
-                None, Some(parametres_index), true
-            ).await?;
-
-            let mut champs_cles = HashMap::new();
-            champs_cles.insert("mimetype".to_string(), mimetype);
-            let mut champs_parametres = HashMap::new();
-            champs_parametres.insert("tuuid".to_string(), Bson::String(doc_fuuid.tuuid.clone()));
-            champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_owned()));
-
-            if ! image_traitee {
-                // Note : La job est uniquement creee si le format est une image
-                gestionnaire.image_job_handler.sauvegarder_job(
-                    middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), Some(filehost_ids.clone()),
-                    Some(champs_cles.clone()), Some(champs_parametres.clone()), true
-                ).await?;
-            }
-
-            if ! video_traite {
-                // Note : La job est uniquement creee si le format est une image
-                gestionnaire.video_job_handler.sauvegarder_job(
-                    middleware, doc_fuuid.fuuid, doc_fuuid.user_id, Some(filehost_ids.clone()),
-                    Some(champs_cles), Some(champs_parametres), true
-                ).await?;
-            }
+            todo!()
+            // gestionnaire.indexation_job_handler.sauvegarder_job(
+            //     middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(filehost_ids.clone()),
+            //     None, Some(parametres_index), true
+            // ).await?;
+            //
+            // let mut champs_cles = HashMap::new();
+            // champs_cles.insert("mimetype".to_string(), mimetype);
+            // let mut champs_parametres = HashMap::new();
+            // champs_parametres.insert("tuuid".to_string(), Bson::String(doc_fuuid.tuuid.clone()));
+            // champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_owned()));
+            //
+            // if ! image_traitee {
+            //     // Note : La job est uniquement creee si le format est une image
+            //     gestionnaire.image_job_handler.sauvegarder_job(
+            //         middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), Some(filehost_ids.clone()),
+            //         Some(champs_cles.clone()), Some(champs_parametres.clone()), true
+            //     ).await?;
+            // }
+            //
+            // if ! video_traite {
+            //     // Note : La job est uniquement creee si le format est une image
+            //     gestionnaire.video_job_handler.sauvegarder_job(
+            //         middleware, doc_fuuid.fuuid, doc_fuuid.user_id, Some(filehost_ids.clone()),
+            //         Some(champs_cles), Some(champs_parametres), true
+            //     ).await?;
+            // }
 
         }
 
