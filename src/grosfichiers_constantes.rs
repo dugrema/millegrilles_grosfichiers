@@ -351,6 +351,22 @@ pub struct DBFichierVersionDetail {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AudioStreamInfo {
+    pub index: usize,
+    pub title: Option<String>,
+    pub language: Option<String>,
+    pub codec_name: Option<String>,
+    pub bit_rate: Option<usize>,
+    pub default: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubtitleStreamInfo {
+    pub index: usize,
+    pub language: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionAssocierConversions {
     pub tuuid: Option<String>,
     pub fuuid: String,
@@ -363,6 +379,8 @@ pub struct TransactionAssocierConversions {
     pub duration: Option<f32>,
     #[serde(rename="videoCodec")]
     pub video_codec: Option<String>,
+    pub audio: Option<Vec<AudioStreamInfo>>,
+    pub subtitles: Option<Vec<SubtitleStreamInfo>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

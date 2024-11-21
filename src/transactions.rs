@@ -17,7 +17,7 @@ use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_v2};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao, verifier_erreur_duplication_mongo};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao, verifier_erreur_duplication_mongo, convertir_to_bson_array};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::multihash::Code;
@@ -2092,6 +2092,14 @@ async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &Gros
         }
         if let Some(inner) = transaction_mappee.duration.as_ref() {
             set_ops.insert("duration", inner);
+        }
+
+        if let Some(inner) = transaction_mappee.audio.as_ref() {
+            set_ops.insert("audio", convertir_to_bson_array(inner)?);
+        }
+
+        if let Some(inner) = transaction_mappee.subtitles.as_ref() {
+            set_ops.insert("subtitles", convertir_to_bson_array(inner)?);
         }
 
         let add_to_set = doc! {
