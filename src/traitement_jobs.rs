@@ -1011,6 +1011,10 @@ pub struct BackgroundJob {
     pub filehost_ids: Vec<String>,
     pub params: Option<HashMap<String, String>>,
 
+    // Valeurs pour video (progress update)
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub user_id: Option<String>,
+
     // Dechiffrage fichier (fuuid)
     pub cle_id: String,
     pub format: String,
@@ -1037,11 +1041,12 @@ impl BackgroundJob {
             mimetype: mimetype.to_string(),
             filehost_ids: filehost_ids.iter().map(|id| id.to_string()).collect(),
             params: None,
+            user_id: None,
             cle_id: cle_id.to_string(),
             format: format.to_string(),
             nonce: nonce.to_string(),
             etat: VIDEO_CONVERSION_ETAT_PENDING,
-            date_modification: Default::default(),
+            date_modification: Utc::now(),
             date_maj: None,
             retry: None,
         }
@@ -1057,6 +1062,8 @@ pub struct JobTrigger<'a> {
     pub filehost_ids: &'a Vec<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub params: Option<&'a HashMap<String, String>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub user_id: Option<&'a str>,
     pub cle_id: &'a str,
     pub format: &'a str,
     pub nonce: &'a str,
@@ -1073,6 +1080,7 @@ impl<'a> From<&'a BackgroundJob> for JobTrigger<'a> {
             mimetype: value.mimetype.as_str(),
             filehost_ids: &value.filehost_ids,
             params: match &value.params {Some(inner)=>Some(&inner), None=>None},
+            user_id: match value.user_id.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None},
             cle_id: value.cle_id.as_str(),
             format: value.format.as_str(),
             nonce: value.nonce.as_str(),

@@ -439,8 +439,11 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
             if ! video_traite {
                 // Note : La job est uniquement creee si le format est video
                 let mut params_initial = HashMap::new();
-                params_initial.insert("initial".to_string(), "true".to_string());
+                params_initial.insert(VIDEO_FLAG_CREER_THUMBNAILS.to_string(), "true".to_string());
+                params_initial.insert(VIDEO_FLAG_DEFAULTS.to_string(), "true".to_string());
                 job.params = Some(params_initial);
+                let user_id = doc_fuuid.user_id;
+                job.user_id = Some(user_id);
                 sauvegarder_job_video(middleware, &job).await?;
             }
 

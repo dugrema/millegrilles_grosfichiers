@@ -187,8 +187,6 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         TRANSACTION_DECRIRE_COLLECTION,
         TRANSACTION_COPIER_FICHIER_TIERS,
         // TRANSACTION_FAVORIS_CREERPATH,
-        TRANSACTION_ASSOCIER_CONVERSIONS,
-        TRANSACTION_ASSOCIER_VIDEO,
         TRANSACTION_SUPPRIMER_VIDEO,
         TRANSACTION_VIDEO_SUPPRIMER_JOB,
         TRANSACTION_AJOUTER_CONTACT_LOCAL,
@@ -213,6 +211,8 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         COMMANDE_REINDEXER,
         COMMANDE_GET_CLE_JOB_CONVERSION,
         COMMANDE_JOB_GET_KEY,
+        TRANSACTION_ASSOCIER_CONVERSIONS,
+        TRANSACTION_ASSOCIER_VIDEO,
     ];
     for cmd in commandes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
@@ -227,7 +227,7 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         // COMMANDE_IMAGE_GET_JOB,
     ];
     for cmd in commandes_secures {
-        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L4Secure});
+        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
     }
 
     // RK 2.prive

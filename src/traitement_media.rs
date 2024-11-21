@@ -539,16 +539,33 @@ pub async fn set_flag_image_traitee<M,S>(middleware: &M, tuuid_in: Option<S>, fu
     Ok(())
 }
 
-pub async fn set_flag_video_traite<M,S>(middleware: &M, tuuid_in: Option<S>, fuuid: &str) -> Result<(), CommonError>
+pub async fn set_flag_video_traite<M,S>(middleware: &M, tuuid_in: Option<S>, fuuid: &str, job_id: Option<&str>) -> Result<(), CommonError>
     where M: MongoDao, S: ToString
 {
     let tuuid = match &tuuid_in {Some(inner)=>Some(inner.to_string()), None=>None};
 
+    let mut filtre_video = doc! {"fuuid": fuuid};
+    if let Some(tuuid) = tuuid.as_ref() {
+        filtre_video.insert("tuuid", tuuid);
+    }
+
     // Set flag versionFichiers
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let ops = doc! {
+        "$set": {CHAMP_FLAG_VIDEO_TRAITE: true},
+        "$currentDate": {CHAMP_MODIFICATION: true},
+    };
+    collection.update_many(filtre_video.clone(), ops, None).await?;
 
-    // Supprimer job video initiale (params.initial == 'true')
+    // Supprimer job image
+    let filtre_job = match job_id {
+        Some(inner) => doc!{"job_id": inner},
+        None => filtre_video
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+    collection.delete_many(filtre_job, None).await?;
 
-    todo!()
+    Ok(())
 }
 
 pub async fn sauvegarder_job_images<M>(middleware: &M, job: &BackgroundJob) -> Result<Option<BackgroundJob>, CommonError>

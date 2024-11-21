@@ -179,6 +179,11 @@ pub const CHAMP_INSTANCES: &str = "instances";
 pub const CHAMP_DATE_MAJ: &str = "date_maj";
 pub const CHAMP_VISITES: &str = "visites";
 
+pub const VIDEO_FLAG_CREER_THUMBNAILS: &str = "thumbnails";
+pub const VIDEO_FLAG_DEFAULTS: &str = "defaults";
+pub const VIDEO_FLAG_CLE_CONVERSION: &str = "cle_conversion";
+// pub const VIDEO_PARAMS_CONVERSION_INITIAL: &str = "video/mp4;h264;270p;28";
+
 pub const CONST_FIELD_LAST_VISIT_VERIFICATION: &str = "last_visit_verification";
 
 
@@ -368,6 +373,7 @@ pub struct TransactionAssocierVideo {
     pub mimetype: String,
     pub codec: String,
     pub fuuid_video: String,
+    pub job_id: Option<String>,
 
     // Metadata video transcode
     pub width: Option<u32>,
@@ -519,6 +525,7 @@ pub struct TransactionSupprimerJobVideo {
     pub fuuid: String,
     pub cle_conversion: String,
     pub user_id: Option<String>,
+    pub job_id: Option<String>,
     pub err: Option<String>,
 }
 

@@ -546,7 +546,8 @@ impl NodeFichierVersionOwned {
             flag_media_traite = false;
             flag_media = Some("image".to_string());
         } else if is_mimetype_video(mimetype) {
-            flag_media_traite = false;
+            // flag_media_traite = false;
+            flag_media_traite = true;  // Thumbnails generes avec le video depuis 2024.9
             flag_video_traite = false;
             flag_media = Some("video".to_string());
         } else if mimetype == "application/pdf" {
@@ -2147,6 +2148,7 @@ async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichie
     // };
 
     let tuuid = transaction_mappee.tuuid.clone();
+    let job_id = match transaction_mappee.job_id.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None};
 
     let doc_video = match convertir_to_bson(transaction_mappee.clone()) {
         Ok(inner) => inner,
@@ -2324,7 +2326,7 @@ async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichie
         // Traiter la commande
         let mut cles_supplementaires = HashMap::new();
         cles_supplementaires.insert(CHAMP_CLE_CONVERSION.to_string(), cle_video.clone());
-        if let Err(e) = set_flag_video_traite(middleware, tuuid.as_ref(), &transaction_mappee.fuuid).await {
+        if let Err(e) = set_flag_video_traite(middleware, tuuid.as_ref(), &transaction_mappee.fuuid, job_id).await {
             error!("transaction_associer_video Erreur traitement flag : {:?}", e);
         }
     }
@@ -3013,7 +3015,8 @@ async fn transaction_supprimer_job_video<M>(middleware: &M, gestionnaire: &GrosF
     //     Err(e) => Err(format!("grosfichiers.transaction_supprimer_job_image Erreur conversion transaction : {:?}", e))?
     // };
 
-    let user_id = get_user_effectif(&transaction, &transaction_supprimer)?;
+    let job_id = match transaction_supprimer.job_id.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None};
+    // let user_id = get_user_effectif(&transaction, &transaction_supprimer)?;
 
     let fuuid = &transaction_supprimer.fuuid;
     // let user_id = &transaction_supprimer.user_id;
@@ -3021,7 +3024,7 @@ async fn transaction_supprimer_job_video<M>(middleware: &M, gestionnaire: &GrosF
     cles_supplementaires.insert("cle_conversion".to_string(), transaction_supprimer.cle_conversion.clone());
 
     // Indiquer que la job a ete completee et ne doit pas etre redemarree.
-    if let Err(e) = set_flag_video_traite(middleware, None::<&str>, fuuid).await {
+    if let Err(e) = set_flag_video_traite(middleware, None::<&str>, fuuid, job_id).await {
     // if let Err(e) = gestionnaire.video_job_handler.set_flag(middleware, fuuid, Some(user_id),Some(cles_supplementaires), true).await {
         Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag video : {:?}", e))?
     }
