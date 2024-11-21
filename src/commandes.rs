@@ -3,7 +3,7 @@ use std::iter::Map;
 use std::str::from_utf8;
 
 use log::{debug, error, info, warn};
-use millegrilles_common_rust::{get_replyq_correlation, serde_json, serde_json::json};
+use millegrilles_common_rust::{chrono, get_replyq_correlation, serde_json, serde_json::json};
 use millegrilles_common_rust::bson::{Bson, doc};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
@@ -2171,15 +2171,23 @@ async fn commande_get_job_key<M>(middleware: &M, m: MessageValide)
         message_ref.contenu()?.deserialize()?
     };
 
-    let collection_name = match commande.queue.as_str() {
-        "image" => NOM_COLLECTION_IMAGES_JOBS,
-        "video" => NOM_COLLECTION_VIDEO_JOBS,
-        "index" => NOM_COLLECTION_INDEXATION_JOBS,
+    let (collection_name, timeout) = match commande.queue.as_str() {
+        "image" => (NOM_COLLECTION_IMAGES_JOBS, 180),
+        "video" => (NOM_COLLECTION_VIDEO_JOBS, 600),
+        "index" => (NOM_COLLECTION_INDEXATION_JOBS, 180),
         _ => return Ok(Some(middleware.reponse_err(Some(2), None, Some("Unsupported processing queue"))?))
     };
 
+    let expired = Utc::now() - chrono::Duration::new(timeout, 0).expect("duration");
+
     let collection = middleware.get_collection_typed::<BackgroundJob>(collection_name)?;
-    let filtre = doc! {"job_id": &commande.job_id};
+    let filtre = doc! {
+        "job_id": &commande.job_id,
+        "$or": [
+            {"etat": VIDEO_CONVERSION_ETAT_PENDING},
+            {"etat": VIDEO_CONVERSION_ETAT_RUNNING, "date_maj": {"$lte": expired}},
+        ]
+    };
     let ops = doc! {
         "$set": {"etat": VIDEO_CONVERSION_ETAT_RUNNING},
         "$currentDate": {"date_maj": true, CHAMP_MODIFICATION: true}
