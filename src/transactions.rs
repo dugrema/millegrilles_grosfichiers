@@ -2024,10 +2024,6 @@ async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &Gros
 {
     debug!("transaction_associer_conversions Consommer transaction : {}", transaction.transaction.id);
     let transaction_mappee: TransactionAssocierConversions = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_mappee: TransactionAssocierConversions = match transaction.clone().convertir::<TransactionAssocierConversions>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_associer_conversions Erreur conversion transaction : {:?}", e))?
-    // };
 
     let tuuid = transaction_mappee.tuuid.clone();
     let user_id = match transaction_mappee.user_id.as_ref() {
@@ -2062,6 +2058,9 @@ async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &Gros
             // Note : legacy, supporte ancienne transaction (pre 2023.6) qui n'avait pas le user_id
             filtre.insert(CHAMP_USER_ID, inner);
         }
+        if let Some(inner) = tuuid.as_ref() {
+            filtre.insert(CHAMP_TUUID, inner);
+        }
         let mut set_ops = doc! {};
 
         // Si on a le thumbnail, on va marquer media_traite
@@ -2093,9 +2092,6 @@ async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &Gros
         if let Some(inner) = transaction_mappee.duration.as_ref() {
             set_ops.insert("duration", inner);
         }
-        // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
-        //     set_ops.insert(format!("{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
-        // }
 
         let add_to_set = doc! {
             CHAMP_FUUIDS: {"$each": &fuuids},

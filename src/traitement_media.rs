@@ -22,7 +22,7 @@ use millegrilles_common_rust::serde_json::json;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 
 use crate::grosfichiers_constantes::*;
-use crate::traitement_jobs::{sauvegarder_job, BackgroundJob, JobHandler, JobHandlerVersions};
+use crate::traitement_jobs::{sauvegarder_job, BackgroundJob, JobHandler, JobHandlerVersions, JobTrigger};
 
 const EVENEMENT_IMAGE_DISPONIBLE: &str = "jobImageDisponible";
 const EVENEMENT_VIDEO_DISPONIBLE: &str = "jobVideoDisponible";
@@ -519,11 +519,24 @@ pub async fn set_flag_image_traitee<M,S>(middleware: &M, tuuid_in: Option<S>, fu
 {
     let tuuid = match &tuuid_in {Some(inner)=>Some(inner.to_string()), None=>None};
 
+    let mut filtre = doc! {"fuuid": fuuid};
+    if let Some(tuuid) = tuuid.as_ref() {
+        filtre.insert("tuuid", tuuid);
+    }
+
     // Set flag versionFichiers
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let ops = doc! {
+        "$set": {CHAMP_FLAG_MEDIA_TRAITE: true},
+        "$currentDate": {CHAMP_MODIFICATION: true},
+    };
+    collection.update_many(filtre.clone(), ops, None).await?;
 
     // Supprimer job image
+    let collection = middleware.get_collection(NOM_COLLECTION_IMAGES_JOBS)?;
+    collection.delete_many(filtre, None).await?;
 
-    todo!()
+    Ok(())
 }
 
 pub async fn set_flag_video_traite<M,S>(middleware: &M, tuuid_in: Option<S>, fuuid: &str) -> Result<(), CommonError>
@@ -538,14 +551,38 @@ pub async fn set_flag_video_traite<M,S>(middleware: &M, tuuid_in: Option<S>, fuu
     todo!()
 }
 
-async fn sauvegarder_job_images<M>(middleware: &M, job: &BackgroundJob) -> Result<BackgroundJob, CommonError>
-where M: MongoDao
+pub async fn sauvegarder_job_images<M>(middleware: &M, job: &BackgroundJob) -> Result<Option<BackgroundJob>, CommonError>
+where M: GenerateurMessages + MongoDao
 {
-    sauvegarder_job(middleware, job, NOM_COLLECTION_IMAGES_JOBS).await
+    let mimetype = job.mimetype.as_str();
+    if job_image_supportee(mimetype) {
+        Ok(Some(sauvegarder_job(middleware, job, NOM_COLLECTION_IMAGES_JOBS, "media", "processImage").await?))
+    } else {
+        Ok(None)
+    }
 }
 
-async fn sauvegarder_job_video<M>(middleware: &M, job: &BackgroundJob) -> Result<BackgroundJob, CommonError>
-where M: MongoDao
+pub async fn sauvegarder_job_video<M>(middleware: &M, job: &BackgroundJob) -> Result<Option<BackgroundJob>, CommonError>
+where M: GenerateurMessages + MongoDao
 {
-    sauvegarder_job(middleware, job, NOM_COLLECTION_IMAGES_JOBS).await
+    let mimetype = job.mimetype.as_str();
+    if job_video_supportee(mimetype) {
+        Ok(Some(sauvegarder_job(middleware, job, NOM_COLLECTION_VIDEO_JOBS, "media", "processVideo").await?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub async fn emettre_processing_trigger<M>(middleware: &M, background_job: &BackgroundJob, domain: &str, action: &str)
+where M: GenerateurMessages {
+    let trigger = JobTrigger::from(background_job);
+    for filehost_id in &background_job.filehost_ids {
+        let routage = RoutageMessageAction::builder(domain, action, vec![Securite::L3Protege])
+            .partition(filehost_id)
+            .blocking(false)
+            .build();
+        if let Err(e) = middleware.transmettre_commande(routage, &trigger).await {
+            error!("emettre_processing_trigger Erreur emission trigger commande.{}.{}.{} : {:?}", domain, filehost_id, action, e);
+        }
+    }
 }

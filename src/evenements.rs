@@ -26,7 +26,9 @@ use crate::domain_manager::GrosFichiersDomainManager;
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::mapper_fichier_db;
-use crate::traitement_index::entretien_supprimer_fichiersrep;
+use crate::traitement_index::{entretien_supprimer_fichiersrep, sauvegarder_job_index};
+use crate::traitement_jobs::BackgroundJob;
+use crate::traitement_media::{sauvegarder_job_images, sauvegarder_job_video};
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
 const EXPIRATION_THROTTLING_EVENEMENT_CUUID_CONTENU: i64 = 1;
@@ -51,15 +53,9 @@ pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GrosFichiersD
     };
 
     match action.as_str() {
-        // EVENEMENT_CONFIRMER_ETAT_FUUIDS => {
-        //     evenement_confirmer_etat_fuuids(middleware, m).await?;
-        //     Ok(None)
-        // },
         EVENEMENT_TRANSCODAGE_PROGRES => evenement_transcodage_progres(middleware, m).await,
         EVENEMENT_FICHIERS_SYNCPRET => evenement_fichiers_syncpret(middleware, m).await,
         EVENEMENT_FICHIERS_VISITER_FUUIDS => evenement_visiter_fuuids(middleware, m).await,
-        // TODO => evenement_filecontroler_visiter_fuuids(middleware, m).await,
-        // EVENEMENT_FICHIERS_CONSIGNE => evenement_fichier_consigne(middleware, gestionnaire, m).await,
         EVENEMENT_FILEHOST_NEWFUUID => evenement_filehost_newfuuid(middleware, gestionnaire, m).await,
         EVENEMENT_FICHIERS_SYNC_PRIMAIRE => evenement_fichier_sync_primaire(middleware, gestionnaire, m).await,
         EVENEMENT_CEDULE => Ok(None),  // Obsolete
@@ -341,6 +337,8 @@ struct DocumentFichierDetailIds {
     mimetype: Option<String>,
     visites: Option<HashMap<String, u32>>,
     cle_id: Option<String>,
+    format: Option<String>,
+    nonce: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -368,125 +366,36 @@ async fn evenement_filehost_newfuuid<M>(middleware: &M, gestionnaire: &GrosFichi
     let evenement: FilecontrolerNewFuuidEvent = message_ref.contenu()?.deserialize()?;
     let date_visite = &message_ref.estampille;
 
-    // // Recuperer instance_id
-    // let instance_id = match m.certificat.subject()?.get("commonName") {
-    //     Some(inner) => inner.clone(),
-    //     None => Err(CommonError::Str("evenements.evenement_visiter_fuuids Certificat sans commonName"))?
-    // };
     let filehost_id = evenement.filehost_id;
 
     // Marquer la visite courante
     marquer_visites_fuuids(middleware, &vec![evenement.fuuid.clone()], date_visite, filehost_id.clone()).await?;
 
     let fuuid = &evenement.fuuid;
-    declencher_traitement_nouveau_fuuid(middleware, gestionnaire, fuuid).await?;
-
-    // let filtre = doc! { "fuuids": &evenement.fuuid };
-    // let projection = doc! {
-    //     "user_id": 1, "tuuid": 1, "fuuid": 1, "flag_media": 1, "mimetype": 1, "visites": 1,
-    //     CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_FLAG_INDEX: 1, CHAMP_FLAG_VIDEO_TRAITE: 1,
-    //     "cle_id": 1,
-    // };
-    // let options = FindOptions::builder().projection(projection).build();
-    // let collection = middleware.get_collection_typed::<DocumentFichierDetailIds>(NOM_COLLECTION_VERSIONS)?;
-    //
-    // let mut curseur = collection.find(filtre, Some(options)).await?;
-    // while curseur.advance().await? {
-    //     let doc_fuuid = curseur.deserialize_current()?;
-    //
-    //     let fuuids = vec![doc_fuuid.fuuid.clone()];
-    //     let filehost_ids: Vec<String> = match doc_fuuid.visites {
-    //         Some(inner) => inner.into_keys().collect(),
-    //         None => {
-    //             debug!("Aucunes visites sur {}, skip", doc_fuuid.fuuid);
-    //             continue;
-    //         }
-    //     };
-    //
-    //     let cle_id = match doc_fuuid.cle_id.as_ref() {
-    //         Some(inner) => inner.as_str(),
-    //         None => doc_fuuid.fuuid.as_str()
-    //     };
-    //
-    //     let image_traitee = match doc_fuuid.flag_media_traite {
-    //         Some(inner) => inner,
-    //         None => false
-    //     };
-    //
-    //     let video_traite = match doc_fuuid.flag_video_traite {
-    //         Some(inner) => inner,
-    //         None => false
-    //     };
-    //
-    //     for instance in &filehost_ids {
-    //         marquer_visites_fuuids(middleware, &fuuids, date_visite, instance.clone()).await?;
-    //     }
-    //
-    //     emettre_evenement_maj_fichier(middleware, gestionnaire, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
-    //
-    //     if let Some(mimetype) = doc_fuuid.mimetype {
-    //         let mut parametres_index = HashMap::new();
-    //         parametres_index.insert("mimetype".to_string(), Bson::String(mimetype.to_string()));
-    //         parametres_index.insert("fuuid".to_string(), Bson::String(doc_fuuid.fuuid.clone()));
-    //         parametres_index.insert("cle_id".to_string(), Bson::String(cle_id.to_owned()));
-    //         gestionnaire.indexation_job_handler.sauvegarder_job(
-    //             middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(vec![filehost_id.clone()]),
-    //             None, Some(parametres_index), true
-    //         ).await?;
-    //
-    //         let mut champs_cles = HashMap::new();
-    //         champs_cles.insert("mimetype".to_string(), mimetype);
-    //         let mut champs_parametres = HashMap::new();
-    //         champs_parametres.insert("tuuid".to_string(), Bson::String(doc_fuuid.tuuid.clone()));
-    //         champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_owned()));
-    //
-    //         if ! image_traitee {
-    //             // Note : La job est uniquement creee si le format est une image
-    //             gestionnaire.image_job_handler.sauvegarder_job(
-    //                 middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), Some(vec![filehost_id.clone()]),
-    //                 Some(champs_cles.clone()), Some(champs_parametres.clone()), true
-    //             ).await?;
-    //         }
-    //
-    //         if ! video_traite {
-    //             // Note : La job est uniquement creee si le format est une image
-    //             gestionnaire.video_job_handler.sauvegarder_job(
-    //                 middleware, doc_fuuid.fuuid, doc_fuuid.user_id, Some(vec![filehost_id.clone()]),
-    //                 Some(champs_cles), Some(champs_parametres), true
-    //             ).await?;
-    //         }
-    //
-    //     }
-    //
-    // }
+    declencher_traitement_nouveau_fuuid(middleware, gestionnaire, fuuid, vec![filehost_id.as_str()]).await?;
 
     Ok(None)
 }
 
-pub async fn declencher_traitement_nouveau_fuuid<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, fuuid: &str)
+pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnaire: &GrosFichiersDomainManager,
+                                                      fuuid: &str, filehost_ids: Vec<V>)
     -> Result<(), CommonError>
-    where M: GenerateurMessages + MongoDao
+    where M: GenerateurMessages + MongoDao, V: ToString
 {
     let filtre = doc! { "fuuids": fuuid };
     let projection = doc! {
-        "user_id": 1, "tuuid": 1, "fuuid": 1, "flag_media": 1, "mimetype": 1, "visites": 1,
+        "user_id": 1, "tuuid": 1, "fuuid": 1, "flag_media": 1, "mimetype": 1,
         CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_FLAG_INDEX: 1, CHAMP_FLAG_VIDEO_TRAITE: 1,
-        "cle_id": 1,
+        "cle_id": 1, "format": 1, "nonce": 1,
     };
     let options = FindOptions::builder().projection(projection).build();
     let collection = middleware.get_collection_typed::<DocumentFichierDetailIds>(NOM_COLLECTION_VERSIONS)?;
 
+    let filehost_ids = filehost_ids.into_iter().map(|f|f.to_string()).collect();
+
     let mut curseur = collection.find(filtre, Some(options)).await?;
     while curseur.advance().await? {
         let doc_fuuid = curseur.deserialize_current()?;
-
-        let filehost_ids: Vec<String> = match doc_fuuid.visites {
-            Some(inner) => inner.into_keys().collect(),
-            None => {
-                debug!("Aucunes visites sur {}, skip", doc_fuuid.fuuid);
-                continue;
-            }
-        };
 
         let cle_id = match doc_fuuid.cle_id.as_ref() {
             Some(inner) => inner.as_str(),
@@ -504,39 +413,36 @@ pub async fn declencher_traitement_nouveau_fuuid<M>(middleware: &M, gestionnaire
         };
 
         emettre_evenement_maj_fichier(middleware, gestionnaire, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
+        let tuuid = doc_fuuid.tuuid;
 
-        if let Some(mimetype) = doc_fuuid.mimetype {
-            let mut parametres_index = HashMap::new();
-            parametres_index.insert("mimetype".to_string(), Bson::String(mimetype.to_string()));
-            parametres_index.insert("fuuid".to_string(), Bson::String(doc_fuuid.fuuid.clone()));
-            parametres_index.insert("cle_id".to_string(), Bson::String(cle_id.to_owned()));
-            todo!()
-            // gestionnaire.indexation_job_handler.sauvegarder_job(
-            //     middleware, doc_fuuid.tuuid.clone(), doc_fuuid.user_id.clone(), Some(filehost_ids.clone()),
-            //     None, Some(parametres_index), true
-            // ).await?;
-            //
-            // let mut champs_cles = HashMap::new();
-            // champs_cles.insert("mimetype".to_string(), mimetype);
-            // let mut champs_parametres = HashMap::new();
-            // champs_parametres.insert("tuuid".to_string(), Bson::String(doc_fuuid.tuuid.clone()));
-            // champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_owned()));
-            //
-            // if ! image_traitee {
-            //     // Note : La job est uniquement creee si le format est une image
-            //     gestionnaire.image_job_handler.sauvegarder_job(
-            //         middleware, doc_fuuid.fuuid.clone(), doc_fuuid.user_id.clone(), Some(filehost_ids.clone()),
-            //         Some(champs_cles.clone()), Some(champs_parametres.clone()), true
-            //     ).await?;
-            // }
-            //
-            // if ! video_traite {
-            //     // Note : La job est uniquement creee si le format est une image
-            //     gestionnaire.video_job_handler.sauvegarder_job(
-            //         middleware, doc_fuuid.fuuid, doc_fuuid.user_id, Some(filehost_ids.clone()),
-            //         Some(champs_cles), Some(champs_parametres), true
-            //     ).await?;
-            // }
+        // Extract information for background job if all fields present
+        let job = if doc_fuuid.mimetype.is_some() && doc_fuuid.format.is_some() && doc_fuuid.nonce.is_some() {
+            let mimetype = doc_fuuid.mimetype.expect("mimetype");
+            let format = doc_fuuid.format.expect("format");
+            let nonce = doc_fuuid.nonce.expect("nonce");
+            let job = BackgroundJob::new(tuuid, fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
+            Some(job)
+        } else {
+            None
+        };
+
+        if let Some(mut job) = job {
+
+            // Toujours indexer
+            sauvegarder_job_index(middleware, &job).await?;
+
+            if ! image_traitee {
+                // Note : La job est uniquement creee si le format est une image. Exclus les videos.
+                sauvegarder_job_images(middleware, &job).await?;
+            }
+
+            if ! video_traite {
+                // Note : La job est uniquement creee si le format est video
+                let mut params_initial = HashMap::new();
+                params_initial.insert("initial".to_string(), "true".to_string());
+                job.params = Some(params_initial);
+                sauvegarder_job_video(middleware, &job).await?;
+            }
 
         }
 
@@ -556,7 +462,6 @@ async fn marquer_visites_fuuids<M>(
     {
         let filtre_versions = doc! {
             "fuuids": {"$in": fuuids},  // Utiliser index
-            // "fuuid": {"$in": fuuids}
         };
         debug!("marquer_visites_fuuids Filtre versions {:?}", filtre_versions);
 

@@ -212,6 +212,7 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
     let commandes_protegees: Vec<&str> = vec![
         COMMANDE_REINDEXER,
         COMMANDE_GET_CLE_JOB_CONVERSION,
+        COMMANDE_JOB_GET_KEY,
     ];
     for cmd in commandes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});

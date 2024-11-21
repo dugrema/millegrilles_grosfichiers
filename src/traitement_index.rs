@@ -860,8 +860,8 @@ pub async fn set_flag_index_traite<M>(middleware: &M, tuuid: &str, fuuid: &str) 
 
 }
 
-async fn sauvegarder_job_index<M>(middleware: &M, job: &BackgroundJob) -> Result<BackgroundJob, CommonError>
-where M: MongoDao
+pub async fn sauvegarder_job_index<M>(middleware: &M, job: &BackgroundJob) -> Result<BackgroundJob, CommonError>
+where M: MongoDao + GenerateurMessages
 {
-    sauvegarder_job(middleware, job, NOM_COLLECTION_INDEXATION_JOBS).await
+    sauvegarder_job(middleware, job, NOM_COLLECTION_INDEXATION_JOBS, "solr_relai", "indexDocument").await
 }

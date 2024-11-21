@@ -147,7 +147,7 @@ async fn verifier_visites_nouvelles<M>(middleware: &M, gestionnaire: &GrosFichie
         for item in visites {
             // Emettre evenement consigne pour indiquer que le fichier n'est plus nouveau
             sauvegarder_visites(middleware, item.fuuid.as_str(), &item.visits).await?;
-            declencher_traitement_nouveau_fuuid(middleware, gestionnaire, &item.fuuid).await?;
+            declencher_traitement_nouveau_fuuid(middleware, gestionnaire, &item.fuuid, item.visits.keys().collect()).await?;
         }
     }
     if let Some(unknown) = reponse.unknown {

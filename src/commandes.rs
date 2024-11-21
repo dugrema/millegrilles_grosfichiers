@@ -3,11 +3,12 @@ use std::iter::Map;
 use std::str::from_utf8;
 
 use log::{debug, error, info, warn};
-use millegrilles_common_rust::{serde_json, serde_json::json};
+use millegrilles_common_rust::{get_replyq_correlation, serde_json, serde_json::json};
 use millegrilles_common_rust::bson::{Bson, doc};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::chrono::{DateTime, Utc};
+use millegrilles_common_rust::common_messages::RequeteDechiffrage;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L4Secure};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
@@ -21,7 +22,7 @@ use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::transactions::Transaction;
-use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::error::{Error, Error as CommonError};
 use millegrilles_common_rust::messages_generiques::ReponseCommande;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
@@ -32,7 +33,7 @@ use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids};
 use crate::traitement_index::{reset_flag_indexe, set_flag_index_traite};
-use crate::traitement_jobs::{JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
+use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
 use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2};
 use crate::transactions::*;
 
@@ -77,9 +78,9 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         TRANSACTION_DEPLACER_FICHIERS_COLLECTION => commande_deplacer_fichiers_collection(middleware, m, gestionnaire).await,
         // TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => commande_retirer_documents_collection(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => commande_supprimer_documents(middleware, m, gestionnaire).await,
-        TRANSACTION_RECUPERER_DOCUMENTS => commande_recuperer_documents(middleware, m, gestionnaire).await,
+        // TRANSACTION_RECUPERER_DOCUMENTS => commande_recuperer_documents(middleware, m, gestionnaire).await,
         TRANSACTION_RECUPERER_DOCUMENTS_V2 => commande_recuperer_documents_v2(middleware, m, gestionnaire).await,
-        TRANSACTION_ARCHIVER_DOCUMENTS => commande_archiver_documents(middleware, m, gestionnaire).await,
+        // TRANSACTION_ARCHIVER_DOCUMENTS => commande_archiver_documents(middleware, m, gestionnaire).await,
         // TRANSACTION_CHANGER_FAVORIS => commande_changer_favoris(middleware, m, gestionnaire).await,
         TRANSACTION_DECRIRE_FICHIER => commande_decrire_fichier(middleware, m, gestionnaire).await,
         TRANSACTION_DECRIRE_COLLECTION => commande_decrire_collection(middleware, m, gestionnaire).await,
@@ -91,6 +92,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         // Sync
         COMMANDE_RECLAMER_FUUIDS => evenement_fichiers_syncpret(middleware, m).await,
 
+        COMMANDE_JOB_GET_KEY => commande_get_job_key(middleware, m).await,
         COMMANDE_COMPLETER_PREVIEWS => commande_completer_previews(middleware, m, gestionnaire).await,
         // COMMANDE_NOUVEAU_FICHIER => commande_nouveau_fichier(middleware, m, gestionnaire).await,
         // COMMANDE_GET_CLE_JOB_CONVERSION => commande_get_cle_job_conversion(middleware, m, gestionnaire).await,
@@ -396,8 +398,8 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gest
         Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas media) pour message {:?}", m.type_message))?
     }
 
-    if commande.user_id.is_none() {
-        Err(format!("grosfichiers.commande_associer_conversions: User_id obligatoire depuis version 2023.6 {:?}", m.type_message))?
+    if commande.user_id.is_none() && commande.tuuid.is_none() {
+        Err(format!("grosfichiers.commande_associer_conversions: User_id ou tuuid obligatoire depuis version 2023.6 {:?}", m.type_message))?
     }
 
     // Traiter la transaction
@@ -2146,3 +2148,72 @@ async fn transmettre_cle_attachee_domaines<M>(middleware: &M, cle: Value)
 //     let resultat = ResultatVerifierOrphelins { versions_supprimees, fuuids_a_conserver };
 //     Ok(resultat)
 // }
+
+#[derive(Deserialize)]
+struct CommandeGetJobKey {
+    job_id: String,
+    queue: String,
+}
+
+async fn commande_get_job_key<M>(middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    if ! m.certificat.verifier_roles(vec![RolesCertificats::Media, RolesCertificats::SolrRelai])? {
+        return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access denied"))?))
+    }
+    if ! m.certificat.verifier_exchanges(vec![Securite::L3Protege])? {
+        return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access denied"))?))
+    }
+
+    let commande: CommandeGetJobKey = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
+    let collection_name = match commande.queue.as_str() {
+        "image" => NOM_COLLECTION_IMAGES_JOBS,
+        "video" => NOM_COLLECTION_VIDEO_JOBS,
+        "index" => NOM_COLLECTION_INDEXATION_JOBS,
+        _ => return Ok(Some(middleware.reponse_err(Some(2), None, Some("Unsupported processing queue"))?))
+    };
+
+    let collection = middleware.get_collection_typed::<BackgroundJob>(collection_name)?;
+    let filtre = doc! {"job_id": &commande.job_id};
+    let ops = doc! {
+        "$set": {"etat": VIDEO_CONVERSION_ETAT_RUNNING},
+        "$currentDate": {"date_maj": true, CHAMP_MODIFICATION: true}
+    };
+    let job = collection.find_one_and_update(filtre, ops, None).await?;
+
+    match job {
+        Some(inner) => {
+            // Job exists. Request key from MaitreDesCles, redirect to requestor.
+            let cle_id = inner.cle_id;
+            let requete = RequeteDechiffrage {
+                domaine: DOMAINE_NOM.to_string(),
+                liste_hachage_bytes: None,
+                cle_ids: Some(vec![cle_id]),
+                certificat_rechiffrage: Some(m.certificat.chaine_pem()?),
+                inclure_signature: None,
+            };
+
+            let (reply_q, correlation_id) = get_replyq_correlation!(m.type_message);
+
+            let routage = RoutageMessageAction::builder(
+                DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, vec![Securite::L3Protege]
+            )
+                .reply_to(reply_q)
+                .correlation_id(correlation_id)
+                .blocking(false)
+                .build();
+
+            middleware.transmettre_requete(routage, &requete).await?;
+
+            Ok(None)  // The response is handled by MaitreDesCles
+        },
+        None => {
+            Ok(Some(middleware.reponse_err(Some(1), None, Some("Unknown job"))?))
+        }
+    }
+}

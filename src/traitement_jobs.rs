@@ -27,6 +27,7 @@ use millegrilles_common_rust::uuid::{uuid, Uuid};
 use serde::{Deserialize, Serialize};
 
 use crate::grosfichiers_constantes::*;
+use crate::traitement_media::emettre_processing_trigger;
 use crate::transactions::{NodeFichierRepBorrowed, NodeFichierRepOwned, NodeFichierVersionOwned};
 
 const CONST_MAX_RETRY: i32 = 3;
@@ -999,7 +1000,7 @@ struct RowVersionsIds {
 //     pub fallback: Option<bool>,
 // }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BackgroundJob {
     pub job_id: String,
 
@@ -1505,10 +1506,39 @@ pub struct ParametresConfirmerJobIndexation {
     // pub cle_conversion: Option<String>,
 }
 
-pub async fn sauvegarder_job<M>(middleware: &M, job: &BackgroundJob, nom_collection: &str) -> Result<BackgroundJob, CommonError>
-    where M: MongoDao
+pub async fn sauvegarder_job<M>(middleware: &M, job: &BackgroundJob, nom_collection: &str, domain: &str, action_trigger: &str)
+    -> Result<BackgroundJob, CommonError>
+    where M: GenerateurMessages + MongoDao
 {
-    let collection = middleware.get_collection(nom_collection)?;
+    let collection = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
 
-    todo!()
+    // Verifier si une job existe deja pour le fichier represente
+    let filtre = doc!{"tuuid": &job.tuuid, "fuuid": &job.fuuid};
+    let updated_job = match collection.find_one(filtre, None).await? {
+        Some(existing) => {
+            // Merge the filehost_ids
+            let filtre = doc!{"job_id": existing.job_id};
+            let ops = doc! {
+                "$addToSet": {"filehost_ids": &job.filehost_ids},
+                "$currentDate": {CHAMP_MODIFICATION: true},
+            };
+            let options = FindOneAndUpdateOptions::builder().return_document(ReturnDocument::After).build();
+            match collection.find_one_and_update(filtre, ops, options).await? {
+                Some(inner) => inner,
+                None => {
+                    error!("sauvegarder_job No job updated, returning cloned job");
+                    job.clone()
+                }
+            }
+        },
+        None => {
+            collection.insert_one(job, None).await?;
+            job.clone()
+        }
+    };
+
+    // Emettre job pour traitement. Utiliser filehost_ids en input, pas ceux trouves dans la DB.
+    emettre_processing_trigger(middleware, &job, domain, action_trigger).await;
+
+    Ok(updated_job)
 }

@@ -96,6 +96,7 @@ pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";
 pub const COMMANDE_NOUVEAU_FICHIER: &str = "commandeNouveauFichier";
 // pub const COMMANDE_ACTIVITE_FUUIDS: &str = "confirmerActiviteFuuids";
 // pub const COMMANDE_IMAGE_GET_JOB: &str = "getJobImage";
+pub const COMMANDE_JOB_GET_KEY: &str = "jobGetKey";
 pub const COMMANDE_VIDEO_TRANSCODER: &str = "transcoderVideo";
 pub const COMMANDE_VIDEO_ARRETER_CONVERSION: &str = "arreterVideo";
 pub const COMMANDE_VIDEO_DISPONIBLE: &str = "jobConversionVideoDisponible";
