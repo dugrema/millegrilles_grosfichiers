@@ -219,8 +219,10 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
     }
 
     let commandes_secures: Vec<&str> = vec![
-        TRANSACTION_IMAGE_SUPPRIMER_JOB,
-        TRANSACTION_VIDEO_SUPPRIMER_JOB,
+        // TRANSACTION_IMAGE_SUPPRIMER_JOB,
+        TRANSACTION_IMAGE_SUPPRIMER_JOB_V2,
+        // TRANSACTION_VIDEO_SUPPRIMER_JOB,
+        TRANSACTION_VIDEO_SUPPRIMER_JOB_V2,
         TRANSACTION_CONFIRMER_FICHIER_INDEXE,
         // COMMANDE_INDEXATION_GET_JOB,
         // COMMANDE_VIDEO_GET_JOB,

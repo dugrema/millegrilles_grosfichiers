@@ -77,7 +77,9 @@ where
         TRANSACTION_ASSOCIER_CONVERSIONS |
         TRANSACTION_ASSOCIER_VIDEO |
         TRANSACTION_IMAGE_SUPPRIMER_JOB |
+        TRANSACTION_IMAGE_SUPPRIMER_JOB_V2 |
         TRANSACTION_VIDEO_SUPPRIMER_JOB |
+        TRANSACTION_VIDEO_SUPPRIMER_JOB_V2 |
         TRANSACTION_SUPPRIMER_ORPHELINS => {
             match m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
                 true => Ok(()),
@@ -128,7 +130,9 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GrosFichiersDomainManag
         // TRANSACTION_FAVORIS_CREERPATH => transaction_favoris_creerpath(middleware, transaction).await,
         TRANSACTION_SUPPRIMER_VIDEO => transaction_supprimer_video(middleware, gestionnaire, transaction).await,
         TRANSACTION_IMAGE_SUPPRIMER_JOB => transaction_supprimer_job_image(middleware, gestionnaire, transaction).await,
+        TRANSACTION_IMAGE_SUPPRIMER_JOB_V2 => transaction_supprimer_job_image_v2(middleware, gestionnaire, transaction).await,
         TRANSACTION_VIDEO_SUPPRIMER_JOB => transaction_supprimer_job_video(middleware, gestionnaire, transaction).await,
+        TRANSACTION_VIDEO_SUPPRIMER_JOB_V2 => transaction_supprimer_job_video_v2(middleware, gestionnaire, transaction).await,
         TRANSACTION_AJOUTER_CONTACT_LOCAL => transaction_ajouter_contact_local(middleware, gestionnaire, transaction).await,
         TRANSACTION_SUPPRIMER_CONTACTS => transaction_supprimer_contacts(middleware, gestionnaire, transaction).await,
         TRANSACTION_PARTAGER_COLLECTIONS => transaction_partager_collections(middleware, gestionnaire, transaction).await,
@@ -3012,28 +3016,73 @@ async fn transaction_supprimer_job_image<M>(middleware: &M, gestionnaire: &GrosF
     }
 }
 
+async fn transaction_supprimer_job_image_v2<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+                                            -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao
+{
+    debug!("transaction_supprimer_job_image Consommer transaction : {}", transaction.transaction.id);
+    let transaction_supprimer_job: TransactionSupprimerJobImageV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    let fuuid = &transaction_supprimer_job.fuuid;
+    let tuuid = &transaction_supprimer_job.tuuid;
+
+    // Indiquer que la job a ete completee et ne doit pas etre redemarree.
+    if let Err(e) = set_flag_image_traitee(middleware, Some(tuuid), fuuid).await {
+        Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag image : {:?}", e))?
+    }
+
+    // Retourner le tuuid comme reponse, aucune transaction necessaire
+    match middleware.reponse_ok(None, None) {
+        Ok(r) => Ok(Some(r)),
+        Err(e) => Err(CommonError::Str("transactions.transaction_supprimer_job_image Erreur formattage reponse"))
+    }
+}
+
 async fn transaction_supprimer_job_video<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
+    // NOTE : Obsolete
     debug!("transaction_supprimer_job_video Consommer transaction : {}", transaction.transaction.id);
     let transaction_supprimer: TransactionSupprimerJobVideo = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_supprimer: TransactionSupprimerJobVideo = match transaction.clone().convertir() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_supprimer_job_image Erreur conversion transaction : {:?}", e))?
-    // };
 
     let job_id = match transaction_supprimer.job_id.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None};
-    // let user_id = get_user_effectif(&transaction, &transaction_supprimer)?;
 
     let fuuid = &transaction_supprimer.fuuid;
-    // let user_id = &transaction_supprimer.user_id;
     let mut cles_supplementaires = HashMap::new();
     cles_supplementaires.insert("cle_conversion".to_string(), transaction_supprimer.cle_conversion.clone());
 
     // Indiquer que la job a ete completee et ne doit pas etre redemarree.
     if let Err(e) = set_flag_video_traite(middleware, None::<&str>, fuuid, job_id).await {
-    // if let Err(e) = gestionnaire.video_job_handler.set_flag(middleware, fuuid, Some(user_id),Some(cles_supplementaires), true).await {
+        Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag video : {:?}", e))?
+    }
+
+    // Retourner le tuuid comme reponse, aucune transaction necessaire
+    match middleware.reponse_ok(None, None) {
+        Ok(r) => Ok(Some(r)),
+        Err(e) => Err(CommonError::Str("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
+    }
+}
+
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionSupprimerJobVideoV2 {
+    pub tuuid: String,
+    pub fuuid: String,
+    pub job_id: String,
+}
+
+async fn transaction_supprimer_job_video_v2<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+                                            -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao
+{
+    debug!("transaction_supprimer_job_video Consommer transaction : {}", transaction.transaction.id);
+    let transaction_supprimer: TransactionSupprimerJobVideoV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    let job_id = &transaction_supprimer.job_id;
+    let fuuid = &transaction_supprimer.fuuid;
+    let tuuid = &transaction_supprimer.tuuid;
+
+    // Indiquer que la job a ete completee et ne doit pas etre redemarree.
+    if let Err(e) = set_flag_video_traite(middleware, Some(tuuid), fuuid, Some(job_id.as_str())).await {
         Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag video : {:?}", e))?
     }
 

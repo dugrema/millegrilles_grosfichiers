@@ -23,6 +23,7 @@ use millegrilles_common_rust::tokio_stream::StreamExt;
 
 use crate::grosfichiers_constantes::*;
 use crate::traitement_jobs::{sauvegarder_job, BackgroundJob, JobHandler, JobHandlerVersions, JobTrigger};
+use crate::transactions::TransactionSupprimerJobVideoV2;
 
 const EVENEMENT_IMAGE_DISPONIBLE: &str = "jobImageDisponible";
 const EVENEMENT_VIDEO_DISPONIBLE: &str = "jobVideoDisponible";
@@ -351,14 +352,13 @@ pub async fn commande_supprimer_job_image<M>(middleware: &M, m: MessageValide, g
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct CommandeSupprimerJobImageV2 {tuuid: String, fuuid: String}
+struct CommandeSupprimerJobImageV2 {tuuid: String, fuuid: String, job_id: String}
 
 pub async fn commande_supprimer_job_image_v2<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_supprimer_job_image_v2 Consommer commande : {:?}", & m.type_message);
-    let _commande: CommandeSupprimerJobImageV2 = {
+    let commande: CommandeSupprimerJobImageV2 = {
         let message_ref = m.message.parse()?;
         message_ref.contenu()?.deserialize()?
     };
@@ -367,38 +367,14 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         Err(format!("traitement_media.commande_supprimer_job_image_v2 Certificat doit avoir L3Protege et role media"))?;
     }
 
-    // let tuuid = &commande.tuuid;
-    // let fuuid = &commande.fuuid;
-    // set_flag_image_traitee(middleware, tuuid, fuuid).await?;
+    debug!("commande_supprimer_job_image_v2 Supprimer job fuuid : {:?}", commande.fuuid);
+    sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
 
-    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
+    let filtre = doc! {"job_id": commande.job_id};
+    let collection = middleware.get_collection(NOM_COLLECTION_IMAGES_JOBS)?;
+    collection.delete_one(filtre, None).await?;
 
-    // {
-    //     // Verifier si on a un flag de traitement video pending sur versions
-    //     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    //     let filtre = doc!{ CHAMP_TUUID: tuuid, CHAMP_FUUID: fuuid };
-    //     debug!("commande_supprimer_job_image Verifier si flag job image est actif pour {:?}", filtre);
-    //     match collection_versions.find_one(filtre, None).await? {
-    //         Some(inner) => {
-    //             let info_fichier: DBFichierVersionDetail = convertir_bson_deserializable(inner)?;
-    //             if let Some(false) = info_fichier.flag_media_traite {
-    //                 sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
-    //             }
-    //         },
-    //         None => warn!("Recu message annuler job image sans doc fichier version")
-    //     };
-    // }
-    //
-    // gestionnaire.image_job_handler.set_flag(middleware, fuuid, Some(user_id), None, true).await?;
-    //
-    // Ok(Some(middleware.reponse_ok(None, None)?))
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct CommandeSupprimerJobVideoV2 {
-    tuuid: String,
-    fuuid: String,
-    job_id: String,
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
@@ -412,72 +388,59 @@ pub async fn commande_supprimer_job_video_v2<M>(middleware: &M, m: MessageValide
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    todo!()
+    let commande: TransactionSupprimerJobVideoV2 = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
 
-    // debug!("commande_supprimer_job_video_v2 Consommer commande : {:?}", & m.type_message);
-    // let commande: CommandeSupprimerJobVideoV2 = {
-    //     let message_ref = m.message.parse()?;
-    //     message_ref.contenu()?.deserialize()?
-    // };
-    //
-    // if m.certificat.verifier_roles(vec![RolesCertificats::Media])? && m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
-    //     // Ok
-    // } else if m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])? || m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
-    //     // Ok
-    // } else {
-    //     Err(format!("traitement_media.commande_supprimer_job_video Echec verification securite, acces refuse"))?
-    // };
-    //
-    // {
-    //     // Emettre evenement annulerJobVideo pour media, collections
-    //     let routage = RoutageMessageAction::builder(
-    //         DOMAINE_NOM, EVENEMENT_ANNULER_JOB_VIDEO, vec![Securite::L3Protege])
-    //         .build();
-    //     middleware.emettre_evenement(routage, &commande).await?;
-    // }
-    //
-    // // Determiner si la job est active et pour le video initial (params.initial == 'true')
-    // let job_initiale = true;
-    //
-    // if job_initiale {
-    //     // Convertir en transaction pour desactiver le flag de traitement video et supprimer la job
-    //     sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
-    // } else {
-    //     debug!("Supprimer job video {}", commande.job_id);
-    //     todo!()
-    // }
-    //
-    // {
-    //     // Verifier si on a un flag de traitement video pending sur versions
-    //     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    //     let filtre = doc!{ CHAMP_FUUID: fuuid, CHAMP_USER_ID: &user_id };
-    //     debug!("commande_supprimer_job_video Verifier si flag job video est actif pour {:?}", filtre);
-    //     match collection_versions.find_one(filtre, None).await? {
-    //         Some(inner) => {
-    //             let info_fichier: DBFichierVersionDetail = convertir_bson_deserializable(inner)?;
-    //             if let Some(false) = info_fichier.flag_video_traite {
-    //                 sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
-    //             }
-    //         },
-    //         None => warn!("Recu message annuler job video sans doc fichier version")
-    //     };
-    // }
-    //
-    // let mut cles_supplementaires = HashMap::new();
-    // cles_supplementaires.insert("cle_conversion".to_string(), commande.cle_conversion.clone());
-    // gestionnaire.video_job_handler.set_flag(middleware, fuuid, Some(&user_id), Some(cles_supplementaires), true).await?;
-    //
-    // // Emettre un evenement pour clients
-    // let evenement = json!({
-    //     "cle_conversion": commande.cle_conversion,
-    //     "fuuid": fuuid,
-    // });
-    // let routage = RoutageMessageAction::builder(DOMAINE_NOM, "jobSupprimee", vec![Securite::L2Prive])
-    //     .partition(user_id)
-    //     .build();
-    // middleware.emettre_evenement(routage, &evenement).await?;
-    //
-    // Ok(Some(middleware.reponse_ok(None, None)?))
+    if m.certificat.verifier_roles(vec![RolesCertificats::Media])? && m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
+        // Ok
+    } else if m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])? || m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+        // Ok
+    } else {
+        Err(format!("traitement_media.commande_supprimer_job_video Echec verification securite, acces refuse"))?
+    };
+
+    debug!("commande_supprimer_job_video_v2 Supprimer video fuuid:{} job_id:{}", commande.fuuid, commande.job_id);
+
+    {
+        // Emettre evenement annulerJobVideo pour media, collections
+        let routage = RoutageMessageAction::builder(
+            DOMAINE_NOM, EVENEMENT_ANNULER_JOB_VIDEO, vec![Securite::L3Protege])
+            .build();
+        middleware.emettre_evenement(routage, &commande).await?;
+    }
+
+    // Determiner si la job est active et pour le video initial (params.defaults == 'true')
+    let job_initiale = true;
+    let collection = middleware.get_collection_typed::<BackgroundJob>(NOM_COLLECTION_VIDEO_JOBS)?;
+    let filtre = doc!{"job_id": &commande.job_id};
+    if let Some(job) = collection.find_one(filtre, None).await? {
+        let initial = match job.params {
+            Some(inner) => inner.get("defaults").is_some(),
+            None => false
+        };
+
+        if initial {
+            debug!("commande_supprimer_job_video_v2 Error during initial video processing, abort for good on fuuid {}", commande.fuuid);
+            // Convertir en transaction pour desactiver le flag de traitement video et supprimer la job
+            sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
+        }
+
+        // Emettre un evenement pour clients
+        if let Some(user_id) = job.user_id.as_ref() {
+            let evenement = json!({"job_id": &commande.job_id, "fuuid": &commande.fuuid, "tuuid": &commande.tuuid});
+            let routage = RoutageMessageAction::builder(DOMAINE_NOM, "jobSupprimee", vec![Securite::L2Prive])
+                .partition(user_id)
+                .build();
+            middleware.emettre_evenement(routage, &evenement).await?;
+        }
+    }
+
+    debug!("Supprimer job video {}", commande.job_id);
+    set_flag_video_traite(middleware, Some(&commande.tuuid), &commande.fuuid, Some(&commande.job_id)).await?;
+
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 fn job_image_supportee<S>(mimetype: S) -> bool
