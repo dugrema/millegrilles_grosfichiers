@@ -723,7 +723,7 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     }
     if minutes % 5 == 2
     {
-        entretien_jobs_expirees(middleware).await;  // Job media/indexation expirees
+        entretien_jobs_expirees(middleware, gestionnaire).await;  // Job media/indexation expirees
     }
 
     // Recalculer les quotas a toutes les 3 heures

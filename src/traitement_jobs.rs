@@ -18,6 +18,8 @@ use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::serde_json::{json, Value};
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::{chrono, millegrilles_cryptographie, uuid};
+use millegrilles_common_rust::domaines_v2::GestionnaireDomaineSimple;
+use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable_v2;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleSecreteSerialisee;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
@@ -25,10 +27,10 @@ use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertifi
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::uuid::{uuid, Uuid};
 use serde::{Deserialize, Serialize};
-
+use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::traitement_media::emettre_processing_trigger;
-use crate::transactions::{NodeFichierRepBorrowed, NodeFichierRepOwned, NodeFichierVersionOwned};
+use crate::transactions::{NodeFichierRepBorrowed, NodeFichierRepOwned, NodeFichierVersionOwned, TransactionSupprimerJobVideoV2};
 
 const CONST_MAX_RETRY: i32 = 3;
 const CONST_LIMITE_BATCH: i64 = 1_000;
@@ -1608,22 +1610,22 @@ async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, fl
     Ok(())
 }
 
-pub async fn entretien_jobs_expirees<M>(middleware: &M)
-    where M: MongoDao + GenerateurMessages
+pub async fn entretien_jobs_expirees<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager)
+    where M: MongoDao + GenerateurMessages + ValidateurX509
 {
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_IMAGES_JOBS, 180, "media", "processImage").await {
+    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_IMAGES_JOBS, 180, "media", "processImage").await {
         error!("entretien_jobs_expirees Erreur entretien images: {:?}", e);
     }
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_VIDEO_JOBS, 600, "media", "processVideo").await {
+    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_VIDEO_JOBS, 600, "media", "processVideo").await {
         error!("entretien_jobs_expirees Erreur entretien videos: {:?}", e);
     }
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 180, "solr_relai", "processIndex").await {
+    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_INDEXATION_JOBS, 180, "solr_relai", "processIndex").await {
         error!("entretien_jobs_expirees Erreur entretien index: {:?}", e);
     }
 }
 
-async fn reactiver_jobs<M>(middleware: &M, nom_collection: &str, timeout: i64, domain: &str, action: &str) -> Result<(), CommonError>
-    where M: MongoDao + GenerateurMessages
+async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, nom_collection: &str, timeout: i64, domain: &str, action: &str) -> Result<(), CommonError>
+    where M: MongoDao + GenerateurMessages + ValidateurX509
 {
     let collection = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
 
@@ -1645,7 +1647,34 @@ async fn reactiver_jobs<M>(middleware: &M, nom_collection: &str, timeout: i64, d
 
         if row.retry > 4 {
             // Cancel the job, emit a transaction to clear for good
-            todo!()
+            info!("reactiver_jobs Trop d'echecs sur traitement {} fuuid {}, desactiver pour de bon", action, row.fuuid);
+            match action {
+                "processImage" => {
+                    let transaction = TransactionSupprimerJobImageV2 {
+                        tuuid: row.tuuid,
+                        fuuid: row.fuuid,
+                        err: None,
+                    };
+                    sauvegarder_traiter_transaction_serializable_v2(
+                        middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_IMAGE_SUPPRIMER_JOB_V2).await?;
+                },
+                "processVideo" => {
+                    let transaction = TransactionSupprimerJobVideoV2 {
+                        tuuid: row.tuuid,
+                        fuuid: row.fuuid,
+                        job_id: row.job_id.clone(),
+                    };
+                    sauvegarder_traiter_transaction_serializable_v2(
+                        middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_VIDEO_SUPPRIMER_JOB_V2).await?;
+                },
+                "processIndex" => {
+                    todo!()
+                },
+                _ => warn!("reactiver_jobs Unknown expired job type: {}", action)
+            }
+            let filtre = doc!{"job_id": &row.job_id};
+            collection.delete_one(filtre, None).await?;
+            continue;  // Skip trigger
         }
 
         emettre_processing_trigger(middleware, &row, domain, action).await;
