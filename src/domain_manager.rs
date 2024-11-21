@@ -27,6 +27,7 @@ use crate::requetes::consommer_requete;
 use crate::evenements::{consommer_evenement, HandlerEvenements};
 use crate::traitement_entretien::{calculer_quotas, reclamer_fichiers};
 use crate::traitement_index::IndexationJobHandler;
+use crate::traitement_jobs::{creer_jobs_manquantes, entretien_jobs_expirees};
 use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
 use crate::transactions::aiguillage_transaction;
 
@@ -716,13 +717,14 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     let minutes = date_epoch.minute();
     let hours = date_epoch.hour();
 
-    // Executer a intervalle regulier
-    // if minutes % 5 == 2 {
-    //     debug!("traiter_cedule Generer index et media manquants");
-    //     gestionnaire.image_job_handler.entretien(middleware, gestionnaire, None).await;
-    //     gestionnaire.video_job_handler.entretien(middleware, gestionnaire, None).await;
-    //     gestionnaire.indexation_job_handler.entretien(middleware, gestionnaire, None).await;
-    // }
+    if hours % 3 == 0 && minutes == 21
+    {
+        creer_jobs_manquantes(middleware).await;  // Creer jobs media/indexation manquantes (recovery)
+    }
+    if minutes % 5 == 2
+    {
+        entretien_jobs_expirees(middleware).await;  // Job media/indexation expirees
+    }
 
     // Recalculer les quotas a toutes les 3 heures
     if hours % 3 == 1 && minutes == 14 {
@@ -730,8 +732,7 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     }
 
     // Reclamer les fichiers pour eviter qu'ils soient supprimes. Execute des petites batch toutes
-    // les 5 minutes pour s'assurer que tous les fichiers sont identifies aux 3 jours.
-    //if minutes % 3 == 2
+    // les 3 minutes pour s'assurer que tous les fichiers sont identifies aux 3 jours.
     {
         let nouveaux = minutes % 3 != 0;  // Check fichiers presents nul part toutes les minutes
         reclamer_fichiers(middleware, gestionnaire, nouveaux).await;

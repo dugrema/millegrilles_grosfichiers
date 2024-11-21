@@ -1026,7 +1026,7 @@ pub struct BackgroundJob {
     pub date_modification: chrono::DateTime<Utc>,
     #[serde(default, with="opt_chrono_datetime_as_bson_datetime")]
     pub date_maj: Option<chrono::DateTime<Utc>>,
-    pub retry: Option<i32>,
+    pub retry: i32,
 }
 
 impl BackgroundJob {
@@ -1048,7 +1048,7 @@ impl BackgroundJob {
             etat: VIDEO_CONVERSION_ETAT_PENDING,
             date_modification: Utc::now(),
             date_maj: None,
-            retry: None,
+            retry: 0,
         }
     }
 }
@@ -1549,4 +1549,107 @@ pub async fn sauvegarder_job<M>(middleware: &M, job: &BackgroundJob, nom_collect
     emettre_processing_trigger(middleware, &job, domain, action_trigger).await;
 
     Ok(updated_job)
+}
+
+pub async fn creer_jobs_manquantes<M>(middleware: &M)
+    where M: MongoDao
+{
+    if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_IMAGES_JOBS, CHAMP_FLAG_MEDIA_TRAITE).await {
+        error!("creer_jobs_manquantes Erreur creation jobs manquantes images: {:?}", e);
+    }
+    if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_VIDEO_JOBS, CHAMP_FLAG_VIDEO_TRAITE).await {
+        error!("creer_jobs_manquantes Erreur creation jobs manquantes videos: {:?}", e);
+    }
+    if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX).await {
+        error!("creer_jobs_manquantes Erreur creation jobs manquantes index: {:?}", e);
+    }
+}
+
+async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, flag_job: &str) -> Result<(), CommonError>
+    where M: MongoDao
+{
+    let collection_version = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
+    let filtre_version = doc!{flag_job: false};
+    let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
+    let mut curseur = collection_version.find(filtre_version, None).await?;
+    while curseur.advance().await? {
+        let row = curseur.deserialize_current()?;
+        let fuuid = row.fuuid;
+        let tuuid = row.tuuid;
+
+        // Verifier si une job existe pour ce tuuid/fuuid
+        let filtre_job = doc! {"tuuid": tuuid, "fuuid": fuuid};
+        let count = collection_jobs.count_documents(filtre_job, None).await?;
+
+        if count == 0 {
+            debug!("creer_jobs_manquantes_queue Creer job {} manquante pour tuuid {}", flag_job, tuuid);
+            if row.cle_id.is_some() && row.format.is_some() && row.nonce.is_some() {
+                let cle_id = row.cle_id.expect("cle_id");
+                let format: &str = row.format.expect("format").into();
+                let nonce = row.nonce.expect("nonce");
+                let visites: Vec<&String> = row.visites.keys().collect();
+                let mut job = BackgroundJob::new(tuuid, fuuid, row.mimetype, &visites, cle_id, format, nonce);
+                if flag_job == CHAMP_FLAG_VIDEO_TRAITE {
+                    // Champs supplementaires pour video
+                    let mut params_initial = HashMap::new();
+                    params_initial.insert(VIDEO_FLAG_CREER_THUMBNAILS.to_string(), "true".to_string());
+                    params_initial.insert(VIDEO_FLAG_DEFAULTS.to_string(), "true".to_string());
+                    job.params = Some(params_initial);
+
+                    job.user_id = Some(row.user_id.to_string());
+                }
+                collection_jobs.insert_one(job, None).await?;
+            }
+        }
+    }
+
+
+
+    Ok(())
+}
+
+pub async fn entretien_jobs_expirees<M>(middleware: &M)
+    where M: MongoDao + GenerateurMessages
+{
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_IMAGES_JOBS, 180, "media", "processImage").await {
+        error!("entretien_jobs_expirees Erreur entretien images: {:?}", e);
+    }
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_VIDEO_JOBS, 600, "media", "processVideo").await {
+        error!("entretien_jobs_expirees Erreur entretien videos: {:?}", e);
+    }
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 180, "solr_relai", "processIndex").await {
+        error!("entretien_jobs_expirees Erreur entretien index: {:?}", e);
+    }
+}
+
+async fn reactiver_jobs<M>(middleware: &M, nom_collection: &str, timeout: i64, domain: &str, action: &str) -> Result<(), CommonError>
+    where M: MongoDao + GenerateurMessages
+{
+    let collection = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
+
+    // Reset le flag des jobs expirees
+    let expiration = Utc::now() - chrono::Duration::new(timeout, 0).expect("duration");
+    let filtre = doc!{"etat": VIDEO_CONVERSION_ETAT_RUNNING, "date_maj": {"$lte": expiration}};
+    let ops = doc!{
+        "$set": {"etat": VIDEO_CONVERSION_ETAT_PENDING},
+        "$inc": {"retry": 1},
+    };
+    collection.update_many(filtre, ops, None).await?;
+
+    // Re-emettre les jobs, maximum de 1000
+    let filtre = doc!{"etat": VIDEO_CONVERSION_ETAT_PENDING};
+    let options = FindOptions::builder().limit(1000).build();
+    let mut curseur = collection.find(filtre, options).await?;
+    while curseur.advance().await? {
+        let row = curseur.deserialize_current()?;
+
+        if row.retry > 4 {
+            // Cancel the job, emit a transaction to clear for good
+            todo!()
+        }
+
+        emettre_processing_trigger(middleware, &row, domain, action).await;
+    }
+
+    Ok(())
 }
