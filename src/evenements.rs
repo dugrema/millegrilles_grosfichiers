@@ -82,30 +82,12 @@ async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValide)
     let evenement: EvenementTranscodageProgres = message_ref.contenu()?.deserialize()?;
     debug!("evenement_transcodage_progres parsed : {:?}", evenement);
 
-    let height = match evenement.height {
-        Some(h) => h,
-        None => {
-            // Height/resolution n'est pas fourni, rien a faire
-            return Ok(None)
-        }
-    };
-
-    let bitrate_quality = match &evenement.video_quality {
-        Some(q) => q.to_owned(),
-        None => match &evenement.video_bitrate {
-            Some(b) => b.to_owned() as i32,
-            None => 0
-        }
-    };
-
-    let cle_video = format!("{};{};{}p;{}", evenement.mimetype, evenement.video_codec, height, bitrate_quality);
     let filtre = doc! {
-        CHAMP_FUUID: &evenement.fuuid,
-        CHAMP_CLE_CONVERSION: &cle_video
+        "job_id": &evenement.job_id,
     };
 
     let mut ops = doc! {
-        "$currentDate": { CHAMP_MODIFICATION: true, CHAMP_DATE_MAJ: true }
+        "$currentDate": { CHAMP_DATE_MAJ: true }
     };
     match evenement.pct_progres {
         Some(p) => {
@@ -228,6 +210,7 @@ struct EvenementConfirmerEtatFuuids {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct EvenementTranscodageProgres {
+    job_id: String,
     fuuid: String,
     mimetype: String,
     #[serde(rename="videoCodec")]
