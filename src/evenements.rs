@@ -27,7 +27,7 @@ use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::mapper_fichier_db;
 use crate::traitement_index::{entretien_supprimer_fichiersrep, sauvegarder_job_index};
-use crate::traitement_jobs::BackgroundJob;
+use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams};
 use crate::traitement_media::{sauvegarder_job_images, sauvegarder_job_video};
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
@@ -421,9 +421,20 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
 
             if ! video_traite {
                 // Note : La job est uniquement creee si le format est video
-                let mut params_initial = HashMap::new();
-                params_initial.insert(VIDEO_FLAG_CREER_THUMBNAILS.to_string(), "true".to_string());
-                params_initial.insert(VIDEO_FLAG_DEFAULTS.to_string(), "true".to_string());
+                let params_initial = BackgroundJobParams {
+                    defaults: Some(true),
+                    thumbnails: Some(true),
+                    mimetype: None,
+                    codec_video: None,
+                    codec_audio: None,
+                    resolution_video: None,
+                    quality_video: None,
+                    bitrate_video: None,
+                    bitrate_audio: None,
+                    preset: None,
+                    audio_stream_idx: None,
+                    subtitle_stream_idx: None,
+                };
                 job.params = Some(params_initial);
                 let user_id = doc_fuuid.user_id;
                 job.user_id = Some(user_id);

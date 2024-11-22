@@ -33,8 +33,8 @@ use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids};
 use crate::traitement_index::{reset_flag_indexe, set_flag_index_traite};
-use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
-use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2};
+use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
+use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_video};
 use crate::transactions::*;
 
 const REQUETE_MAITREDESCLES_VERIFIER_PREUVE: &str = "verifierPreuve";
@@ -1477,6 +1477,12 @@ async fn commande_favoris_creerpath<M>(middleware: &M, m: MessageValide, gestion
     }
 }
 
+#[derive(Serialize)]
+struct CommandeVideoConvertirReponse {
+    ok: bool,
+    job_id: Option<String>,
+}
+
 async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
@@ -1488,55 +1494,12 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, gestionna
     };
 
     let fuuid = commande.fuuid.as_str();
+    let tuuid = commande.tuuid.as_str();
 
-    let user_id = if let Some(user_id) = m.certificat.get_user_id()? {
-        user_id
-    } else {
-        let delegation_globale = m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)?;
-        if delegation_globale || m.certificat.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])? {
-            // Ok, on utilise le user_id de la commande
-            match commande.user_id {
-                Some(inner) => {
-                    // Remplacer user_id pour celui demande
-                    inner
-                },
-                None => {
-                    debug!("commande_video_convertir verifier_exchanges : User id manquant pour fuuid {}", fuuid);
-                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant"}), None)?))
-                    return Ok(Some(middleware.reponse_err(None, None, Some("User id manquant"))?))
-                }
-            }
-        } else {
-            debug!("commande_video_convertir verifier_exchanges : Certificat n'a pas l'acces requis (securite 2,3,4 ou user_id avec acces fuuid)");
-            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
-            return Ok(Some(middleware.reponse_err(None, None, Some("Access denied"))?))
-        }
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => return Ok(Some(middleware.reponse_err(None, None, Some("Certificate has no user_id"))?))
     };
-    //     if delegation_globale || m.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure]) {
-    //         // Ok, on utilise le user_id de la commande
-    //         match commande.user_id {
-    //             Some(inner) => {
-    //                 // Remplacer user_id pour celui demande
-    //                 inner
-    //             },
-    //             None => {
-    //                 debug!("commande_video_convertir verifier_exchanges : User id manquant pour fuuid {}", fuuid);;
-    //                 return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant"}), None)?))
-    //             }
-    //         }
-    //     } else if user_id.is_some() {
-    //         let u = user_id.as_ref().expect("commande_video_convertir user_id");
-    //         let resultat = verifier_acces_usager(middleware, u, vec![fuuid]).await?;
-    //         if ! resultat.contains(&commande.fuuid) {
-    //             debug!("commande_video_convertir verifier_exchanges : Usager n'a pas acces a fuuid {}", fuuid);;
-    //             return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
-    //         }
-    //         u.to_owned()
-    //     } else {
-    //         debug!("commande_video_convertir verifier_exchanges : Certificat n'a pas l'acces requis (securite 2,3,4 ou user_id avec acces fuuid)");
-    //         return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
-    //     }
-    // };
 
     // Verifier si le fichier a deja un video correspondant
     let bitrate_quality = match &commande.quality_video {
@@ -1547,50 +1510,29 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, gestionna
         }
     };
     let cle_video = format!("{};{};{}p;{}", commande.mimetype, commande.codec_video, commande.resolution_video, bitrate_quality);
-    // let filtre_fichier = doc!{CHAMP_FUUIDS: fuuid};
-    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    // let info_fichier: FichierDetail = match collection.find_one(filtre_fichier, None).await? {
-    //     Some(f) => convertir_bson_deserializable(f)?,
-    //     None => {
-    //         info!("commande_video_convertir verifier_exchanges : Fichier inconnu {}", fuuid);
-    //         return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichier inconnu"}), None)?))
-    //     }
-    // };
 
-    // let version_courante = match info_fichier.version_courante {
-    //     Some(v) => v,
-    //     None => {
-    //         info!("commande_video_convertir Fichier video en etat incorrect (version_courante manquant) {}", fuuid);
-    //         return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Information fichier corrompue"}), None)?))
-    //     }
-    // };
-
-    let filtre_fichier = doc! { CHAMP_USER_ID: &user_id, CHAMP_FUUID: fuuid };
+    let filtre_fichier = doc! { CHAMP_TUUID: &tuuid, CHAMP_FUUID: fuuid, CHAMP_USER_ID: &user_id };
     let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
     let version_courante = match collection.find_one(filtre_fichier, None).await {
         Ok(inner) => match inner {
             Some(inner) => inner,
             None => {
                 info!("commande_video_convertir find_one : Fichier inconnu {}", fuuid);
-                // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichier inconnu"}), None)?))
-                return Ok(Some(middleware.reponse_err(None, None, Some("Fichier inconnu"))?))
+                return Ok(Some(middleware.reponse_err(Some(404), None, Some("Fichier inconnu"))?))
             }
         },
         Err(e) => {
             error!("commande_video_convertir find_one : Erreur chargement/conversion {} : {:?}", fuuid, e);
-            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement/conversion"}), None)?))
             return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement/conversion"))?))
         }
     };
 
     match version_courante.video {
         Some(v) => {
-            // Verifier si le video existe deja
-            match v.get(cle_video.as_str()) {
+            match v.get(cle_video.as_str()) { // Verifier si le video existe deja
                 Some(v) => {
                     info!("commande_video_convertir Fichier video existe deja {} pour {}", cle_video, fuuid);
-                    // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Video dans ce format existe deja"}), None)?))
-                    return Ok(Some(middleware.reponse_err(None, None, Some("Video dans ce format existe deja"))?))
+                    return Ok(Some(middleware.reponse_err(Some(409), None, Some("Video dans ce format existe deja"))?))
                 },
                 None => ()  // Ok, le video n'existe pas
             }
@@ -1599,68 +1541,100 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, gestionna
     };
 
     // Conserver l'information de conversion, emettre nouveau message de job
-    // Note : job lock fait plus tard avant conversion, duplication de messages est OK
-    let insert_ops = doc! {
-        "tuuid": &commande.tuuid,
-        CHAMP_FUUID: fuuid,
-        CHAMP_USER_ID: &user_id,
-        CHAMP_MIMETYPE: commande.mimetype,
-        "codecVideo": commande.codec_video,
-        "codecAudio": commande.codec_audio,
-        "qualityVideo": commande.quality_video,
-        "resolutionVideo": commande.resolution_video,
-        "bitrateVideo": commande.bitrate_video,
-        "bitrateAudio": commande.bitrate_audio,
-        "preset": commande.preset,
-        "etat": 1,  // Pending
-    };
-    let set_ops = doc! {
-        CHAMP_FLAG_DB_RETRY: 0,  // Reset le retry count automatique
-    };
-    let ops = doc! {
-        "$set": set_ops,
-        "$setOnInsert": insert_ops,
-        "$currentDate": {CHAMP_MODIFICATION: true},
-    };
-    let filtre_video = doc! {CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video};
-    let collection_video = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
-    let options = FindOneAndUpdateOptions::builder().upsert(true).build();
-    let emettre_job = match collection_video.find_one_and_update(filtre_video, ops, options).await? {
-        Some(d) => {
-            debug!("commande_video_convertir Etat precedent : {:?}", d);
-            // Verifier l'etat du document precedent (e.g. pending, erreur, en cours, etc)
+    if version_courante.cle_id.is_some() && version_courante.format.is_some() && version_courante.nonce.is_some() {
+        let cle_id = version_courante.cle_id.expect("cle_id");
+        let format: &str = version_courante.format.expect("format").into();
+        let nonce = version_courante.nonce.expect("nonce");
+        let mimetype = version_courante.mimetype;
+        let filehost_ids: Vec<&String> = version_courante.visites.keys().collect();
 
-            true  // Emettre la job
-        },
-        None => true  // Nouvelle entree, emettre la nouvelle job.
-    };
+        let mut job = BackgroundJob::new(tuuid, fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
+        let reponse = CommandeVideoConvertirReponse {ok: true, job_id: Some(job.job_id.clone())};
 
-    if emettre_job {
-        // Faire la liste des consignations avec le fichier disponible
-        let consignation_disponible: Vec<&String> = version_courante.visites.keys().into_iter().collect();
+        job.user_id = Some(user_id.clone());
+        let params = BackgroundJobParams {
+            defaults: None,
+            thumbnails: None,
+            mimetype: Some(commande.mimetype),
+            codec_video: Some(commande.codec_video),
+            codec_audio: Some(commande.codec_audio),
+            resolution_video: Some(commande.resolution_video),
+            quality_video: commande.quality_video,
+            bitrate_video: commande.bitrate_video,
+            bitrate_audio: Some(commande.bitrate_audio),
+            preset: commande.preset,
+            audio_stream_idx: commande.audio_stream,
+            subtitle_stream_idx: commande.subtitle_stream,
+        };
+        job.params = Some(params);
+        sauvegarder_job_video(middleware, &job).await?;
 
-        for consignation in consignation_disponible {
-            let routage = RoutageMessageAction::builder(DOMAINE_MEDIA_NOM, COMMANDE_VIDEO_DISPONIBLE, vec![Securite::L2Prive])
-                .partition(consignation)
-                .blocking(false)
-                .build();
-            let commande_fichiers = json!({CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video});
-            middleware.transmettre_commande(routage, &commande_fichiers).await?;
-        }
-
-        // Emettre evenement pour clients
-        let evenement = json!({
-            CHAMP_CLE_CONVERSION: &cle_video,
-            CHAMP_FUUID: fuuid,
-            "tuuid": &commande.tuuid,
-        });
-        let routage = RoutageMessageAction::builder(DOMAINE_NOM, "jobAjoutee", vec![Securite::L2Prive])
-            .partition(&user_id)
-            .build();
-        middleware.emettre_evenement(routage, &evenement).await?;
+        Ok(Some(middleware.build_reponse(reponse)?.0))
+    } else {
+        Ok(Some(middleware.reponse_err(Some(2), None, Some("Information de chiffrage manquante"))?))
     }
 
-    Ok(Some(middleware.reponse_ok(None, None)?))
+    // let insert_ops = doc! {
+    //     "tuuid": &commande.tuuid,
+    //     CHAMP_FUUID: fuuid,
+    //     CHAMP_USER_ID: &user_id,
+    //     CHAMP_MIMETYPE: commande.mimetype,
+    //     "codecVideo": commande.codec_video,
+    //     "codecAudio": commande.codec_audio,
+    //     "qualityVideo": commande.quality_video,
+    //     "resolutionVideo": commande.resolution_video,
+    //     "bitrateVideo": commande.bitrate_video,
+    //     "bitrateAudio": commande.bitrate_audio,
+    //     "preset": commande.preset,
+    //     "etat": 1,  // Pending
+    // };
+    // let set_ops = doc! {
+    //     CHAMP_FLAG_DB_RETRY: 0,  // Reset le retry count automatique
+    // };
+    // let ops = doc! {
+    //     "$set": set_ops,
+    //     "$setOnInsert": insert_ops,
+    //     "$currentDate": {CHAMP_MODIFICATION: true},
+    // };
+    // let filtre_video = doc! {CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video};
+    // let collection_video = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+    // let options = FindOneAndUpdateOptions::builder().upsert(true).build();
+    // let emettre_job = match collection_video.find_one_and_update(filtre_video, ops, options).await? {
+    //     Some(d) => {
+    //         debug!("commande_video_convertir Etat precedent : {:?}", d);
+    //         // Verifier l'etat du document precedent (e.g. pending, erreur, en cours, etc)
+    //
+    //         true  // Emettre la job
+    //     },
+    //     None => true  // Nouvelle entree, emettre la nouvelle job.
+    // };
+
+    // if emettre_job {
+    //     // Faire la liste des consignations avec le fichier disponible
+    //     let consignation_disponible: Vec<&String> = version_courante.visites.keys().into_iter().collect();
+    //
+    //     for consignation in consignation_disponible {
+    //         let routage = RoutageMessageAction::builder(DOMAINE_MEDIA_NOM, COMMANDE_VIDEO_DISPONIBLE, vec![Securite::L2Prive])
+    //             .partition(consignation)
+    //             .blocking(false)
+    //             .build();
+    //         let commande_fichiers = json!({CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video});
+    //         middleware.transmettre_commande(routage, &commande_fichiers).await?;
+    //     }
+    //
+    //     // Emettre evenement pour clients
+    //     let evenement = json!({
+    //         CHAMP_CLE_CONVERSION: &cle_video,
+    //         CHAMP_FUUID: fuuid,
+    //         "tuuid": &commande.tuuid,
+    //     });
+    //     let routage = RoutageMessageAction::builder(DOMAINE_NOM, "jobAjoutee", vec![Securite::L2Prive])
+    //         .partition(&user_id)
+    //         .build();
+    //     middleware.emettre_evenement(routage, &evenement).await?;
+    // }
+    //
+    // Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 // async fn commande_image_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)

@@ -417,7 +417,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     let filtre = doc!{"job_id": &commande.job_id};
     if let Some(job) = collection.find_one(filtre, None).await? {
         let initial = match job.params {
-            Some(inner) => inner.get("defaults").is_some(),
+            Some(inner) => inner.defaults.is_some(),
             None => false
         };
 

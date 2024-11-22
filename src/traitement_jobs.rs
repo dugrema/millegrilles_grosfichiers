@@ -1003,6 +1003,34 @@ struct RowVersionsIds {
 // }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BackgroundJobParams {
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub defaults: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub thumbnails: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub mimetype: Option<String>,
+    #[serde(rename="codecVideo", skip_serializing_if="Option::is_none")]
+    pub codec_video: Option<String>,
+    #[serde(rename="codecAudio", skip_serializing_if="Option::is_none")]
+    pub codec_audio: Option<String>,
+    #[serde(rename="resolutionVideo", skip_serializing_if="Option::is_none")]
+    pub resolution_video: Option<u32>,
+    #[serde(rename="qualityVideo", skip_serializing_if="Option::is_none")]
+    pub quality_video: Option<i32>,
+    #[serde(rename="bitrateVideo", skip_serializing_if="Option::is_none")]
+    pub bitrate_video: Option<u32>,
+    #[serde(rename="bitrateAudio", skip_serializing_if="Option::is_none")]
+    pub bitrate_audio: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub preset: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub audio_stream_idx: Option<i32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub subtitle_stream_idx: Option<i32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BackgroundJob {
     pub job_id: String,
 
@@ -1011,7 +1039,7 @@ pub struct BackgroundJob {
     pub fuuid: String,
     pub mimetype: String,
     pub filehost_ids: Vec<String>,
-    pub params: Option<HashMap<String, String>>,
+    pub params: Option<BackgroundJobParams>,
 
     // Valeurs pour video (progress update)
     #[serde(skip_serializing_if="Option::is_none")]
@@ -1063,7 +1091,7 @@ pub struct JobTrigger<'a> {
     pub mimetype: &'a str,
     pub filehost_ids: &'a Vec<String>,
     #[serde(skip_serializing_if="Option::is_none")]
-    pub params: Option<&'a HashMap<String, String>>,
+    pub params: Option<&'a BackgroundJobParams>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub user_id: Option<&'a str>,
     pub cle_id: &'a str,
@@ -1081,7 +1109,7 @@ impl<'a> From<&'a BackgroundJob> for JobTrigger<'a> {
             fuuid: value.fuuid.as_str(),
             mimetype: value.mimetype.as_str(),
             filehost_ids: &value.filehost_ids,
-            params: match &value.params {Some(inner)=>Some(&inner), None=>None},
+            params: match &value.params {Some(inner)=>Some(inner), None=>None},
             user_id: match value.user_id.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None},
             cle_id: value.cle_id.as_str(),
             format: value.format.as_str(),
@@ -1593,9 +1621,20 @@ async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, fl
                 let mut job = BackgroundJob::new(tuuid, fuuid, row.mimetype, &visites, cle_id, format, nonce);
                 if flag_job == CHAMP_FLAG_VIDEO_TRAITE {
                     // Champs supplementaires pour video
-                    let mut params_initial = HashMap::new();
-                    params_initial.insert(VIDEO_FLAG_CREER_THUMBNAILS.to_string(), "true".to_string());
-                    params_initial.insert(VIDEO_FLAG_DEFAULTS.to_string(), "true".to_string());
+                    let params_initial = BackgroundJobParams {
+                        defaults: Some(true),
+                        thumbnails: Some(true),
+                        mimetype: None,
+                        codec_video: None,
+                        codec_audio: None,
+                        resolution_video: None,
+                        quality_video: None,
+                        bitrate_video: None,
+                        bitrate_audio: None,
+                        preset: None,
+                        audio_stream_idx: None,
+                        subtitle_stream_idx: None,
+                    };
                     job.params = Some(params_initial);
 
                     job.user_id = Some(row.user_id.to_string());
