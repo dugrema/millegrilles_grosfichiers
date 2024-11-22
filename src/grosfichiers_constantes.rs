@@ -448,6 +448,11 @@ pub struct TransactionAssocierVideoVersionDetail {
 
     /// Fix bug videas verticaux. Ajoute dans version 2023.7.4
     pub cle_conversion: Option<String>,
+
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub audio_stream_idx: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub subtitle_stream_idx: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

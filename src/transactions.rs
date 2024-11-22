@@ -513,7 +513,9 @@ pub struct NodeFichierVersionOwned {
     pub nonce: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub verification: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub audio: Option<Vec<NodeFichierVersionAudioOwned>>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pub subtitles: Option<Vec<NodeFichierVersionSubtitlesOwned>>,
 }
 

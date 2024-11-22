@@ -74,7 +74,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
             REQUETE_ACTIVITE_RECENTE => requete_activite_recente(middleware, message, gestionnaire).await,
             REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
-            REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
+            // REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             // REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
             REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
@@ -101,7 +101,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
     } else if message.certificat.verifier_exchanges(vec![Securite::L3Protege, Securite::L4Secure])? {
         match action.as_str() {
             REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
-            REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
+            // REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_STREAM => requete_get_cles_stream(middleware, message, gestionnaire).await,
             REQUETE_SYNC_COLLECTION => requete_sync_collection(middleware, message, gestionnaire).await,
@@ -116,7 +116,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
     } else if message.certificat.verifier_exchanges(vec![Securite::L2Prive])? {
         match action.as_str() {
             REQUETE_CONFIRMER_ETAT_FUUIDS => requete_confirmer_etat_fuuids(middleware, message, gestionnaire).await,
-            REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
+            // REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_FUUIDS => requete_verifier_acces_fuuids(middleware, message, gestionnaire).await,
             REQUETE_VERIFIER_ACCES_TUUIDS => requete_verifier_acces_tuuids(middleware, message, gestionnaire).await,
             REQUETE_SYNC_CUUIDS => requete_sync_cuuids(middleware, message, gestionnaire).await,
@@ -132,7 +132,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
             REQUETE_ACTIVITE_RECENTE => requete_activite_recente(middleware, message, gestionnaire).await,
             REQUETE_FAVORIS => requete_favoris(middleware, message, gestionnaire).await,
             REQUETE_DOCUMENTS_PAR_TUUID => requete_documents_par_tuuid(middleware, message, gestionnaire).await,
-            REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
+            // REQUETE_DOCUMENTS_PAR_FUUID => requete_documents_par_fuuid(middleware, message, gestionnaire).await,
             // REQUETE_CONTENU_COLLECTION => requete_contenu_collection(middleware, message, gestionnaire).await,
             REQUETE_GET_CORBEILLE => requete_get_corbeille(middleware, message, gestionnaire).await,
             REQUETE_GET_CLES_FICHIERS => requete_get_cles_fichiers(middleware, message, gestionnaire).await,
@@ -320,6 +320,10 @@ pub struct ReponseFichierRepVersion {
     pub nonce: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub verification: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub audio_stream_info: Option<Vec<AudioStreamInfo>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub subtitle_stream_info: Option<Vec<SubtitleStreamInfo>>,
 }
 
 impl From<NodeFichierRepOwned> for ReponseFichierRepVersion {
@@ -342,6 +346,8 @@ impl From<NodeFichierRepOwned> for ReponseFichierRepVersion {
             format: None,
             nonce: None,
             verification: None,
+            audio_stream_info: None,
+            subtitle_stream_info: None,
         }
     }
 }
