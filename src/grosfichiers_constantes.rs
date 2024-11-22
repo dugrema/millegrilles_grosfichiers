@@ -62,6 +62,7 @@ pub const REQUETE_STRUCTURE_REPERTOIRE: &str = "getStructureRepertoire";
 pub const REQUETE_JWT_STREAMING: &str = "getJwtStreaming";
 pub const REQUETE_SOUS_REPERTOIRES: &str = "getSousRepertoires";
 pub const REQUETE_RECHERCHE_INDEX: &str = "rechercheIndex";
+pub const REQUETE_INFO_VIDEO: &str = "getInfoVideo";
 
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
@@ -412,6 +413,11 @@ pub struct TransactionAssocierVideo {
 
     /// Fix bug videas verticaux. Ajoute dans version 2023.7.4
     pub cle_conversion: Option<String>,
+
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub audio_stream_idx: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub subtitle_stream_idx: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -486,8 +492,8 @@ pub struct CommandeVideoConvertir {
     #[serde(rename="bitrateAudio")]
     pub bitrate_audio: u32,
     pub preset: Option<String>,
-    pub audio_stream: Option<i32>,
-    pub subtitle_stream: Option<i32>,
+    pub audio_stream_idx: Option<i32>,
+    pub subtitle_stream_idx: Option<i32>,
 }
 
 // #[derive(Clone, Debug, Serialize, Deserialize)]

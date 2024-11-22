@@ -92,6 +92,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
             REQUETE_JWT_STREAMING => requete_creer_jwt_streaming(middleware, message, gestionnaire).await,
             REQUETE_SOUS_REPERTOIRES => requete_sous_repertoires(middleware, message, gestionnaire).await,
             REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
+            REQUETE_INFO_VIDEO => requete_info_video(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (1): '{}'. Message dropped.", action);
                 Ok(None)
@@ -148,6 +149,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
             REQUETE_JWT_STREAMING => requete_creer_jwt_streaming(middleware, message, gestionnaire).await,
             REQUETE_SOUS_REPERTOIRES => requete_sous_repertoires(middleware, message, gestionnaire).await,
             REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
+            REQUETE_INFO_VIDEO => requete_info_video(middleware, message, gestionnaire).await,
             _ => {
                 error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", action);
                 Ok(None)
@@ -2943,4 +2945,45 @@ pub async fn requete_recherche_index<M>(middleware: &M, m: MessageValide, gestio
     middleware.transmettre_requete(routage, &requete_transfert).await?;
 
     Ok(None)
+}
+
+#[derive(Deserialize)]
+struct RequeteInfoVideo {fuuid: String}
+
+#[derive(Serialize)]
+struct RequeteInfoVideoResponse {
+    fuuid: String,
+    tuuid: String,
+    audio: Option<Vec<NodeFichierVersionAudioOwned>>,
+    subtitles: Option<Vec<NodeFichierVersionSubtitlesOwned>>,
+}
+
+async fn requete_info_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+                               -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => {
+            debug!("requete_recherche_index user_id manquant du certificat");
+            return Ok(Some(middleware.reponse_err(None, None, Some("User_id manquant du certificat"))?))
+        }
+    };
+
+    let requete: RequeteInfoVideo = deser_message_buffer!(m.message);
+
+    let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    let filtre = doc!{"user_id": &user_id, "fuuid": &requete.fuuid};
+    match collection.find_one(filtre, None).await? {
+        Some(fichier) => {
+            let response = RequeteInfoVideoResponse {
+                fuuid: fichier.fuuid,
+                tuuid: fichier.tuuid,
+                audio: fichier.audio,
+                subtitles: fichier.subtitles,
+            };
+            Ok(Some(middleware.build_reponse(response)?.0))
+        },
+        None => Ok(Some(middleware.reponse_err(Some(404), None, Some("File not found"))?))
+    }
 }

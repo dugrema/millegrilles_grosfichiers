@@ -1563,8 +1563,8 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, gestionna
             bitrate_video: commande.bitrate_video,
             bitrate_audio: Some(commande.bitrate_audio),
             preset: commande.preset,
-            audio_stream_idx: commande.audio_stream,
-            subtitle_stream_idx: commande.subtitle_stream,
+            audio_stream_idx: commande.audio_stream_idx,
+            subtitle_stream_idx: commande.subtitle_stream_idx,
         };
         job.params = Some(params);
         sauvegarder_job_video(middleware, &job).await?;

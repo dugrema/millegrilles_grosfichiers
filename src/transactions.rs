@@ -436,6 +436,24 @@ impl NodeFichierRepOwned {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeFichierVersionAudioOwned {
+    index: u32,
+    title: Option<String>,
+    language: Option<String>,
+    codec_name: Option<String>,
+    bit_rate: Option<u32>,
+    default: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeFichierVersionSubtitlesOwned {
+    index: u32,
+    language: Option<String>,
+    title: Option<String>,
+    codec_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeFichierVersionOwned {
     pub fuuid: String,
     pub tuuid: String,
@@ -495,6 +513,8 @@ pub struct NodeFichierVersionOwned {
     pub nonce: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub verification: Option<String>,
+    pub audio: Option<Vec<NodeFichierVersionAudioOwned>>,
+    pub subtitles: Option<Vec<NodeFichierVersionSubtitlesOwned>>,
 }
 
 impl NodeFichierVersionOwned {
@@ -537,6 +557,8 @@ impl NodeFichierVersionOwned {
             format: value.format.clone(),
             nonce: value.nonce.clone(),
             verification: value.verification.clone(),
+            audio: None,
+            subtitles: None,
         })
     }
 
