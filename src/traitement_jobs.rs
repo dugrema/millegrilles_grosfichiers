@@ -1557,7 +1557,7 @@ pub async fn sauvegarder_job<M>(middleware: &M, job: &BackgroundJob, nom_collect
             // Merge the filehost_ids
             let filtre = doc!{"job_id": existing.job_id};
             let ops = doc! {
-                "$addToSet": {"filehost_ids": &job.filehost_ids},
+                "$addToSet": {"filehost_ids": {"$each": &job.filehost_ids}},
                 "$currentDate": {CHAMP_MODIFICATION: true},
             };
             let options = FindOneAndUpdateOptions::builder().return_document(ReturnDocument::After).build();
@@ -1575,8 +1575,8 @@ pub async fn sauvegarder_job<M>(middleware: &M, job: &BackgroundJob, nom_collect
         }
     };
 
-    // Emettre job pour traitement. Utiliser filehost_ids en input, pas ceux trouves dans la DB.
-    emettre_processing_trigger(middleware, &job, domain, action_trigger).await;
+    // Emettre job pour traitement.
+    emettre_processing_trigger(middleware, &updated_job, domain, action_trigger).await;
 
     Ok(updated_job)
 }
