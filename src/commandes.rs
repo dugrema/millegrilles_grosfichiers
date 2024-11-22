@@ -1509,7 +1509,15 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, gestionna
             None => 0,
         }
     };
-    let cle_video = format!("{};{};{}p;{}", commande.mimetype, commande.codec_video, commande.resolution_video, bitrate_quality);
+    let mut cle_video = format!("{};{};{}p;{}", commande.mimetype, commande.codec_video, commande.resolution_video, bitrate_quality);
+    if let Some(inner) = commande.audio_stream_idx.as_ref() {
+        if *inner != 0 {
+            cle_video = format!("{};a{}", cle_video, inner);
+        }
+    }
+    if let Some(inner) = commande.subtitle_stream_idx.as_ref() {
+        cle_video = format!("{};s{}", cle_video, inner);
+    }
 
     let filtre_fichier = doc! { CHAMP_TUUID: &tuuid, CHAMP_FUUID: fuuid, CHAMP_USER_ID: &user_id };
     let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
