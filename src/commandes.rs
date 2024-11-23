@@ -8,7 +8,7 @@ use millegrilles_common_rust::bson::{Bson, doc};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::chrono::{DateTime, Utc};
-use millegrilles_common_rust::common_messages::RequeteDechiffrage;
+use millegrilles_common_rust::common_messages::{verifier_reponse_ok, RequeteDechiffrage};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L4Secure};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
@@ -689,6 +689,11 @@ async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageVali
     // Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
+#[derive(Serialize)]
+struct CommandeSupprimerTuuidsIndex {
+    tuuids: Vec<String>
+}
+
 async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
@@ -724,7 +729,21 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
+    let result = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
+
+    let routage = RoutageMessageAction::builder("solrrelai", "supprimerTuuids", vec![Securite::L3Protege])
+        .build();
+    let commande_index = CommandeSupprimerTuuidsIndex { tuuids: commande.tuuids.clone() };
+    match middleware.transmettre_commande(routage.clone(), commande_index).await? {
+        Some(result) => {
+            if ! verifier_reponse_ok(&result) {
+                warn!("Erreur suppression tuuids:{:?} de l'index (err solr) : {:?}", commande.tuuids, result);
+            }
+        },
+        None => warn!("Erreur suppression tuuids:{:?} de l'index - aucune reponse", commande.tuuids)
+    }
+
+    Ok(result)
 }
 
 #[derive(Clone, Debug, Deserialize)]

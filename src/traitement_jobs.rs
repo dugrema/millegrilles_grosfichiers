@@ -1634,7 +1634,7 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
     where M: MongoDao
 {
     let collection_version = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
-    let filtre_version = doc!{flag_job: false, "visites.nouveau": {"$exists": false}};
+    let filtre_version = doc!{"supprime": false, flag_job: false, "visites.nouveau": {"$exists": false}};
     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
     let mut curseur = collection_version.find(filtre_version, None).await?;
     while curseur.advance().await? {
@@ -1687,7 +1687,7 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
 pub async fn creer_jobs_manquantes_fichiersrep<M>(middleware: &M, nom_collection: &str, flag_job: &str) -> Result<(), CommonError>
 where M: MongoDao {
     let collection_version = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
-    let filtre_version = doc!{flag_job: false};
+    let filtre_version = doc!{"supprime": false, "supprime_indirect": false, flag_job: false};
     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
     let mut curseur = collection_version.find(filtre_version, None).await?;
     while curseur.advance().await? {
