@@ -416,9 +416,6 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
 
         if let Some(mut job) = job {
 
-            // Toujours indexer
-            sauvegarder_job_index(middleware, &job).await?;
-
             if ! image_traitee {
                 // Note : La job est uniquement creee si le format est une image. Exclus les videos.
                 sauvegarder_job_images(middleware, &job).await?;

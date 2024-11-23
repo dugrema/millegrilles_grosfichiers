@@ -168,7 +168,7 @@ pub struct TransactionDecrireFichier {
     pub tuuid: String,
     // nom: Option<String>,
     // titre: Option<HashMap<String, CommonError>>,
-    metadata: Option<DataChiffre>,
+    pub metadata: Option<DataChiffre>,
     // description: Option<HashMap<String, CommonError>>,
     pub mimetype: Option<String>,
 }
@@ -177,7 +177,7 @@ pub struct TransactionDecrireFichier {
 pub struct TransactionDecrireCollection {
     pub tuuid: String,
     // nom: Option<String>,
-    metadata: Option<DataChiffre>,
+    pub metadata: Option<DataChiffre>,
     // titre: Option<HashMap<String, CommonError>>,
     // description: Option<HashMap<String, CommonError>>,
     // securite: Option<String>,
@@ -2441,34 +2441,8 @@ async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &GrosFichi
         Ok(inner) => {
             debug!("transaction_decire_fichier Update description : {:?}", inner);
             if let Some(doc_fichier) = inner {
-                let user_id = doc_fichier.user_id;
-                let fuuid = match doc_fichier.fuuids_versions.as_ref() {
-                    Some(inner) => match inner.get(0) {
-                        Some(inner) => Some(inner),
-                        None => None
-                    },
-                    None => None
-                };
-                if let Some(fuuid) = fuuid {
-
-                    let cle_id = match doc_fichier.metadata.cle_id.as_ref() {
-                        Some(inner) => inner.as_str(),
-                        None => fuuid.as_str()
-                    };
-
-                    if let Some(mimetype) = doc_fichier.mimetype {
-                        let mut parametres = HashMap::new();
-                        parametres.insert("mimetype".to_string(), Bson::String(mimetype.to_string()));
-                        parametres.insert("fuuid".to_string(), Bson::String(fuuid.to_string()));
-                        parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_string()));
-                        todo!()
-                        // if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
-                        //     middleware, tuuid, user_id, None,
-                        //     None, Some(parametres), true).await {
-                        //     error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
-                        // }
-                    }
-                }
+                // Index traite via commmande - 2024.9
+                // Pour restore, trigger a la fin du rebuild.
             }
         },
         Err(e) => Err(format!("transaction_decire_fichier Erreur update description : {:?}", e))?

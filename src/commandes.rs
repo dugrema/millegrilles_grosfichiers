@@ -32,7 +32,7 @@ use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids};
-use crate::traitement_index::{reset_flag_indexe, set_flag_index_traite};
+use crate::traitement_index::{reset_flag_indexe, sauvegarder_job_index, set_flag_index_traite};
 use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
 use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_video};
 use crate::transactions::*;
@@ -258,7 +258,7 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
 
     if changement_media {
         if let Some(mimetype) = commande.mimetype.as_ref() {
-            if let Some(fuuid) = fuuid {
+            if fuuid.is_some() {
                 // Ajouter flags media au fichier si approprie
                 let (flag_media_traite, flag_video_traite, flag_media) = NodeFichierVersionOwned::get_flags_media(
                     mimetype.as_str());
@@ -290,30 +290,29 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
 
                 let mut champs_parametres = HashMap::new();
                 champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_string()));
-
-                // Creer jobs de conversion
-                if flag_media_traite == false {
-                    todo!()
-                    // if let Err(e) = gestionnaire.image_job_handler.sauvegarder_job(
-                    //     middleware, &fuuid, &user_id, None,
-                    //     Some(champs_cles.clone()), Some(champs_parametres.clone()), true).await {
-                    //     error!("commande_decrire_fichier Erreur image sauvegarder_job : {:?}", e);
-                    // }
-                }
-
-                if flag_video_traite == false {
-                    todo!()
-                    // if let Err(e) = gestionnaire.video_job_handler.sauvegarder_job(
-                    //     middleware, fuuid, user_id, None,
-                    //     Some(champs_cles), Some(champs_parametres), false).await {
-                    //     error!("commande_decrire_fichier Erreur video sauvegarder_job : {:?}", e);
-                    // }
-                }
             } else {
                 warn!("commande_decrire_fichier Erreur utilisation fuuid sur changement (None)");
             }
         } else {
             warn!("commande_decrire_fichier Erreur utilisation mimetype sur changement (None)");
+        }
+    }
+
+    // Declencher indexation
+    let tuuid = &commande.tuuid;
+    if let Some(fuuid) = fuuid.as_ref() {
+        let filtre = doc!{CHAMP_TUUID: &commande.tuuid, CHAMP_USER_ID: &user_id};
+        let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+        if let Some(fichier) = collection.find_one(filtre, None).await? {
+            if fichier.cle_id.is_some() && fichier.format.is_some() && fichier.nonce.is_some() {
+                let cle_id = fichier.cle_id.expect("cle_id");
+                let format: &str = fichier.format.expect("format").into();
+                let nonce = fichier.nonce.expect("nonce");
+                let mimetype = fichier.mimetype;
+                let filehost_ids: Vec<&String> = fichier.visites.keys().collect();
+                let job = BackgroundJob::new_index(tuuid, Some(fuuid), user_id, mimetype, &filehost_ids, cle_id, format, nonce);
+                sauvegarder_job_index(middleware, &job).await?;
+            }
         }
     }
 
@@ -375,7 +374,22 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, g
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
+    let result = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
+
+    // Declencher indexation
+    let tuuid = &message_owned.id;
+    let metadata = commande.metadata;
+    if user_id.is_some() && metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
+        let user_id = user_id.expect("user_id");
+        let cle_id = metadata.cle_id.expect("cle_id");
+        let format = metadata.format.expect("format");
+        let nonce = metadata.nonce.expect("nonce");
+        let filehost_ids: Vec<&str> = Vec::new();
+        let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, "", &filehost_ids, cle_id, format, nonce);
+        sauvegarder_job_index(middleware, &job).await?;
+    }
+
+    Ok(result)
 }
 
 async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
@@ -987,7 +1001,7 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestio
     let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
-        let tuuids = vec![commande.tuuid];
+        let tuuids = vec![commande.tuuid.clone()];
         let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
         if let Some(erreur) = resultat.erreur {
             return Ok(Some(erreur.try_into()?))
@@ -999,7 +1013,23 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestio
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
+    let result = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
+
+    // Declencher indexation
+    let tuuid = &commande.tuuid;
+    if let Some(metadata) = commande.metadata {
+        if user_id.is_some() && metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
+            let user_id = user_id.expect("user_id");
+            let cle_id = metadata.cle_id.expect("cle_id");
+            let format = metadata.format.expect("format");
+            let nonce = metadata.nonce.expect("nonce");
+            let filehost_ids: Vec<&str> = Vec::new();
+            let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, "", &filehost_ids, cle_id, format, nonce);
+            sauvegarder_job_index(middleware, &job).await?;
+        }
+    }
+
+    Ok(result)
 }
 
 // commande_copier_fichier_tiers est OBSOLETE
