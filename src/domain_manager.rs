@@ -268,102 +268,11 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         }
     ));
 
-    // let mut rk_transactions = Vec::new();
-    // let transactions_secures = vec![
-    //     TRANSACTION_NOUVELLE_VERSION,
-    //     TRANSACTION_NOUVELLE_COLLECTION,
-    //     TRANSACTION_AJOUTER_FICHIERS_COLLECTION,
-    //     TRANSACTION_DEPLACER_FICHIERS_COLLECTION,
-    //     // TRANSACTION_RETIRER_DOCUMENTS_COLLECTION,
-    //     TRANSACTION_SUPPRIMER_DOCUMENTS,
-    //     TRANSACTION_RECUPERER_DOCUMENTS,
-    //     TRANSACTION_ARCHIVER_DOCUMENTS,
-    //     // TRANSACTION_CHANGER_FAVORIS,
-    //     TRANSACTION_ASSOCIER_CONVERSIONS,
-    //     TRANSACTION_ASSOCIER_VIDEO,
-    //     TRANSACTION_DECRIRE_FICHIER,
-    //     TRANSACTION_DECRIRE_COLLECTION,
-    //     TRANSACTION_COPIER_FICHIER_TIERS,
-    //     // TRANSACTION_FAVORIS_CREERPATH,
-    //     TRANSACTION_SUPPRIMER_VIDEO,
-    //     TRANSACTION_SUPPRIMER_ORPHELINS,
-    //
-    //     // Transaction emise par media
-    //     TRANSACTION_ASSOCIER_CONVERSIONS,
-    //     TRANSACTION_ASSOCIER_VIDEO,
-    //     TRANSACTION_IMAGE_SUPPRIMER_JOB,
-    //     TRANSACTION_VIDEO_SUPPRIMER_JOB,
-    //     TRANSACTION_CONFIRMER_FICHIER_INDEXE,
-    // ];
-    // for ts in transactions_secures {
-    //     rk_transactions.push(ConfigRoutingExchange {
-    //         routing_key: format!("transaction.{}.{}", DOMAINE_NOM, ts).into(),
-    //         exchange: Securite::L4Secure
-    //     });
-    // }
-
-    // Queue de transactions
-    // queues.push(QueueType::ExchangeQueue (
-    //     ConfigQueue {
-    //         nom_queue: NOM_Q_TRANSACTIONS.into(),
-    //         routing_keys: rk_transactions,
-    //         ttl: None,
-    //         durable: true,
-    //         autodelete: false,
-    //     }
-    // ));
-
     // Queue de triggers pour Pki
     queues.push(QueueType::Triggers (DOMAINE_NOM.into(), Securite::L3Protege));
 
     queues
 
-
-    // let mut rk_volatils = Vec::new();
-    // //let mut rk_sauvegarder_cle = Vec::new();
-    //
-    // // RK 2.prive
-    // let requetes_privees: Vec<&str> = vec![
-    //     REQUETE_CATEGORIES_USAGER,
-    //     REQUETE_GROUPES_USAGER,
-    //     REQUETE_GROUPES_CLES,
-    //     REQUETE_DOCUMENTS_GROUPE,
-    // ];
-    // for req in requetes_privees {
-    //     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L2Prive});
-    // }
-    //
-    // let commandes_privees: Vec<&str> = vec![
-    //     // Transactions
-    //     TRANSACTION_SAUVEGARDER_CATEGORIE_USAGER,
-    //     TRANSACTION_SAUVEGARDER_GROUPE_USAGER,
-    //     TRANSACTION_SAUVEGARDER_DOCUMENT,
-    //     TRANSACTION_SUPPRIMER_DOCUMENT,
-    //     TRANSACTION_RECUPERER_DOCUMENT,
-    //     TRANSACTION_SUPPRIMER_GROUPE,
-    //     TRANSACTION_RECUPERER_GROUPE,
-    // ];
-    // for cmd in commandes_privees {
-    //     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
-    // }
-    //
-    // let mut queues = Vec::new();
-    //
-    // // Queue de messages volatils (requete, commande, evenements)
-    // queues.push(QueueType::ExchangeQueue (
-    //     ConfigQueue {
-    //         nom_queue: NOM_Q_VOLATILS.into(),
-    //         routing_keys: rk_volatils,
-    //         ttl: DEFAULT_Q_TTL.into(),
-    //         durable: true,
-    //         autodelete: false,
-    //     }
-    // ));
-    //
-    // // Queue de triggers pour Pki
-    // queues.push(QueueType::Triggers (DOMAINE_NOM.into(), Securite::L3Protege));
-    //
-    // queues
 }
 
 pub async fn preparer_index_mongodb<M>(middleware: &M) -> Result<(), CommonError>
@@ -590,6 +499,12 @@ where M: MongoDao + ConfigMessages
         Some(options_fuuids_params)
     ).await?;
 
+    let options_job_id = IndexOptions {nom_index: Some("job_id".to_string()), unique: true};
+    let champs_job_id_params = vec!(
+        ChampIndex {nom_champ: String::from("job_id"), direction: 1},
+    );
+    middleware.create_index(middleware, NOM_COLLECTION_VIDEO_JOBS, champs_job_id_params, Some(options_job_id)).await?;
+
     // Index conversion images getJob
     let options_images_jobs = IndexOptions {
         nom_index: Some(NOM_INDEX_ETAT_JOBS.to_string()),
@@ -621,6 +536,12 @@ where M: MongoDao + ConfigMessages
         champs_images_user_id_tuuids,
         Some(options_images_user_id_tuuids)
     ).await?;
+
+    let options_job_id = IndexOptions {nom_index: Some("job_id".to_string()), unique: true};
+    let champs_job_id_params = vec!(
+        ChampIndex {nom_champ: String::from("job_id"), direction: 1},
+    );
+    middleware.create_index(middleware, NOM_COLLECTION_IMAGES_JOBS, champs_job_id_params, Some(options_job_id)).await?;
 
     // Index conversion video getJob
     let options_jobs_params = IndexOptions {
@@ -670,6 +591,12 @@ where M: MongoDao + ConfigMessages
         champs_indexation_jobs,
         Some(options_indexation_jobs)
     ).await?;
+
+    let options_job_id = IndexOptions {nom_index: Some("job_id".to_string()), unique: true};
+    let champs_job_id_params = vec!(
+        ChampIndex {nom_champ: String::from("job_id"), direction: 1},
+    );
+    middleware.create_index(middleware, NOM_COLLECTION_INDEXATION_JOBS, champs_job_id_params, Some(options_job_id)).await?;
 
     let options_indexation_user_id_tuuids = IndexOptions {
         nom_index: Some(NOM_INDEX_USER_ID_TUUIDS.to_string()),

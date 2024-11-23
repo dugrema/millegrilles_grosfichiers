@@ -515,7 +515,10 @@ pub async fn set_flag_video_traite<M,S>(middleware: &M, tuuid_in: Option<S>, fuu
     // Set flag versionFichiers
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     let ops = doc! {
-        "$set": {CHAMP_FLAG_VIDEO_TRAITE: true},
+        "$set": {
+            CHAMP_FLAG_VIDEO_TRAITE: true,
+            CHAMP_FLAG_MEDIA_TRAITE: true,  // legacy pour eviter de laisser un flag actif pre release-2024.9
+        },
         "$currentDate": {CHAMP_MODIFICATION: true},
     };
     collection.update_many(filtre_video.clone(), ops, None).await?;
