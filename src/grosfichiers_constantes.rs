@@ -92,7 +92,7 @@ pub const TRANSACTION_PARTAGER_COLLECTIONS: &str = "partagerCollections";
 pub const TRANSACTION_SUPPRIMER_PARTAGE_USAGER: &str = "supprimerPartageUsager";
 pub const TRANSACTION_SUPPRIMER_ORPHELINS: &str = "supprimerOrphelins";
 
-pub const COMMANDE_REINDEXER: &str = "reindexerConsignation";
+pub const COMMANDE_REINDEXER: &str = "reindexerFichiers";
 pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";
 pub const COMMANDE_NOUVEAU_FICHIER: &str = "commandeNouveauFichier";
 // pub const COMMANDE_ACTIVITE_FUUIDS: &str = "confirmerActiviteFuuids";

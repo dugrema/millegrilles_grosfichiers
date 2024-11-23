@@ -1185,12 +1185,6 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValide, gestionnaire: &
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    debug!("commande_reindexer Consommer commande : {:?}", & m.type_message);
-    let commande: CommandeIndexerContenu = {
-        let message_ref = m.message.parse()?;
-        message_ref.contenu()?.deserialize()?
-    };
-
     // Autorisation : doit etre un message provenant d'un usager avec delegation globale
     // Verifier si on a un certificat delegation globale
     match m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
@@ -1198,11 +1192,8 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValide, gestionnaire: &
         false => Err(format!("commandes.commande_reindexer: Commande autorisation invalide pour message {:?}", m.type_message)),
     }?;
 
-    todo!()
-    // reset_flag_indexe(middleware, gestionnaire, &gestionnaire.indexation_job_handler).await?;
-    //
-    // let reponse = ReponseCommandeReindexer {ok: true, tuuids: None};
-    // Ok(Some(middleware.build_reponse(reponse)?.0))
+    // Reset tous les fichiers, demarre re-indexation
+    reset_flag_indexe(middleware, gestionnaire).await
 }
 
 #[derive(Clone, Debug, Deserialize)]

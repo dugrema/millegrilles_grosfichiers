@@ -11,7 +11,7 @@ use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::{InformationCle, ReponseDechiffrageCles};
 use millegrilles_common_rust::chrono::{DateTime, Duration, Utc};
-use millegrilles_common_rust::common_messages::RequeteDechiffrage;
+use millegrilles_common_rust::common_messages::{verifier_reponse_ok, RequeteDechiffrage};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
@@ -26,7 +26,7 @@ use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::error::Error as CommonError;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
-use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job, JobTrigger};
+use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job, JobTrigger, creer_jobs_manquantes_queue, creer_jobs_manquantes_fichiersrep, reactiver_jobs};
 use crate::transactions::{NodeFichierRepBorrowed, NodeFichierRepOwned, NodeFichierVersionOwned, TransactionSupprimerOrphelins};
 
 const EVENEMENT_INDEXATION_DISPONIBLE: &str = "jobIndexationDisponible";
@@ -97,10 +97,8 @@ pub struct IndexationJobHandler {}
 //     Ok(())
 // }
 
-pub async fn reset_flag_indexe<M,G>(middleware: &M, gestionnaire: &G, job_handler: &IndexationJobHandler) -> Result<(), CommonError>
-    where
-        M: GenerateurMessages + MongoDao + ValidateurX509,
-        G: GestionnaireDomaineV2 + AiguillageTransactions
+pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
 {
     debug!("reset_flag_indexe Reset flags pour tous les fichiers");
 
@@ -111,23 +109,32 @@ pub async fn reset_flag_indexe<M,G>(middleware: &M, gestionnaire: &G, job_handle
         "$currentDate": { CHAMP_MODIFICATION: true },
     };
 
-    // let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    // Reset tables rep et versions
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    match collection.update_many(filtre.clone(), ops, None).await {
-        Ok(_) => (),
-        Err(e) => Err(format!("traitement_index.set_flag_indexe Erreur {:?}", e))?
+    collection.update_many(filtre.clone(), ops.clone(), None).await?;
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    collection.update_many(filtre.clone(), ops, None).await?;
+
+    // Index - tables VERSION et FICHIER_REP
+    creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX).await?;
+    creer_jobs_manquantes_fichiersrep(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX).await?;
+
+    // Reset le serveur d'indexation
+    let routage = RoutageMessageAction::builder("solrrelai", "reindexerConsignation", vec![Securite::L3Protege])
+        .build();
+    let result = match middleware.transmettre_commande(routage, json!({})).await? {
+        Some(inner) => verifier_reponse_ok(&inner),
+        None => false
+    };
+
+    if ! result {
+        return Ok(Some(middleware.reponse_err(Some(1), None, Some("Error resetting indexing server"))?))
     }
 
-    // Commencer a creer les jobs d'indexation
-    // traiter_indexation_batch(middleware, LIMITE_INDEXATION_BATCH).await?;
-    //job_handler.entretien(middleware, gestionnaire, Some(LIMITE_INDEXATION_BATCH)).await;
+    // Debut re-indexation. Process 1000 items aux 5 minutes.
+    reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_INDEXATION_JOBS, 0, "solrrelai", "processIndex").await?;
 
-    // Emettre un evenement pour indiquer que de nouvelles jobs sont disponibles
-    let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_REINDEXER_CONSIGNATION, vec![Securite::L3Protege])
-        .build();
-    middleware.emettre_evenement(routage, &json!({})).await?;
-
-    Ok(())
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 // // Set le flag indexe a true pour le fuuid (version)

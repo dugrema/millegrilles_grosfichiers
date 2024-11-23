@@ -1630,7 +1630,7 @@ pub async fn creer_jobs_manquantes<M>(middleware: &M)
     }
 }
 
-async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, flag_job: &str) -> Result<(), CommonError>
+pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, flag_job: &str) -> Result<(), CommonError>
     where M: MongoDao
 {
     let collection_version = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
@@ -1684,7 +1684,7 @@ async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, fl
     Ok(())
 }
 
-async fn creer_jobs_manquantes_fichiersrep<M>(middleware: &M, nom_collection: &str, flag_job: &str) -> Result<(), CommonError>
+pub async fn creer_jobs_manquantes_fichiersrep<M>(middleware: &M, nom_collection: &str, flag_job: &str) -> Result<(), CommonError>
 where M: MongoDao {
     let collection_version = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
     let filtre_version = doc!{flag_job: false};
@@ -1731,7 +1731,7 @@ pub async fn entretien_jobs_expirees<M>(middleware: &M, gestionnaire: &GrosFichi
     }
 }
 
-async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, nom_collection: &str, timeout: i64, domain: &str, action: &str) -> Result<(), CommonError>
+pub async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, nom_collection: &str, timeout: i64, domain: &str, action: &str) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
     let collection = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
