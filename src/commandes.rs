@@ -34,7 +34,7 @@ use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids};
 use crate::traitement_index::{reset_flag_indexe, sauvegarder_job_index, set_flag_index_traite};
 use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
-use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_video};
+use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_images, sauvegarder_job_video};
 use crate::transactions::*;
 
 const REQUETE_MAITREDESCLES_VERIFIER_PREUVE: &str = "verifierPreuve";
@@ -1249,53 +1249,6 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, gestio
         }
     };
 
-    // let autorisation_valide = match m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-    //     true => true,
-    //     false => {
-    //         let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
-    //         match user_id.as_ref() {
-    //             Some(u) => {
-    //                 if role_prive == true {
-    //                     match commande.fuuids.as_ref() {
-    //                         Some(f) => {
-    //                             // Verifier que l'usager a les droits d'acces a tous les tuuids
-    //
-    //                             // Creer un set et retirer les tuuids trouves pour l'usager
-    //                             let mut set_fuuids: HashSet<&String> = HashSet::new();
-    //                             set_fuuids.extend(f.iter());
-    //
-    //                             // Parcourir les fichiers de l'usager, retirer tuuids trouves
-    //                             let filtre = doc! {CHAMP_USER_ID: u, CHAMP_FUUIDS: {"$in": f}};
-    //                             let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    //                             let mut curseur = collection.find(filtre, None).await?;
-    //                             while let Some(d) = curseur.next().await {
-    //                                 let fichier: RowTuuid = convertir_bson_deserializable(d?)?;
-    //                                 // Retirer tous les fuuids (usager a acces)
-    //                                 if let Some(f) = fichier.fuuids {
-    //                                     for fuuid in f {
-    //                                         set_fuuids.remove(&fuuid);
-    //                                     }
-    //                                 }
-    //                             }
-    //
-    //                             // Verifier que tous les tuuids sont representes (set est vide)
-    //                             set_fuuids.is_empty()  // Retourne true si tous les tuuids ont ete trouves pour l'usager
-    //                         },
-    //                         None => false  // Un usager doit fournir une liste de tuuids
-    //                     }
-    //                 } else {
-    //                     false
-    //                 }
-    //             },
-    //             None => false
-    //         }
-    //     },
-    // };
-
-    // if ! autorisation_valide {
-    //     Err(format!("commandes.commande_completer_previews: Commande autorisation invalide pour message {:?}", m.correlation_id))?
-    // }
-
     // Parcourir tous les fuuids demandes pour le user_id
     let filtre = match commande.fuuids {
         Some(fuuids) => {
@@ -1311,8 +1264,6 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, gestio
 
     let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
     let mut curseur = collection.find(filtre, None).await?;
-    // while let Some(d) = curseur.next().await {
-    //     let fichier: RowTuuid = convertir_bson_deserializable(d?)?;
     while curseur.advance().await? {
         let fichier_version = match curseur.deserialize_current() {
             Ok(inner) => inner,
@@ -1322,37 +1273,21 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, gestio
             }
         };
 
+        let tuuid = fichier_version.tuuid;
         let fuuid = fichier_version.fuuid;
         let mimetype= fichier_version.mimetype;
 
-        let cle_id = match fichier_version.cle_id {
-            Some(inner) => inner,
-            None => fichier_version.fuuid
-        };
-
-        let mut champs_cles = HashMap::new();
-        champs_cles.insert("tuuid".to_string(), fichier_version.tuuid.to_owned());
-        champs_cles.insert("mimetype".to_string(), mimetype.to_owned());
-
-        // Prendre une instance au hasard si present
-        let instances = fichier_version.visites.into_keys().collect::<Vec<String>>();
-
-        let mut champs_parametres = HashMap::new();
-        champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_string()));
-
-        todo!()
-        // gestionnaire.image_job_handler.sauvegarder_job(
-        //     middleware, fuuid, &user_id,
-        //     Some(instances), Some(champs_cles), Some(champs_parametres), true).await?;
+        if fichier_version.cle_id.is_some() && fichier_version.format.is_some() && fichier_version.nonce.is_some() {
+            let cle_id = fichier_version.cle_id.expect("cle_id");
+            let format: &str = fichier_version.format.expect("format").into();
+            let nonce = fichier_version.nonce.expect("nonce");
+            let filehost_ids: Vec<&String> = fichier_version.visites.keys().collect();
+            let job = BackgroundJob::new(tuuid, fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
+            sauvegarder_job_images(middleware, &job).await?;
+        }
     }
 
-    // let reset = match commande.reset {
-    //     Some(b) => b,
-    //     None => false
-    // };
-
     // Reponse generer preview
-    let reponse = json!({ "ok": true });
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 

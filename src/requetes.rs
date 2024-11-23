@@ -496,42 +496,6 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn requete_documents_par_fuuid<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao
-{
-    debug!("requete_documents_par_fuuid Message : {:?}", & m.type_message);
-    let requete: RequeteDocumentsParFuuids = {
-        let message_ref = m.message.parse()?;
-        message_ref.contenu()?.deserialize()?
-    };
-
-    todo!("requete_documents_par_fuuid fixme");
-
-    let user_id = m.certificat.get_user_id()?;
-    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
-    if role_prive && user_id.is_some() {
-        // Ok
-    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
-        // Ok
-    } else if m.certificat.verifier_exchanges(vec![Securite::L2Prive])? {
-        // Ok
-    } else {
-        Err(format!("grosfichiers.requete_documents_par_fuuid: Autorisation invalide pour requete {:?}", m.type_message))?
-    }
-
-    let mut filtre = doc! { CHAMP_FUUIDS: {"$in": &requete.fuuids_documents} };
-    if user_id.is_some() {
-        filtre.insert("user_id", Bson::String(user_id.expect("user_id")));
-    }
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let curseur = collection.find(filtre, None).await?;
-    let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
-
-    let reponse = json!({ "fichiers":  fichiers_mappes });
-    Ok(Some(middleware.build_reponse(&reponse)?.0))
-}
-
 #[derive(Serialize)]
 struct ReponseVerifierAccesFuuids {
     fuuids_acces: Vec<String>,
@@ -924,84 +888,6 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
     };
 
     Ok(resultat)
-}
-
-async fn requete_contenu_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao
-{
-    todo!("requete_contenu_collection Fix me ou obsolete?");
-
-    debug!("requete_contenu_collection Message : {:?}", & m.type_message);
-    let (message_id, requete) = {
-        let message_ref = m.message.parse()?;
-        let requete: RequeteContenuCollection = message_ref.contenu()?.deserialize()?;
-        (message_ref.id.to_owned(), requete)
-    };
-
-    let user_id = m.certificat.get_user_id()?;
-    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
-    if role_prive && user_id.is_some() {
-        // Ok
-    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
-        // Ok
-    } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", message_id))?
-    }
-
-    let skip = match requete.skip { Some(s) => s, None => 0 };
-    let limit = match requete.limit { Some(l) => l, None => 50 };
-    let mut filtre_collection = doc! { CHAMP_TUUID: &requete.tuuid_collection, CHAMP_SUPPRIME: false };
-    if user_id.is_some() {
-        filtre_collection.insert("user_id", Bson::String(user_id.expect("user_id")));
-    }
-
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let mut doc_info_collection = match collection.find_one(filtre_collection, None).await? {
-        Some(c) => c,
-        None => {
-            // return Ok(Some(middleware.formatter_reponse(json!({"ok": false, "err": "Collection introuvable"}), None)?))
-            return Ok(Some(middleware.reponse_err(None, None, Some("Collection introuvable"))?))
-        }
-    };
-    filtrer_doc_id(&mut doc_info_collection);
-
-    let sort = match requete.sort_keys {
-        Some(s) => {
-            let mut doc_sort = doc!();
-            for k in s {
-                let colonne = k.colonne;
-                let direction = match k.ordre {
-                    Some(d) => d,
-                    None => 1,
-                };
-                doc_sort.insert(colonne, direction);
-            }
-            doc_sort
-        },
-        None => doc!{"nom": 1}
-    };
-    let filtre_fichiers = doc! {
-        "$or": {
-            CHAMP_CUUID: &requete.tuuid_collection,
-            CHAMP_CUUIDS: {"$all": [&requete.tuuid_collection]},
-        },
-        CHAMP_SUPPRIME: false
-    };
-    let ops_fichiers = FindOptions::builder()
-        .sort(sort)
-        .skip(skip)
-        .limit(limit)
-        .build();
-    let curseur = collection.find(filtre_fichiers, Some(ops_fichiers)).await?;
-    let fichiers_reps = mapper_fichiers_curseur(curseur).await?;
-
-    let reponse = json!({
-        "collection": doc_info_collection,
-        "documents": fichiers_reps,
-    });
-
-    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 async fn requete_get_corbeille<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)

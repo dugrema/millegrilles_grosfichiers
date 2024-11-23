@@ -1584,6 +1584,7 @@ pub async fn sauvegarder_job<'a, M>(middleware: &M, job: &BackgroundJob, trigger
             // Merge the filehost_ids
             let filtre = doc!{"job_id": existing.job_id};
             let ops = doc! {
+                "$set": {"etat": VIDEO_CONVERSION_ETAT_PENDING, "date_maj": None::<chrono::DateTime<Utc>>, "retry": 0},
                 "$addToSet": {"filehost_ids": {"$each": &job.filehost_ids}},
                 "$currentDate": {CHAMP_MODIFICATION: true},
             };

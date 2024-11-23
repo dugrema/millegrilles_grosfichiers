@@ -1345,55 +1345,55 @@ async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnair
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-/// Obsolete - conserver pour support legacy
-async fn transaction_retirer_documents_collection<M, T>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: T) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
-{
-    debug!("transaction_retirer_documents_collection Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionRetirerDocumentsCollection = match transaction.clone().convertir::<TransactionRetirerDocumentsCollection>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_retirer_documents_collection Erreur conversion transaction : {:?}", e))?
-    };
-
-    // Conserver champs transaction uniquement (filtrer champs meta)
-    let pull_from_array = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid};
-    let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.retirer_tuuids}};
-    let ops = doc! {
-        "$pull": pull_from_array,
-        "$currentDate": {CHAMP_MODIFICATION: true}
-    };
-
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let resultat = match collection.update_many(filtre, ops, None).await {
-        Ok(r) => r,
-        Err(e) => Err(format!("grosfichiers.transaction_retirer_documents_collection Erreur update_one sur transcation : {:?}", e))?
-    };
-    debug!("grosfichiers.transaction_retirer_documents_collection Resultat transaction update : {:?}", resultat);
-
-    // Recalculer les paths des sous-repertoires et fichiers
-    todo!("fonction obsolete, doit supporter quand meme - fix me");
-    // if let Err(e) = recalculer_path_cuuids(middleware, &transaction_collection.cuuid).await {
-    //     error!("grosfichiers.transaction_nouvelle_version Erreur recalculer_cuuids_fichiers : {:?}", e);
-    // }
-
-    for tuuid in &transaction_collection.retirer_tuuids {
-        // Emettre fichier pour que tous les clients recoivent la mise a jour
-        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_RETIRER_COLLECTION).await {
-            warn!("transaction_retirer_documents_collection Erreur emettre_evenement_maj_fichier : {:?}", e);
-        }
-    }
-
-    {
-        let mut evenement_contenu = EvenementContenuCollection::new(transaction_collection.cuuid.clone());
-        // evenement_contenu.cuuid = Some(transaction_collection.cuuid.clone());
-        evenement_contenu.retires = Some(transaction_collection.retirer_tuuids.clone());
-        emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
-    }
-
-    Ok(Some(middleware.reponse_ok(None, None)?))
-}
+// /// Obsolete - conserver pour support legacy
+// async fn transaction_retirer_documents_collection<M, T>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: T) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+//     where
+//         M: GenerateurMessages + MongoDao,
+//         T: Transaction
+// {
+//     debug!("transaction_retirer_documents_collection Consommer transaction : {:?}", &transaction);
+//     let transaction_collection: TransactionRetirerDocumentsCollection = match transaction.clone().convertir::<TransactionRetirerDocumentsCollection>() {
+//         Ok(t) => t,
+//         Err(e) => Err(format!("grosfichiers.transaction_retirer_documents_collection Erreur conversion transaction : {:?}", e))?
+//     };
+//
+//     // Conserver champs transaction uniquement (filtrer champs meta)
+//     let pull_from_array = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid};
+//     let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.retirer_tuuids}};
+//     let ops = doc! {
+//         "$pull": pull_from_array,
+//         "$currentDate": {CHAMP_MODIFICATION: true}
+//     };
+//
+//     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+//     let resultat = match collection.update_many(filtre, ops, None).await {
+//         Ok(r) => r,
+//         Err(e) => Err(format!("grosfichiers.transaction_retirer_documents_collection Erreur update_one sur transcation : {:?}", e))?
+//     };
+//     debug!("grosfichiers.transaction_retirer_documents_collection Resultat transaction update : {:?}", resultat);
+//
+//     // Recalculer les paths des sous-repertoires et fichiers
+//     todo!("fonction obsolete, doit supporter quand meme - fix me");
+//     // if let Err(e) = recalculer_path_cuuids(middleware, &transaction_collection.cuuid).await {
+//     //     error!("grosfichiers.transaction_nouvelle_version Erreur recalculer_cuuids_fichiers : {:?}", e);
+//     // }
+//
+//     // for tuuid in &transaction_collection.retirer_tuuids {
+//     //     // Emettre fichier pour que tous les clients recoivent la mise a jour
+//     //     if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_RETIRER_COLLECTION).await {
+//     //         warn!("transaction_retirer_documents_collection Erreur emettre_evenement_maj_fichier : {:?}", e);
+//     //     }
+//     // }
+//
+//     // {
+//     //     let mut evenement_contenu = EvenementContenuCollection::new(transaction_collection.cuuid.clone());
+//     //     // evenement_contenu.cuuid = Some(transaction_collection.cuuid.clone());
+//     //     evenement_contenu.retires = Some(transaction_collection.retirer_tuuids.clone());
+//     //     emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
+//     // }
+//
+//     Ok(Some(middleware.reponse_ok(None, None)?))
+// }
 
 async fn find_tuuids_retires<M,U,S>(middleware: &M, user_id: U, tuuids_in: Vec<S>)
     -> Result<HashMap<String, Vec<String>>, CommonError>
@@ -1944,71 +1944,6 @@ async fn transaction_archiver_documents<M>(middleware: &M, gestionnaire: &GrosFi
         // Emettre fichier pour que tous les clients recoivent la mise a jour
         if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ARCHIVER).await {
             warn!("transaction_archiver_documents Erreur emettre_evenement_maj_fichier : {:?}", e);
-        }
-    }
-
-    Ok(Some(middleware.reponse_ok(None, None)?))
-}
-
-async fn transaction_changer_favoris<M, T>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: T) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where
-        M: GenerateurMessages + MongoDao,
-        T: Transaction
-{
-    todo!("obsolete?");
-
-    debug!("transaction_changer_favoris Consommer transaction : {:?}", &transaction);
-    let transaction_collection: TransactionChangerFavoris = match transaction.clone().convertir::<TransactionChangerFavoris>() {
-        Ok(t) => t,
-        Err(e) => Err(format!("grosfichiers.transaction_changer_favoris Erreur conversion transaction : {:?}", e))?
-    };
-
-    let (tuuids_set, tuuids_reset) = {
-        let mut tuuids_set = Vec::new();
-        let mut tuuids_reset = Vec::new();
-
-        // Split en deux requetes - une pour favoris = true, l'autre pour false
-        for (key, value) in transaction_collection.favoris.iter() {
-            if *value == true {
-                tuuids_set.push(key.to_owned());
-            } else {
-                tuuids_reset.push(key.to_owned());
-            }
-        }
-        (tuuids_set, tuuids_reset)
-    };
-
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-
-    // Faire 2 requetes, une pour favoris=true, l'autre false
-    if ! tuuids_reset.is_empty() {
-        let filtre_reset = doc! {CHAMP_TUUID: {"$in": &tuuids_reset}};
-        let ops_reset = doc! { "$set": {CHAMP_FAVORIS: false}, "$currentDate": {CHAMP_MODIFICATION: true} };
-        let resultat = match collection.update_many(filtre_reset, ops_reset, None).await {
-            Ok(r) => r,
-            Err(e) => Err(format!("grosfichiers.transaction_changer_favoris Erreur update_many reset sur transaction : {:?}", e))?
-        };
-        debug!("grosfichiers.transaction_changer_favoris Resultat transaction update reset : {:?}", resultat);
-
-        for tuuid in &tuuids_reset {
-            // Emettre fichier pour que tous les clients recoivent la mise a jour
-            emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid).await?;
-        }
-
-    }
-
-    if ! tuuids_set.is_empty() {
-        let filtre_set = doc! {CHAMP_TUUID: {"$in": &tuuids_set}};
-        let ops_set = doc! { "$set": {CHAMP_FAVORIS: true}, "$currentDate": {CHAMP_MODIFICATION: true} };
-        let resultat = match collection.update_many(filtre_set, ops_set, None).await {
-            Ok(r) => r,
-            Err(e) => Err(format!("grosfichiers.transaction_changer_favoris Erreur update_many set sur transaction : {:?}", e))?
-        };
-        debug!("grosfichiers.transaction_changer_favoris Resultat transaction update set : {:?}", resultat);
-
-        for tuuid in &tuuids_set {
-            // Emettre fichier pour que tous les clients recoivent la mise a jour
-            emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid).await?;
         }
     }
 
