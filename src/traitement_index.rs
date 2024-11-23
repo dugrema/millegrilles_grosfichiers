@@ -26,8 +26,8 @@ use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::error::Error as CommonError;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
-use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job};
-use crate::transactions::{NodeFichierRepBorrowed, TransactionSupprimerOrphelins};
+use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job, JobTrigger};
+use crate::transactions::{NodeFichierRepBorrowed, NodeFichierRepOwned, NodeFichierVersionOwned, TransactionSupprimerOrphelins};
 
 const EVENEMENT_INDEXATION_DISPONIBLE: &str = "jobIndexationDisponible";
 const REQUETE_LISTE_NOEUDS: &str = "listeNoeuds";
@@ -851,17 +851,42 @@ async fn entretien_retirer_supprimes_sans_visites<M>(middleware: &M, gestionnair
     Ok(())
 }
 
-pub async fn set_flag_index_traite<M>(middleware: &M, tuuid: &str, fuuid: &str) -> Result<(), CommonError> {
-    todo!()
-
-    // Set flag fichierrep
+pub async fn set_flag_index_traite<M>(middleware: &M, job_id: &str, tuuid: &str, fuuid: &str) -> Result<(), CommonError>
+where M: MongoDao
+{
     // Set flag versionFichiers
-    // Supprimer job indexation
+    let filtre = doc! {"fuuid": fuuid, "tuuid": tuuid};
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let ops = doc! {
+        "$set": {CHAMP_FLAG_INDEX: true},
+        "$currentDate": {CHAMP_MODIFICATION: true},
+    };
+    collection.update_many(filtre, ops, None).await?;
 
+    // Supprimer job image
+    let filtre_job = doc!{"job_id": &job_id};
+    let collection = middleware.get_collection(NOM_COLLECTION_INDEXATION_JOBS)?;
+    collection.delete_many(filtre_job, None).await?;
+
+    Ok(())
 }
+
 
 pub async fn sauvegarder_job_index<M>(middleware: &M, job: &BackgroundJob) -> Result<BackgroundJob, CommonError>
 where M: MongoDao + GenerateurMessages
 {
-    sauvegarder_job(middleware, job, NOM_COLLECTION_INDEXATION_JOBS, "solr_relai", "indexDocument").await
+    // Charger metadata dans le trigger
+    let collection = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+    let filtre = doc!{"tuuid": &job.tuuid};
+    let trigger = match collection.find_one(filtre, None).await? {
+        Some(fichier) => {
+            let mut trigger = JobTrigger::from(job);
+            trigger.metadata = Some(fichier.metadata);
+            trigger.path_cuuids = fichier.path_cuuids;
+            trigger
+        },
+        None => Err(CommonError::String(format!("sauvegarder_job_index Fichier inconnu tuuid:{}", job.tuuid)))?
+    };
+
+    sauvegarder_job(middleware, job, Some(trigger), NOM_COLLECTION_INDEXATION_JOBS, "solrrelai", "processIndex").await
 }

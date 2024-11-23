@@ -1352,20 +1352,12 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValide, 
         false => Err(format!("commandes.commande_completer_previews: Commande autorisation invalide pour message {:?}", m.type_message)),
     }?;
 
-    // Traiter la commande
-    // let tuuid = match commande.tuuid {
-    //     Some(inner) => inner,
-    //     None => Err(format!("commande_confirmer_fichier_indexe Tuuid manquant de la commande pour {:?}", commande))?
-    // };
+    let job_id = commande.job_id.as_str();
     let tuuid = commande.tuuid.as_str();
     let fuuid = commande.fuuid.as_str();
-    if let Err(e) = set_flag_index_traite(middleware, tuuid, fuuid).await {
+    if let Err(e) = set_flag_index_traite(middleware, job_id, tuuid, fuuid).await {
         error!("commande_confirmer_fichier_indexe Erreur traitement flag : {:?}", e);
     }
-    // if let Err(e) = gestionnaire.indexation_job_handler.set_flag(
-    //     middleware, tuuid, Some(commande.user_id), None, true).await {
-    //     error!("commande_confirmer_fichier_indexe Erreur traitement flag : {:?}", e);
-    // }
 
     Ok(None)
 }

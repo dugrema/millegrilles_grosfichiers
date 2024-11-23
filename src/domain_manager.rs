@@ -215,24 +215,27 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         COMMANDE_JOB_GET_KEY,
         TRANSACTION_ASSOCIER_CONVERSIONS,
         TRANSACTION_ASSOCIER_VIDEO,
+        TRANSACTION_IMAGE_SUPPRIMER_JOB_V2,
+        TRANSACTION_VIDEO_SUPPRIMER_JOB_V2,
+        TRANSACTION_CONFIRMER_FICHIER_INDEXE,
     ];
     for cmd in commandes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
     }
 
-    let commandes_secures: Vec<&str> = vec![
-        // TRANSACTION_IMAGE_SUPPRIMER_JOB,
-        TRANSACTION_IMAGE_SUPPRIMER_JOB_V2,
-        // TRANSACTION_VIDEO_SUPPRIMER_JOB,
-        TRANSACTION_VIDEO_SUPPRIMER_JOB_V2,
-        TRANSACTION_CONFIRMER_FICHIER_INDEXE,
-        // COMMANDE_INDEXATION_GET_JOB,
-        // COMMANDE_VIDEO_GET_JOB,
-        // COMMANDE_IMAGE_GET_JOB,
-    ];
-    for cmd in commandes_secures {
-        rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
-    }
+    // let commandes_secures: Vec<&str> = vec![
+    //     // TRANSACTION_IMAGE_SUPPRIMER_JOB,
+    //     TRANSACTION_IMAGE_SUPPRIMER_JOB_V2,
+    //     // TRANSACTION_VIDEO_SUPPRIMER_JOB,
+    //     TRANSACTION_VIDEO_SUPPRIMER_JOB_V2,
+    //     TRANSACTION_CONFIRMER_FICHIER_INDEXE,
+    //     // COMMANDE_INDEXATION_GET_JOB,
+    //     // COMMANDE_VIDEO_GET_JOB,
+    //     // COMMANDE_IMAGE_GET_JOB,
+    // ];
+    // for cmd in commandes_secures {
+    //     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
+    // }
 
     // RK 2.prive
     let requetes_protegees: Vec<&str> = vec![
@@ -645,11 +648,11 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     let minutes = date_epoch.minute();
     let hours = date_epoch.hour();
 
-    if hours % 3 == 0 && minutes == 21
+    // if hours % 3 == 0 && minutes == 21
     {
         creer_jobs_manquantes(middleware).await;  // Creer jobs media/indexation manquantes (recovery)
     }
-    if minutes % 5 == 2
+    //if minutes % 5 == 2
     {
         entretien_jobs_expirees(middleware, gestionnaire).await;  // Job media/indexation expirees
     }

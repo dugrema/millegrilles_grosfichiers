@@ -539,7 +539,7 @@ where M: GenerateurMessages + MongoDao
 {
     let mimetype = job.mimetype.as_str();
     if job_image_supportee(mimetype) {
-        Ok(Some(sauvegarder_job(middleware, job, NOM_COLLECTION_IMAGES_JOBS, "media", "processImage").await?))
+        Ok(Some(sauvegarder_job(middleware, job, None, NOM_COLLECTION_IMAGES_JOBS, "media", "processImage").await?))
     } else {
         Ok(None)
     }
@@ -550,16 +550,17 @@ where M: GenerateurMessages + MongoDao
 {
     let mimetype = job.mimetype.as_str();
     if job_video_supportee(mimetype) {
-        Ok(Some(sauvegarder_job(middleware, job, NOM_COLLECTION_VIDEO_JOBS, "media", "processVideo").await?))
+        Ok(Some(sauvegarder_job(middleware, job, None, NOM_COLLECTION_VIDEO_JOBS, "media", "processVideo").await?))
     } else {
         Ok(None)
     }
 }
 
-pub async fn emettre_processing_trigger<M>(middleware: &M, background_job: &BackgroundJob, domain: &str, action: &str)
-where M: GenerateurMessages {
-    let trigger = JobTrigger::from(background_job);
-    for filehost_id in &background_job.filehost_ids {
+pub async fn emettre_processing_trigger<'a, M,T>(middleware: &M, trigger: T, domain: &str, action: &str)
+where M: GenerateurMessages, T: Into<JobTrigger<'a>> {
+    // let trigger = JobTrigger::from(background_job);
+    let trigger = trigger.into();
+    for filehost_id in trigger.filehost_ids {
         let routage = RoutageMessageAction::builder(domain, action, vec![Securite::L3Protege])
             .partition(filehost_id)
             .blocking(false)

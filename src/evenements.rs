@@ -316,7 +316,7 @@ struct DocumentFichierDetailIds {
     flag_media: Option<String>,
     flag_media_traite: Option<bool>,
     flag_video_traite: Option<bool>,
-    // flag_index: Option<bool>,
+    flag_index: Option<bool>,
     mimetype: Option<String>,
     visites: Option<HashMap<String, u32>>,
     cle_id: Option<String>,
@@ -395,6 +395,11 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
             None => false
         };
 
+        let index_traite = match doc_fuuid.flag_index {
+            Some(inner) => inner,
+            None => false
+        };
+
         emettre_evenement_maj_fichier(middleware, gestionnaire, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
         let tuuid = doc_fuuid.tuuid;
 
@@ -436,9 +441,15 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
                     subtitle_stream_idx: None,
                 };
                 job.params = Some(params_initial);
-                let user_id = doc_fuuid.user_id;
+                let user_id = doc_fuuid.user_id.clone();
                 job.user_id = Some(user_id);
                 sauvegarder_job_video(middleware, &job).await?;
+            }
+
+            if ! index_traite {
+                let user_id = doc_fuuid.user_id.clone();
+                job.user_id = Some(user_id);
+                sauvegarder_job_index(middleware, &job).await?;
             }
 
         }

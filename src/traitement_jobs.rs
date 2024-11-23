@@ -1041,7 +1041,7 @@ pub struct BackgroundJob {
     pub filehost_ids: Vec<String>,
     pub params: Option<BackgroundJobParams>,
 
-    // Valeurs pour video (progress update)
+    // Valeurs pour video (progress update) et index (access rights)
     #[serde(skip_serializing_if="Option::is_none")]
     pub user_id: Option<String>,
 
@@ -1099,6 +1099,8 @@ pub struct JobTrigger<'a> {
     pub nonce: &'a str,
     #[serde(skip_serializing_if="Option::is_none")]
     pub metadata: Option<DataChiffre>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub path_cuuids: Option<Vec<String>>,
 }
 
 impl<'a> From<&'a BackgroundJob> for JobTrigger<'a> {
@@ -1115,6 +1117,7 @@ impl<'a> From<&'a BackgroundJob> for JobTrigger<'a> {
             format: value.format.as_str(),
             nonce: value.nonce.as_str(),
             metadata: None,
+            path_cuuids: None,
         }
     }
 }
@@ -1538,13 +1541,15 @@ impl<'a> From<&'a BackgroundJob> for JobTrigger<'a> {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ParametresConfirmerJobIndexation {
+    pub job_id: String,
     pub tuuid: String,
     pub fuuid: String,
+    pub supprimer: Option<bool>,
     // pub user_id: String,
     // pub cle_conversion: Option<String>,
 }
 
-pub async fn sauvegarder_job<M>(middleware: &M, job: &BackgroundJob, nom_collection: &str, domain: &str, action_trigger: &str)
+pub async fn sauvegarder_job<'a, M>(middleware: &M, job: &BackgroundJob, trigger: Option<JobTrigger<'a>>, nom_collection: &str, domain: &str, action_trigger: &str)
     -> Result<BackgroundJob, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1576,7 +1581,10 @@ pub async fn sauvegarder_job<M>(middleware: &M, job: &BackgroundJob, nom_collect
     };
 
     // Emettre job pour traitement.
-    emettre_processing_trigger(middleware, &updated_job, domain, action_trigger).await;
+    match trigger {
+        Some(inner) => emettre_processing_trigger(middleware, inner, domain, action_trigger).await,
+        None => emettre_processing_trigger(middleware, &updated_job, domain, action_trigger).await
+    }
 
     Ok(updated_job)
 }
@@ -1638,6 +1646,8 @@ async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, fl
                     job.params = Some(params_initial);
 
                     job.user_id = Some(row.user_id.to_string());
+                } else if flag_job == CHAMP_FLAG_INDEX {
+                    job.user_id = Some(row.user_id.to_string());
                 }
                 collection_jobs.insert_one(job, None).await?;
             }
@@ -1658,7 +1668,7 @@ pub async fn entretien_jobs_expirees<M>(middleware: &M, gestionnaire: &GrosFichi
     if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_VIDEO_JOBS, 600, "media", "processVideo").await {
         error!("entretien_jobs_expirees Erreur entretien videos: {:?}", e);
     }
-    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_INDEXATION_JOBS, 180, "solr_relai", "processIndex").await {
+    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_INDEXATION_JOBS, 180, "solrrelai", "processIndex").await {
         error!("entretien_jobs_expirees Erreur entretien index: {:?}", e);
     }
 }
@@ -1707,7 +1717,7 @@ async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainMana
                         middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_VIDEO_SUPPRIMER_JOB_V2).await?;
                 },
                 "processIndex" => {
-                    todo!()
+                   // Rien a faire - l'indexation n'utilise pas de transactions (volatil)
                 },
                 _ => warn!("reactiver_jobs Unknown expired job type: {}", action)
             }
@@ -1716,7 +1726,29 @@ async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainMana
             continue;  // Skip trigger
         }
 
-        emettre_processing_trigger(middleware, &row, domain, action).await;
+        let trigger: JobTrigger = match action {
+            "processIndex" => {
+                let collection = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+                let filtre = doc!{"tuuid": &row.tuuid};
+                match collection.find_one(filtre, None).await? {
+                    Some(fichier) => {
+                        let mut trigger = JobTrigger::from(&row);
+                        trigger.metadata = Some(fichier.metadata);
+                        trigger.path_cuuids = fichier.path_cuuids;
+                        trigger
+                    },
+                    None => {
+                        // Cleanup job pour fichier inconnu
+                        let filtre = doc!{"job_id": &row.job_id};
+                        collection.delete_one(filtre, None).await?;
+                        Err(CommonError::String(format!("sauvegarder_job_index Fichier inconnu tuuid (job maintenant supprimee):{}", row.tuuid)))?
+                    }
+                }
+            },
+            _ => (&row).into()
+        };
+
+        emettre_processing_trigger(middleware, trigger, domain, action).await;
     }
 
     Ok(())
