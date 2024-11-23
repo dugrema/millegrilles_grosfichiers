@@ -1168,10 +1168,11 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValide, gestionnaire: &
         false => Err(format!("commandes.commande_reindexer: Commande autorisation invalide pour message {:?}", m.type_message)),
     }?;
 
-    reset_flag_indexe(middleware, gestionnaire, &gestionnaire.indexation_job_handler).await?;
-
-    let reponse = ReponseCommandeReindexer {ok: true, tuuids: None};
-    Ok(Some(middleware.build_reponse(reponse)?.0))
+    todo!()
+    // reset_flag_indexe(middleware, gestionnaire, &gestionnaire.indexation_job_handler).await?;
+    //
+    // let reponse = ReponseCommandeReindexer {ok: true, tuuids: None};
+    // Ok(Some(middleware.build_reponse(reponse)?.0))
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1354,7 +1355,7 @@ async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValide, 
 
     let job_id = commande.job_id.as_str();
     let tuuid = commande.tuuid.as_str();
-    let fuuid = commande.fuuid.as_str();
+    let fuuid = match commande.fuuid.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None};
     if let Err(e) = set_flag_index_traite(middleware, job_id, tuuid, fuuid).await {
         error!("commande_confirmer_fichier_indexe Erreur traitement flag : {:?}", e);
     }

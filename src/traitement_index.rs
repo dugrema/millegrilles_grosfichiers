@@ -851,12 +851,23 @@ async fn entretien_retirer_supprimes_sans_visites<M>(middleware: &M, gestionnair
     Ok(())
 }
 
-pub async fn set_flag_index_traite<M>(middleware: &M, job_id: &str, tuuid: &str, fuuid: &str) -> Result<(), CommonError>
+pub async fn set_flag_index_traite<M>(middleware: &M, job_id: &str, tuuid: &str, fuuid: Option<&str>) -> Result<(), CommonError>
 where M: MongoDao
 {
-    // Set flag versionFichiers
-    let filtre = doc! {"fuuid": fuuid, "tuuid": tuuid};
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    if let Some(fuuid) = fuuid {
+        // Set flag versionFichiers
+        let filtre = doc! {"fuuid": fuuid, "tuuid": tuuid};
+        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        let ops = doc! {
+            "$set": {CHAMP_FLAG_INDEX: true},
+            "$currentDate": {CHAMP_MODIFICATION: true},
+        };
+        collection.update_many(filtre, ops, None).await?;
+    }
+
+    // Set flag version reps (si applicable)
+    let filtre = doc! {"tuuid": tuuid};
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let ops = doc! {
         "$set": {CHAMP_FLAG_INDEX: true},
         "$currentDate": {CHAMP_MODIFICATION: true},

@@ -33,92 +33,100 @@ const ACTION_GENERER_POSTER_PDF: &str = "genererPosterPdf";
 const ACTION_GENERER_POSTER_VIDEO: &str = "genererPosterVideo";
 const ACTION_TRANSCODER_VIDEO: &str = "transcoderVideo";
 
-#[derive(Clone, Debug)]
-pub struct ImageJobHandler {}
-
-#[async_trait]
-impl JobHandler for ImageJobHandler {
-
-    fn get_nom_collection(&self) -> &str { NOM_COLLECTION_IMAGES_JOBS }
-
-    fn get_nom_flag(&self) -> &str { CHAMP_FLAG_MEDIA_TRAITE }
-
-    fn get_action_evenement(&self) -> &str { EVENEMENT_IMAGE_DISPONIBLE }
-
-    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, job: BackgroundJob, erreur: S)
-        -> Result<(), CommonError>
-        where
-            M: ValidateurX509 + GenerateurMessages + MongoDao,
-            G: GestionnaireDomaineV2 + AiguillageTransactions,
-            S: ToString + Send
-    {
-        let erreur = erreur.to_string();
-        let transaction = TransactionSupprimerJobImageV2 {
-            tuuid: job.tuuid,
-            fuuid: job.fuuid,
-            err: Some(erreur),
-        };
-
-        sauvegarder_traiter_transaction_serializable_v2(
-            middleware, &transaction, gestionnaire_domaine,
-            DOMAINE_NOM, TRANSACTION_IMAGE_SUPPRIMER_JOB_V2).await?;
-
-        Ok(())
-    }
-
-}
-
-#[async_trait]
-impl JobHandlerVersions for ImageJobHandler {
-
-    // async fn sauvegarder_job<M, S, U>(
-    //     &self, middleware: &M, fuuid: S, user_id: U, instances: Option<Vec<String>>,
-    //     mut champs_cles: Option<HashMap<String, String>>,
-    //     parametres: Option<HashMap<String, Bson>>,
-    //     emettre_trigger: bool,
-    // )
-    //     -> Result<(), CommonError>
-    //     where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send
-    // {
-    //     let fuuid = fuuid.as_ref();
-    //     let user_id = user_id.as_ref();
-    //
-    //     // Trouver le mimetype
-    //     let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
-    //     let filtre = doc!{CHAMP_FUUID: fuuid, CHAMP_USER_ID: user_id};
-    //     let mut curseur = collection.find(filtre, None).await?;
-    //     let mimetype = match curseur.advance().await? {
-    //         true => {
-    //             let row = curseur.deserialize_current()?;
-    //             row.mimetype.to_owned()
-    //         },
-    //         false => {
-    //             debug!("sauvegarder_job Mimetype absent, skip sauvegarder job image");
-    //             return Ok(())
-    //         }
-    //     };
-    //
-    //     // Tester le mimetype pour savoir si la job s'applique
-    //     if job_image_supportee(&mimetype) {
-    //         debug!("sauvegarder_job image type {} instances {:?}", mimetype, instances);
-    //         sauvegarder_job(middleware, self, fuuid, user_id, instances.clone(), champs_cles, parametres).await?;
-    //
-    //         if let Some(inner) = instances {
-    //             if emettre_trigger {
-    //                 for instance in inner {
-    //                     self.emettre_trigger(middleware, instance).await;
-    //                 }
-    //             }
-    //         }
-    //     }
-    //
-    //     Ok(())
-    // }
-
-}
-
-#[derive(Clone, Debug)]
-pub struct VideoJobHandler {}
+// #[derive(Clone, Debug)]
+// pub struct ImageJobHandler {}
+//
+// #[async_trait]
+// impl JobHandler for ImageJobHandler {
+//
+//     fn get_nom_collection(&self) -> &str { NOM_COLLECTION_IMAGES_JOBS }
+//
+//     fn get_nom_flag(&self) -> &str { CHAMP_FLAG_MEDIA_TRAITE }
+//
+//     fn get_action_evenement(&self) -> &str { EVENEMENT_IMAGE_DISPONIBLE }
+//
+//     async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, job: BackgroundJob, erreur: S)
+//         -> Result<(), CommonError>
+//         where
+//             M: ValidateurX509 + GenerateurMessages + MongoDao,
+//             G: GestionnaireDomaineV2 + AiguillageTransactions,
+//             S: ToString + Send
+//     {
+//         let erreur = erreur.to_string();
+//
+//         match job.fuuid {
+//             Some(fuuid) => {
+//                 let transaction = TransactionSupprimerJobImageV2 {
+//                     tuuid: job.tuuid,
+//                     fuuid,
+//                     err: Some(erreur),
+//                 };
+//
+//                 sauvegarder_traiter_transaction_serializable_v2(
+//                     middleware, &transaction, gestionnaire_domaine,
+//                     DOMAINE_NOM, TRANSACTION_IMAGE_SUPPRIMER_JOB_V2).await?;
+//             },
+//             None => {
+//                 warn!("Job image tuuid:{} sans fuuid, ignorer", job.tuuid);
+//             }
+//         }
+//
+//         Ok(())
+//     }
+//
+// }
+//
+// #[async_trait]
+// impl JobHandlerVersions for ImageJobHandler {
+//
+//     // async fn sauvegarder_job<M, S, U>(
+//     //     &self, middleware: &M, fuuid: S, user_id: U, instances: Option<Vec<String>>,
+//     //     mut champs_cles: Option<HashMap<String, String>>,
+//     //     parametres: Option<HashMap<String, Bson>>,
+//     //     emettre_trigger: bool,
+//     // )
+//     //     -> Result<(), CommonError>
+//     //     where M: GenerateurMessages + MongoDao, S: AsRef<str> + Send, U: AsRef<str> + Send
+//     // {
+//     //     let fuuid = fuuid.as_ref();
+//     //     let user_id = user_id.as_ref();
+//     //
+//     //     // Trouver le mimetype
+//     //     let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
+//     //     let filtre = doc!{CHAMP_FUUID: fuuid, CHAMP_USER_ID: user_id};
+//     //     let mut curseur = collection.find(filtre, None).await?;
+//     //     let mimetype = match curseur.advance().await? {
+//     //         true => {
+//     //             let row = curseur.deserialize_current()?;
+//     //             row.mimetype.to_owned()
+//     //         },
+//     //         false => {
+//     //             debug!("sauvegarder_job Mimetype absent, skip sauvegarder job image");
+//     //             return Ok(())
+//     //         }
+//     //     };
+//     //
+//     //     // Tester le mimetype pour savoir si la job s'applique
+//     //     if job_image_supportee(&mimetype) {
+//     //         debug!("sauvegarder_job image type {} instances {:?}", mimetype, instances);
+//     //         sauvegarder_job(middleware, self, fuuid, user_id, instances.clone(), champs_cles, parametres).await?;
+//     //
+//     //         if let Some(inner) = instances {
+//     //             if emettre_trigger {
+//     //                 for instance in inner {
+//     //                     self.emettre_trigger(middleware, instance).await;
+//     //                 }
+//     //             }
+//     //         }
+//     //     }
+//     //
+//     //     Ok(())
+//     // }
+//
+// }
+//
+// #[derive(Clone, Debug)]
+// pub struct VideoJobHandler {}
 
 // #[async_trait]
 // impl JobHandler for VideoJobHandler {
@@ -560,13 +568,22 @@ pub async fn emettre_processing_trigger<'a, M,T>(middleware: &M, trigger: T, dom
 where M: GenerateurMessages, T: Into<JobTrigger<'a>> {
     // let trigger = JobTrigger::from(background_job);
     let trigger = trigger.into();
-    for filehost_id in trigger.filehost_ids {
+    if trigger.filehost_ids.is_empty() {
         let routage = RoutageMessageAction::builder(domain, action, vec![Securite::L3Protege])
-            .partition(filehost_id)
             .blocking(false)
             .build();
         if let Err(e) = middleware.transmettre_commande(routage, &trigger).await {
-            error!("emettre_processing_trigger Erreur emission trigger commande.{}.{}.{} : {:?}", domain, filehost_id, action, e);
+            error!("emettre_processing_trigger Erreur emission trigger commande.{}.{} : {:?}", domain, action, e);
+        }
+    } else {
+        for filehost_id in trigger.filehost_ids {
+            let routage = RoutageMessageAction::builder(domain, action, vec![Securite::L3Protege])
+                .partition(filehost_id)
+                .blocking(false)
+                .build();
+            if let Err(e) = middleware.transmettre_commande(routage, &trigger).await {
+                error!("emettre_processing_trigger Erreur emission trigger commande.{}.{}.{} : {:?}", domain, filehost_id, action, e);
+            }
         }
     }
 }

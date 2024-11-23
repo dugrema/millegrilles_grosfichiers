@@ -1036,7 +1036,7 @@ pub struct BackgroundJob {
 
     // Parametres de la job
     pub tuuid: String,
-    pub fuuid: String,
+    pub fuuid: Option<String>,
     pub mimetype: String,
     pub filehost_ids: Vec<String>,
     pub params: Option<BackgroundJobParams>,
@@ -1067,11 +1067,33 @@ impl BackgroundJob {
         Self {
             job_id: job_id.to_string(),
             tuuid: tuuid.to_string(),
-            fuuid: fuuid.to_string(),
+            fuuid: Some(fuuid.to_string()),
             mimetype: mimetype.to_string(),
             filehost_ids: filehost_ids.iter().map(|id| id.to_string()).collect(),
             params: None,
             user_id: None,
+            cle_id: cle_id.to_string(),
+            format: format.to_string(),
+            nonce: nonce.to_string(),
+            etat: VIDEO_CONVERSION_ETAT_PENDING,
+            date_modification: Utc::now(),
+            date_maj: None,
+            retry: 0,
+        }
+    }
+
+    pub fn new_index<T,F,U,M,I,C,E,N>(tuuid: T, fuuid: Option<F>, user_id: U, mimetype: M, filehost_ids: &Vec<I>, cle_id: C, format: E, nonce: N) -> BackgroundJob
+    where T: ToString, F: ToString, U: ToString, M: ToString, I: ToString, E: ToString, C: ToString, N: ToString
+    {
+        let job_id = Uuid::new_v4();  // Generate random identifier
+        Self {
+            job_id: job_id.to_string(),
+            tuuid: tuuid.to_string(),
+            fuuid: match fuuid {Some(inner) => Some(inner.to_string()), None => None},
+            mimetype: mimetype.to_string(),
+            filehost_ids: filehost_ids.iter().map(|id| id.to_string()).collect(),
+            params: None,
+            user_id: Some(user_id.to_string()),
             cle_id: cle_id.to_string(),
             format: format.to_string(),
             nonce: nonce.to_string(),
@@ -1087,7 +1109,7 @@ impl BackgroundJob {
 pub struct JobTrigger<'a> {
     pub job_id: &'a str,
     pub tuuid: &'a str,
-    pub fuuid: &'a str,
+    pub fuuid: Option<&'a str>,
     pub mimetype: &'a str,
     pub filehost_ids: &'a Vec<String>,
     #[serde(skip_serializing_if="Option::is_none")]
@@ -1108,7 +1130,7 @@ impl<'a> From<&'a BackgroundJob> for JobTrigger<'a> {
         Self {
             job_id: value.job_id.as_str(),
             tuuid: value.tuuid.as_str(),
-            fuuid: value.fuuid.as_str(),
+            fuuid: match &value.fuuid {Some(inner)=>Some(inner), None=>None},
             mimetype: value.mimetype.as_str(),
             filehost_ids: &value.filehost_ids,
             params: match &value.params {Some(inner)=>Some(inner), None=>None},
@@ -1543,7 +1565,7 @@ impl<'a> From<&'a BackgroundJob> for JobTrigger<'a> {
 pub struct ParametresConfirmerJobIndexation {
     pub job_id: String,
     pub tuuid: String,
-    pub fuuid: String,
+    pub fuuid: Option<String>,
     pub supprimer: Option<bool>,
     // pub user_id: String,
     // pub cle_conversion: Option<String>,
@@ -1598,7 +1620,12 @@ pub async fn creer_jobs_manquantes<M>(middleware: &M)
     if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_VIDEO_JOBS, CHAMP_FLAG_VIDEO_TRAITE).await {
         error!("creer_jobs_manquantes Erreur creation jobs manquantes videos: {:?}", e);
     }
+
+    // Index - visiter tables VERSION et FICHIER_REP
     if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX).await {
+        error!("creer_jobs_manquantes Erreur creation jobs manquantes index: {:?}", e);
+    }
+    if let Err(e) = creer_jobs_manquantes_fichiersrep(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX).await {
         error!("creer_jobs_manquantes Erreur creation jobs manquantes index: {:?}", e);
     }
 }
@@ -1654,7 +1681,38 @@ async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, fl
         }
     }
 
+    Ok(())
+}
 
+async fn creer_jobs_manquantes_fichiersrep<M>(middleware: &M, nom_collection: &str, flag_job: &str) -> Result<(), CommonError>
+where M: MongoDao {
+    let collection_version = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+    let filtre_version = doc!{flag_job: false};
+    let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
+    let mut curseur = collection_version.find(filtre_version, None).await?;
+    while curseur.advance().await? {
+        let row = curseur.deserialize_current()?;
+        let tuuid = &row.tuuid;
+        let user_id = &row.user_id;
+
+        // Verifier si une job existe pour ce tuuid/fuuid
+        let filtre_job = doc! {"tuuid": tuuid};
+        let count = collection_jobs.count_documents(filtre_job, None).await?;
+
+        if count == 0 {
+            debug!("creer_jobs_manquantes_queue Creer job {} manquante pour tuuid {}", flag_job, tuuid);
+            let metadata = row.metadata;
+            if metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
+                let cle_id = metadata.cle_id.expect("cle_id");
+                let format = metadata.format.expect("format");
+                let nonce = metadata.nonce.expect("nonce");
+                let mimetype = row.mimetype.unwrap_or_else(|| "application/octet-stream".to_string());
+                let visites: Vec<&String> = vec![];
+                let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, mimetype, &visites, cle_id, format, nonce);
+                collection_jobs.insert_one(job, None).await?;
+            }
+        }
+    }
 
     Ok(())
 }
@@ -1696,25 +1754,39 @@ async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainMana
 
         if row.retry > 4 {
             // Cancel the job, emit a transaction to clear for good
-            info!("reactiver_jobs Trop d'echecs sur traitement {} fuuid {}, desactiver pour de bon", action, row.fuuid);
+            info!("reactiver_jobs Trop d'echecs sur traitement {} fuuid {:?}, desactiver pour de bon", action, row.fuuid);
             match action {
                 "processImage" => {
-                    let transaction = TransactionSupprimerJobImageV2 {
-                        tuuid: row.tuuid,
-                        fuuid: row.fuuid,
-                        err: None,
-                    };
-                    sauvegarder_traiter_transaction_serializable_v2(
-                        middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_IMAGE_SUPPRIMER_JOB_V2).await?;
+                    match row.fuuid.as_ref() {
+                        Some(fuuid) => {
+                            let transaction = TransactionSupprimerJobImageV2 {
+                                tuuid: row.tuuid,
+                                fuuid: fuuid.to_owned(),
+                                err: None,
+                            };
+                            sauvegarder_traiter_transaction_serializable_v2(
+                                middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_IMAGE_SUPPRIMER_JOB_V2).await?;
+                        },
+                        None => {
+                            warn!("reactiver_jobs Job image tuuid:{} sans fuuid, ignorer", row.tuuid);
+                        }
+                    }
                 },
                 "processVideo" => {
-                    let transaction = TransactionSupprimerJobVideoV2 {
-                        tuuid: row.tuuid,
-                        fuuid: row.fuuid,
-                        job_id: row.job_id.clone(),
-                    };
-                    sauvegarder_traiter_transaction_serializable_v2(
-                        middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_VIDEO_SUPPRIMER_JOB_V2).await?;
+                    match row.fuuid.as_ref() {
+                        Some(fuuid) => {
+                            let transaction = TransactionSupprimerJobVideoV2 {
+                                tuuid: row.tuuid,
+                                fuuid: fuuid.to_owned(),
+                                job_id: row.job_id.clone(),
+                            };
+                            sauvegarder_traiter_transaction_serializable_v2(
+                                middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_VIDEO_SUPPRIMER_JOB_V2).await?;
+                        },
+                        None => {
+                            warn!("reactiver_jobs Job video tuuid:{} sans fuuid, ignorer", row.tuuid);
+                        }
+                    }
                 },
                 "processIndex" => {
                    // Rien a faire - l'indexation n'utilise pas de transactions (volatil)
@@ -1753,3 +1825,4 @@ async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainMana
 
     Ok(())
 }
+

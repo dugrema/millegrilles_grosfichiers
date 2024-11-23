@@ -28,7 +28,7 @@ use crate::evenements::{consommer_evenement, HandlerEvenements};
 use crate::traitement_entretien::{calculer_quotas, reclamer_fichiers};
 use crate::traitement_index::IndexationJobHandler;
 use crate::traitement_jobs::{creer_jobs_manquantes, entretien_jobs_expirees};
-use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
+// use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
 use crate::transactions::aiguillage_transaction;
 
 const INTERVALLE_THREAD_EVENEMENTS_SECS: u64 = 2;
@@ -36,22 +36,24 @@ const INTERVALLE_THREAD_EVENEMENTS_SECS: u64 = 2;
 #[derive(Clone)]
 pub struct GrosFichiersDomainManager {
     pub instance_id: String,
-    pub image_job_handler: ImageJobHandler,
-    pub video_job_handler: VideoJobHandler,
-    pub indexation_job_handler: IndexationJobHandler,
+    // pub image_job_handler: ImageJobHandler,
+    // pub video_job_handler: VideoJobHandler,
+    // pub indexation_job_handler: IndexationJobHandler,
     pub evenements_handler: HandlerEvenements
 }
 
 impl GrosFichiersDomainManager {
     pub fn new(instance_id: String) -> GrosFichiersDomainManager {
 
-        let image_job_handler = ImageJobHandler {};
-        let video_job_handler = VideoJobHandler {};
+        // let image_job_handler = ImageJobHandler {};
+        // let video_job_handler = VideoJobHandler {};
         let indexation_job_handler = IndexationJobHandler {};
         let evenements_handler = HandlerEvenements::new();
 
         GrosFichiersDomainManager {
-            instance_id, image_job_handler, video_job_handler, indexation_job_handler, evenements_handler
+            instance_id,
+            // image_job_handler, video_job_handler, indexation_job_handler,
+            evenements_handler
         }
     }
 }
