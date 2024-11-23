@@ -1634,7 +1634,7 @@ async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, fl
     where M: MongoDao
 {
     let collection_version = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
-    let filtre_version = doc!{flag_job: false};
+    let filtre_version = doc!{flag_job: false, "visites.nouveau": {"$exists": false}};
     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
     let mut curseur = collection_version.find(filtre_version, None).await?;
     while curseur.advance().await? {
@@ -1642,7 +1642,7 @@ async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, fl
         let fuuid = row.fuuid;
         let tuuid = row.tuuid;
 
-        // Verifier si une job existe pour ce tuuid/fuuid
+        // Verifier si une job existe pour ce tuuid/fuuid. Ignorer fichiers en cours d'upload (nouveau).
         let filtre_job = doc! {"tuuid": tuuid, "fuuid": fuuid};
         let count = collection_jobs.count_documents(filtre_job, None).await?;
 
