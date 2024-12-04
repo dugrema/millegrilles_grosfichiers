@@ -1711,7 +1711,7 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
                         let format: &str = key.format.expect("format").into();
                         let nonce = key.nonce.expect("nonce");
                         let visites: Vec<&String> = vec![];
-                        let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, mimetype, &visites, cle_id, format, nonce);
+                        let job = BackgroundJob::new_index(tuuid, Some(fuuid), user_id, mimetype, &visites, cle_id, format, nonce);
                         collection_jobs.insert_one(job, None).await?;
                     }
                 }
