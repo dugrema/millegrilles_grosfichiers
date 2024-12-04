@@ -1877,7 +1877,10 @@ where M: MongoDao + GenerateurMessages + ValidateurX509 {
     let filtre = doc!{
         "$or": [
             {"retry": {"$gt": CONST_MAX_RETRY}},  // Any job with retry > CONST_MAX_RETRY
-            {"date_maj": None::<&str>, CHAMP_MODIFICATION: {"$lte": expiration}},  // Any job not picked-up once after 24h
+            {
+                // "date_maj": None::<&str>,
+                CHAMP_MODIFICATION: {"$lte": expiration}
+            },
         ]
     };
 
