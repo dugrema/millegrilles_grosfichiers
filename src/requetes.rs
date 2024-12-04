@@ -10,7 +10,7 @@ use millegrilles_common_rust::bson::{Bson, doc, Document};
 use millegrilles_common_rust::bson::serde_helpers::deserialize_chrono_datetime_from_bson_datetime;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
-use millegrilles_common_rust::common_messages::{InformationDechiffrage, InformationDechiffrageV2, ReponseDechiffrage, ReponseRequeteDechiffrageV2, RequeteDechiffrage};
+use millegrilles_common_rust::common_messages::{InformationDechiffrage, InformationDechiffrageV2, ReponseDechiffrage, ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
 use millegrilles_common_rust::dechiffrage::{DataChiffre, DataChiffreBorrow};
@@ -2878,4 +2878,52 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         },
         None => Ok(Some(middleware.reponse_err(Some(404), None, Some("File not found"))?))
     }
+}
+
+pub async fn get_decrypted_keys<M>(middleware: &M, cle_ids: Vec<String>) -> Result<Vec<ResponseRequestDechiffrageV2Cle>, CommonError>
+    where M: GenerateurMessages
+{
+    let requete = RequeteDechiffrage {
+        domaine: DOMAINE_NOM.to_string(),
+        liste_hachage_bytes: None,
+        cle_ids: Some(cle_ids),
+        certificat_rechiffrage: None,
+        inclure_signature: None,
+    };
+    let routage = RoutageMessageAction::builder(
+        DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, vec![Securite::L3Protege]
+    ).build();
+
+    debug!("get_decrypted_keys Transmettre requete permission dechiffrage cle : {:?}", requete);
+    let response_message = middleware.transmettre_requete(routage, &requete).await?;
+    let decrypted_response = if let Some(TypeMessage::Valide(response)) = response_message {
+        debug!("get_decrypted_keys Response\n{}", from_utf8(response.message.buffer.as_slice())?);
+        let message_ref = response.message.parse()?;
+        let enveloppe_privee = middleware.get_enveloppe_signature();
+        let decrypted_response: ReponseRequeteDechiffrageV2 = message_ref.dechiffrer(enveloppe_privee.as_ref())?;
+        decrypted_response
+    } else {
+        Err(format!("get_decrypted_keys Error getting keys from keymaster: {:?}", response_message))?
+    };
+
+    match decrypted_response.cles {
+        Some(cles) => Ok(cles),
+        None => Err("get_decrypted_keys No keys were received")?
+    }
+
+    // let mut decrypted_key_response = Vec::new();
+    // for key in keys {
+    //     if let Some(cle_id) = key.cle_id {
+    //         let key_info = InformationDechiffrageV2 {
+    //             format: key.format.unwrap_or_else(|| FormatChiffrage::MGS4),
+    //             cle_id,
+    //             nonce: key.nonce,
+    //             verification: key.verification,
+    //             fuuid: None,
+    //         };
+    //         decrypted_key_response.push(key_info);
+    //     }
+    // }
+    //
+    // Ok(decrypted_key_response)
 }

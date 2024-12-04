@@ -31,6 +31,7 @@ use millegrilles_common_rust::uuid::{uuid, Uuid};
 use serde::{Deserialize, Serialize};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
+use crate::requetes::get_decrypted_keys;
 use crate::traitement_entretien::sauvegarder_visites;
 use crate::traitement_index::set_flag_index_traite;
 use crate::traitement_media::emettre_processing_trigger;
@@ -1628,7 +1629,7 @@ pub async fn sauvegarder_job<'a, M>(middleware: &M, job: &BackgroundJob, trigger
 }
 
 pub async fn creer_jobs_manquantes<M>(middleware: &M)
-    where M: MongoDao
+    where M: MongoDao + GenerateurMessages
 {
     if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_IMAGES_JOBS, CHAMP_FLAG_MEDIA_TRAITE).await {
         error!("creer_jobs_manquantes Erreur creation jobs manquantes images: {:?}", e);
@@ -1647,7 +1648,7 @@ pub async fn creer_jobs_manquantes<M>(middleware: &M)
 }
 
 pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, flag_job: &str) -> Result<(), CommonError>
-    where M: MongoDao
+    where M: MongoDao + GenerateurMessages
 {
     let collection_version = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
     let filtre_version = doc!{"supprime": false, flag_job: false, "visites.nouveau": {"$exists": false}};
@@ -1695,18 +1696,35 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
                 }
                 collection_jobs.insert_one(job, None).await?;
                 fuuids.push(fuuid.to_owned());
+            } else {
+                // Old format. The keymaster has the key where cle_id == fuuid.
+                let cle_id = fuuid;
+                let mimetype = row.mimetype;
+                let user_id = row.user_id;
+
+                // Values for format and header (nonce) are available directly from the key.
+                let mut key_information = get_decrypted_keys(middleware, vec![cle_id.to_owned()]).await?;
+                if key_information.len() == 1 {
+                    let key = key_information.pop().expect("pop key_information");
+                    if key.format.is_some() && key.nonce.is_some() {
+                        debug!("Cle_id {} information recovered successfully from keymaster", cle_id);
+                        let format: &str = key.format.expect("format").into();
+                        let nonce = key.nonce.expect("nonce");
+                        let visites: Vec<&String> = vec![];
+                        let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, mimetype, &visites, cle_id, format, nonce);
+                        collection_jobs.insert_one(job, None).await?;
+                    }
+                }
             }
         }
     }
-
-    debug!("Query core to check if all filehosts are accounted for in the new jobs");
-
 
     Ok(())
 }
 
 pub async fn creer_jobs_manquantes_fichiersrep<M>(middleware: &M, nom_collection: &str, flag_job: &str) -> Result<(), CommonError>
-where M: MongoDao {
+where M: MongoDao
+{
     let collection_version = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
     let filtre_version = doc!{"supprime": false, "supprime_indirect": false, flag_job: false};
     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;

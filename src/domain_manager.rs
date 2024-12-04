@@ -650,7 +650,8 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     let minutes = date_epoch.minute();
     let hours = date_epoch.hour();
 
-    if hours % 3 == 0 && minutes == 21
+    // if hours % 3 == 0 && minutes == 21
+    // if minutes % 15 == 3
     {
         creer_jobs_manquantes(middleware).await;  // Creer jobs media/indexation manquantes (recovery)
     }
