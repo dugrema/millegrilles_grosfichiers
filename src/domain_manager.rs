@@ -654,7 +654,7 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     {
         creer_jobs_manquantes(middleware).await;  // Creer jobs media/indexation manquantes (recovery)
     }
-    if minutes % 5 == 2
+    if minutes % 4 == 2
     {
         entretien_jobs_expirees(middleware, gestionnaire).await;  // Job media/indexation expirees
     }

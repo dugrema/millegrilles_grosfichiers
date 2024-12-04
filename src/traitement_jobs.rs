@@ -1721,18 +1721,18 @@ where M: MongoDao {
 pub async fn entretien_jobs_expirees<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager)
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
-    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_IMAGES_JOBS, 180, "media", "processImage").await {
+    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_IMAGES_JOBS, 180, 1000 , "media", "processImage").await {
         error!("entretien_jobs_expirees Erreur entretien images: {:?}", e);
     }
-    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_VIDEO_JOBS, 600, "media", "processVideo").await {
+    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_VIDEO_JOBS, 600, 100, "media", "processVideo").await {
         error!("entretien_jobs_expirees Erreur entretien videos: {:?}", e);
     }
-    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_INDEXATION_JOBS, 180, "solrrelai", "processIndex").await {
+    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_INDEXATION_JOBS, 180, 10000, "solrrelai", "processIndex").await {
         error!("entretien_jobs_expirees Erreur entretien index: {:?}", e);
     }
 }
 
-pub async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, nom_collection: &str, timeout: i64, domain: &str, action: &str) -> Result<(), CommonError>
+pub async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, nom_collection: &str, timeout: i64, limit: i64, domain: &str, action: &str) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
     let collection = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
@@ -1746,9 +1746,9 @@ pub async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomain
     };
     collection.update_many(filtre, ops, None).await?;
 
-    // Re-emettre les jobs, maximum de 1000
+    // Resubmit jobs - duplicates in the Q will be caught when requesting job decryption key
     let filtre = doc!{"etat": VIDEO_CONVERSION_ETAT_PENDING};
-    let options = FindOptions::builder().limit(1000).build();
+    let options = FindOptions::builder().limit(limit).build();
     let mut curseur = collection.find(filtre, options).await?;
     while curseur.advance().await? {
         let row = curseur.deserialize_current()?;
