@@ -1058,6 +1058,9 @@ pub struct BackgroundJob {
     #[serde(default, with="opt_chrono_datetime_as_bson_datetime")]
     pub date_maj: Option<chrono::DateTime<Utc>>,
     pub retry: i32,
+
+    // Business key, combined with tuuid to make a unique job value
+    pub cle_conversion: Option<String>,
 }
 
 impl BackgroundJob {
@@ -1080,6 +1083,7 @@ impl BackgroundJob {
             date_modification: Utc::now(),
             date_maj: None,
             retry: 0,
+            cle_conversion: None,
         }
     }
 
@@ -1102,6 +1106,7 @@ impl BackgroundJob {
             date_modification: Utc::now(),
             date_maj: None,
             retry: 0,
+            cle_conversion: None,
         }
     }
 }
@@ -1579,27 +1584,33 @@ pub async fn sauvegarder_job<'a, M>(middleware: &M, job: &BackgroundJob, trigger
     let collection = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
 
     // Verifier si une job existe deja pour le fichier represente
-    let filtre = doc!{"tuuid": &job.tuuid, "fuuid": &job.fuuid};
-    let updated_job = match collection.find_one(filtre, None).await? {
-        Some(existing) => {
-            // Merge the filehost_ids
-            let filtre = doc!{"job_id": existing.job_id};
-            let ops = doc! {
-                "$set": {"etat": VIDEO_CONVERSION_ETAT_PENDING, "date_maj": None::<chrono::DateTime<Utc>>, "retry": 0},
-                "$addToSet": {"filehost_ids": {"$each": &job.filehost_ids}},
-                "$currentDate": {CHAMP_MODIFICATION: true},
-            };
-            let options = FindOneAndUpdateOptions::builder().return_document(ReturnDocument::After).build();
-            match collection.find_one_and_update(filtre, ops, options).await? {
-                Some(inner) => inner,
-                None => {
-                    error!("sauvegarder_job No job updated, returning cloned job");
-                    job.clone()
-                }
+    let cle_conversion = match job.params.as_ref() {
+        Some(params) => {
+            if Some(true) == params.defaults {
+                "defaults".to_string()
+            } else {
+                // Generate unique key from params
+                format!("{:?};{:?};{:?};{:?};{:?};{:?}", params.mimetype, params.codec_video,
+                        params.resolution_video, params.bitrate_audio, params.audio_stream_idx,
+                        params.subtitle_stream_idx)
             }
         },
+        None => "defaults".to_string()
+    };
+    let filtre = doc!{"tuuid": &job.tuuid, "fuuid": &job.fuuid, "cle_conversion": &cle_conversion};
+    let ops = doc! {
+        // "$setOnInsert": {"job_id": new_job_id, "etat": VIDEO_CONVERSION_ETAT_PENDING, "date_maj": None::<chrono::DateTime<Utc>>, "retry": 0},
+        "$addToSet": {"filehost_ids": {"$each": &job.filehost_ids}},  // Merge the filehost_ids if appropriate
+        "$currentDate": {CHAMP_MODIFICATION: true},
+    };
+    let options = FindOneAndUpdateOptions::builder().return_document(ReturnDocument::After).build();
+    let updated_job = match collection.find_one_and_update(filtre, ops, options).await? {
+        Some(inner) => inner,
         None => {
-            collection.insert_one(job, None).await?;
+            error!("sauvegarder_job No job updated, returning cloned job");
+            let mut job_copy = job.clone();
+            job_copy.cle_conversion = Some(cle_conversion);
+            collection.insert_one(job_copy, None).await?;
             job.clone()
         }
     };

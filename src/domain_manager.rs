@@ -192,7 +192,7 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         TRANSACTION_COPIER_FICHIER_TIERS,
         // TRANSACTION_FAVORIS_CREERPATH,
         TRANSACTION_SUPPRIMER_VIDEO,
-        TRANSACTION_VIDEO_SUPPRIMER_JOB,
+        TRANSACTION_VIDEO_SUPPRIMER_JOB_V2,
         TRANSACTION_AJOUTER_CONTACT_LOCAL,
         TRANSACTION_SUPPRIMER_CONTACTS,
         TRANSACTION_PARTAGER_COLLECTIONS,
@@ -488,20 +488,20 @@ where M: MongoDao + ConfigMessages
         Some(options_index_last_visits)
     ).await?;
 
-    // Index conversion video cles
-    let options_fuuids_params = IndexOptions {
-        nom_index: Some(format!("fuuid_params")),
+    // Index conversion unique tuuid/params
+    let options_tuuids_params = IndexOptions {
+        nom_index: Some(format!("tuuid_params")),
         unique: true
     };
-    let champs_fuuids_params = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_FUUID), direction: 1},
+    let champs_tuuids_params = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
         ChampIndex {nom_champ: String::from(CHAMP_CLE_CONVERSION), direction: 1},
     );
     middleware.create_index(
         middleware,
         NOM_COLLECTION_VIDEO_JOBS,
-        champs_fuuids_params,
-        Some(options_fuuids_params)
+        champs_tuuids_params,
+        Some(options_tuuids_params)
     ).await?;
 
     let options_job_id = IndexOptions {nom_index: Some("job_id".to_string()), unique: true};

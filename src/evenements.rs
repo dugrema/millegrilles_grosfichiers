@@ -408,7 +408,7 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
             let mimetype = doc_fuuid.mimetype.expect("mimetype");
             let format = doc_fuuid.format.expect("format");
             let nonce = doc_fuuid.nonce.expect("nonce");
-            let job = BackgroundJob::new(tuuid, fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
+            let job = BackgroundJob::new(tuuid.clone(), fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
             Some(job)
         } else {
             None
@@ -440,6 +440,7 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
                 job.params = Some(params_initial);
                 let user_id = doc_fuuid.user_id.clone();
                 job.user_id = Some(user_id);
+                debug!("declencher_traitement_nouveau_fuuid Create new default video job for tuuid:{}/fuuid:{:?} ", tuuid, job.fuuid);
                 sauvegarder_job_video(middleware, &job).await?;
             }
 

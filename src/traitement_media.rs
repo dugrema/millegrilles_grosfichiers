@@ -14,8 +14,8 @@ use millegrilles_common_rust::fichiers::is_mimetype_video;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::messages_generiques::CommandeUsager;
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable_v2, sauvegarder_traiter_transaction_v2};
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{MessageMilleGrillesBufferDefault, optionepochseconds};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao, opt_chrono_datetime_as_bson_datetime};
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
@@ -291,13 +291,20 @@ struct JobCles {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct JobDetail {
+    job_id: String,
+    user_id: String,
+    tuuid: String,
     fuuid: String,
-    tuuid: Option<String>,
-    cle_conversion: String,
-    user_id: Option<String>,
+    mimetype: Option<String>,
+    filehost_ids: Vec<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
     pct_progres: Option<usize>,
+    #[serde(skip_serializing_if="Option::is_none")]
     etat: Option<u16>,
-    flag_media_retry: Option<u16>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    retry: Option<u16>,
+    #[serde(default, skip_serializing_if="Option::is_none", serialize_with="optionepochseconds::serialize", deserialize_with="opt_chrono_datetime_as_bson_datetime::deserialize")]
+    date_maj: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -339,13 +346,13 @@ pub async fn requete_jobs_video<M>(middleware: &M, m: MessageValide, gestionnair
 
     debug!("requete_jobs_video Filtre {:?}", filtre);
 
-    let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+    let collection = middleware.get_collection_typed::<JobDetail>(NOM_COLLECTION_VIDEO_JOBS)?;
     let mut curseur = collection.find(filtre, None).await?;
 
     let mut jobs = Vec::new();
-    while let Some(d) = curseur.next().await {
-        let job_detail: JobDetail = convertir_bson_deserializable(d?)?;
-        jobs.push(job_detail);
+    while curseur.advance().await? {
+        let row = curseur.deserialize_current()?;
+        jobs.push(row);
     }
 
     let reponse = json!({ "jobs":  jobs });
