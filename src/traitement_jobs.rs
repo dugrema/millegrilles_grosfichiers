@@ -29,10 +29,11 @@ use millegrilles_common_rust::uuid::{uuid, Uuid};
 use serde::{Deserialize, Serialize};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
+use crate::traitement_index::set_flag_index_traite;
 use crate::traitement_media::emettre_processing_trigger;
 use crate::transactions::{NodeFichierRepBorrowed, NodeFichierRepOwned, NodeFichierVersionOwned, TransactionSupprimerJobVideoV2};
 
-const CONST_MAX_RETRY: i32 = 3;
+const CONST_MAX_RETRY: i32 = 4;
 const CONST_LIMITE_BATCH: i64 = 1_000;
 const CONST_EXPIRATION_SECS: i64 = 180;
 const CONST_INTERVALLE_ENTRETIEN: u64 = 60;
@@ -1732,6 +1733,22 @@ pub async fn entretien_jobs_expirees<M>(middleware: &M, gestionnaire: &GrosFichi
     }
 }
 
+pub async fn maintenance_impossible_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager)
+where M: MongoDao + GenerateurMessages + ValidateurX509
+{
+    // Cleanup of jobs that will never complete
+    if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_IMAGES_JOBS, 180, "processImage").await {
+        error!("entretien_jobs_expirees Erreur entretien images: {:?}", e);
+    }
+    if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_VIDEO_JOBS, 600, "processVideo").await {
+        error!("entretien_jobs_expirees Erreur entretien videos: {:?}", e);
+    }
+    if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_INDEXATION_JOBS, 180, "processIndex").await {
+        error!("entretien_jobs_expirees Erreur entretien index: {:?}", e);
+    }
+}
+
+/// Resubmits a batch of pending jobs to queue. Reactivates running jobs that have expired.
 pub async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, nom_collection: &str, timeout: i64, limit: i64, domain: &str, action: &str) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
@@ -1747,57 +1764,11 @@ pub async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomain
     collection.update_many(filtre, ops, None).await?;
 
     // Resubmit jobs - duplicates in the Q will be caught when requesting job decryption key
-    let filtre = doc!{"etat": VIDEO_CONVERSION_ETAT_PENDING};
+    let filtre = doc!{"etat": VIDEO_CONVERSION_ETAT_PENDING, "retry": {"$lte": CONST_MAX_RETRY}};
     let options = FindOptions::builder().limit(limit).build();
     let mut curseur = collection.find(filtre, options).await?;
     while curseur.advance().await? {
         let row = curseur.deserialize_current()?;
-
-        if row.retry > 4 {
-            // Cancel the job, emit a transaction to clear for good
-            info!("reactiver_jobs Trop d'echecs sur traitement {} fuuid {:?}, desactiver pour de bon", action, row.fuuid);
-            match action {
-                "processImage" => {
-                    match row.fuuid.as_ref() {
-                        Some(fuuid) => {
-                            let transaction = TransactionSupprimerJobImageV2 {
-                                tuuid: row.tuuid,
-                                fuuid: fuuid.to_owned(),
-                                err: None,
-                            };
-                            sauvegarder_traiter_transaction_serializable_v2(
-                                middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_IMAGE_SUPPRIMER_JOB_V2).await?;
-                        },
-                        None => {
-                            warn!("reactiver_jobs Job image tuuid:{} sans fuuid, ignorer", row.tuuid);
-                        }
-                    }
-                },
-                "processVideo" => {
-                    match row.fuuid.as_ref() {
-                        Some(fuuid) => {
-                            let transaction = TransactionSupprimerJobVideoV2 {
-                                tuuid: row.tuuid,
-                                fuuid: fuuid.to_owned(),
-                                job_id: row.job_id.clone(),
-                            };
-                            sauvegarder_traiter_transaction_serializable_v2(
-                                middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_VIDEO_SUPPRIMER_JOB_V2).await?;
-                        },
-                        None => {
-                            warn!("reactiver_jobs Job video tuuid:{} sans fuuid, ignorer", row.tuuid);
-                        }
-                    }
-                },
-                "processIndex" => {
-                   // Rien a faire - l'indexation n'utilise pas de transactions (volatil)
-                },
-                _ => warn!("reactiver_jobs Unknown expired job type: {}", action)
-            }
-            let filtre = doc!{"job_id": &row.job_id};
-            collection.delete_one(filtre, None).await?;
-            continue;  // Skip trigger
-        }
 
         let trigger: JobTrigger = match action {
             "processIndex" => {
@@ -1827,3 +1798,73 @@ pub async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomain
     Ok(())
 }
 
+/// Deactivates for good jobs that have never been picked up or that have too many retries.
+pub async fn remove_impossible_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager,
+                                       nom_collection: &str, limit: i64, action: &str) -> Result<(), CommonError>
+where M: MongoDao + GenerateurMessages + ValidateurX509 {
+
+    let expiration = Utc::now() - Duration::days(1);
+    let collection = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
+    let filtre = doc!{
+        "$or": [
+            {"retry": {"$gt": CONST_MAX_RETRY}},  // Any job with retry > CONST_MAX_RETRY
+            {"date_maj": None::<&str>, CHAMP_MODIFICATION: {"$lte": expiration}},  // Any job not picked-up once after 24h
+        ]
+    };
+
+    let options = FindOptions::builder().limit(limit).build();
+    let mut curseur = collection.find(filtre, options).await?;
+    while curseur.advance().await? {
+        let row = curseur.deserialize_current()?;
+
+        // Cancel the job, emit a transaction to clear for good
+        info!("remove_impossible_jobs Trop d'echecs sur traitement {} fuuid {:?}, desactiver pour de bon", action, row.fuuid);
+        match action {
+            "processImage" => {
+                match row.fuuid.as_ref() {
+                    Some(fuuid) => {
+                        // Create transaction to prevent job from running on restore.
+                        let transaction = TransactionSupprimerJobImageV2 {
+                            tuuid: row.tuuid,
+                            fuuid: fuuid.to_owned(),
+                            err: None,
+                        };
+                        sauvegarder_traiter_transaction_serializable_v2(
+                            middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_IMAGE_SUPPRIMER_JOB_V2).await?;
+                    },
+                    None => {
+                        warn!("remove_impossible_jobs Job image tuuid:{} sans fuuid, ignorer", row.tuuid);
+                    }
+                }
+            },
+            "processVideo" => {
+                match row.fuuid.as_ref() {
+                    Some(fuuid) => {
+                        // Create transaction to prevent job from running on restore.
+                        let transaction = TransactionSupprimerJobVideoV2 {
+                            tuuid: row.tuuid,
+                            fuuid: fuuid.to_owned(),
+                            job_id: row.job_id.clone(),
+                        };
+                        sauvegarder_traiter_transaction_serializable_v2(
+                            middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_VIDEO_SUPPRIMER_JOB_V2).await?;
+                    },
+                    None => {
+                        warn!("remove_impossible_jobs Job video tuuid:{} sans fuuid, ignorer", row.tuuid);
+                    }
+                }
+            },
+            "processIndex" => {
+                // Toggle index flag in reps/versions collections. There are no transactions for indexing.
+                let fuuid = match row.fuuid.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None};
+                set_flag_index_traite(middleware, row.job_id.as_str(), row.tuuid.as_str(), fuuid).await?;
+            },
+            _ => warn!("remove_impossible_jobs Unknown expired job type: {}", action)
+        }
+
+        let filtre = doc!{"job_id": &row.job_id};
+        collection.delete_one(filtre, None).await?;
+    }
+
+    Ok(())
+}

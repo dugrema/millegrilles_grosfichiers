@@ -165,9 +165,9 @@ where M: GenerateurMessages + MongoDao
 
     let now = Utc::now();
 
-    // Faire une reclamation des fichiers regulierement (tous les 3 jours) pour eviter qu'ils soient
+    // Faire une reclamation des fichiers regulierement (tous les jours) pour eviter qu'ils soient
     // consideres comme orphelins (et supprimes).
-    let delai_expiration = Duration::from_secs(86_400*3);
+    let delai_expiration = Duration::from_secs(86_400);
     // let delai_expiration = Duration::from_secs(3 * 60);
     let expiration = now - delai_expiration;
 

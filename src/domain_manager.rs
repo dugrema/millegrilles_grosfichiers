@@ -27,7 +27,7 @@ use crate::requetes::consommer_requete;
 use crate::evenements::{consommer_evenement, HandlerEvenements};
 use crate::traitement_entretien::{calculer_quotas, reclamer_fichiers};
 use crate::traitement_index::IndexationJobHandler;
-use crate::traitement_jobs::{creer_jobs_manquantes, entretien_jobs_expirees};
+use crate::traitement_jobs::{creer_jobs_manquantes, entretien_jobs_expirees, maintenance_impossible_jobs};
 // use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
 use crate::transactions::aiguillage_transaction;
 
@@ -656,7 +656,13 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     }
     if minutes % 4 == 2
     {
-        entretien_jobs_expirees(middleware, gestionnaire).await;  // Job media/indexation expirees
+        // Restart expired media jobs
+        entretien_jobs_expirees(middleware, gestionnaire).await;
+    }
+    if hours % 3 == 2 && minutes == 27
+    {
+        // Remove media/indexation jobs that will never complete
+        maintenance_impossible_jobs(middleware, gestionnaire).await;
     }
 
     // Recalculer les quotas a toutes les 3 heures
