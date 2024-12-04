@@ -277,7 +277,7 @@ async fn verifier_visites_topologies<M>(middleware: &M, fuuids: &Vec<String>) ->
     }
 }
 
-async fn sauvegarder_visites<M>(middleware: &M, fuuid: &str, visites: &HashMap<String, i64>)
+pub async fn sauvegarder_visites<M>(middleware: &M, fuuid: &str, visites: &HashMap<String, i64>)
     -> Result<(), CommonError>
     where M: MongoDao
 {

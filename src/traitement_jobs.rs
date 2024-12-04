@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::str::from_utf8;
 use log::{debug, error, info, warn};
 
 use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::{bson, bson::{Bson, DateTime, doc}};
+use millegrilles_common_rust::{bson, bson::{Bson, DateTime, doc}, serde_json};
 use millegrilles_common_rust::certificats::ValidateurX509;
 use millegrilles_common_rust::chiffrage_cle::{InformationCle, ReponseDechiffrageCles};
 use millegrilles_common_rust::chrono::{Duration, Utc};
@@ -24,11 +25,13 @@ use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiff
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleSecreteSerialisee;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
+use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::uuid::{uuid, Uuid};
 use serde::{Deserialize, Serialize};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
+use crate::traitement_entretien::sauvegarder_visites;
 use crate::traitement_index::set_flag_index_traite;
 use crate::traitement_media::emettre_processing_trigger;
 use crate::transactions::{NodeFichierRepBorrowed, NodeFichierRepOwned, NodeFichierVersionOwned, TransactionSupprimerJobVideoV2};
@@ -1650,6 +1653,7 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
     let filtre_version = doc!{"supprime": false, flag_job: false, "visites.nouveau": {"$exists": false}};
     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
     let mut curseur = collection_version.find(filtre_version, None).await?;
+    let mut fuuids = Vec::new();
     while curseur.advance().await? {
         let row = curseur.deserialize_current()?;
         let fuuid = row.fuuid;
@@ -1690,9 +1694,13 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
                     job.user_id = Some(row.user_id.to_string());
                 }
                 collection_jobs.insert_one(job, None).await?;
+                fuuids.push(fuuid.to_owned());
             }
         }
     }
+
+    debug!("Query core to check if all filehosts are accounted for in the new jobs");
+
 
     Ok(())
 }
@@ -1730,16 +1738,16 @@ where M: MongoDao {
     Ok(())
 }
 
-pub async fn entretien_jobs_expirees<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager)
+pub async fn entretien_jobs_expirees<M>(middleware: &M)
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
-    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_IMAGES_JOBS, 180, 1000 , "media", "processImage").await {
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_IMAGES_JOBS, 180, 1000 , "media", "processImage").await {
         error!("entretien_jobs_expirees Erreur entretien images: {:?}", e);
     }
-    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_VIDEO_JOBS, 600, 100, "media", "processVideo").await {
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_VIDEO_JOBS, 600, 100, "media", "processVideo").await {
         error!("entretien_jobs_expirees Erreur entretien videos: {:?}", e);
     }
-    if let Err(e) = reactiver_jobs(middleware, gestionnaire, NOM_COLLECTION_INDEXATION_JOBS, 180, 10000, "solrrelai", "processIndex").await {
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 180, 10000, "solrrelai", "processIndex").await {
         error!("entretien_jobs_expirees Erreur entretien index: {:?}", e);
     }
 }
@@ -1760,7 +1768,9 @@ where M: MongoDao + GenerateurMessages + ValidateurX509
 }
 
 /// Resubmits a batch of pending jobs to queue. Reactivates running jobs that have expired.
-pub async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, nom_collection: &str, timeout: i64, limit: i64, domain: &str, action: &str) -> Result<(), CommonError>
+pub async fn reactiver_jobs<M>(middleware: &M,
+                               nom_collection: &str, timeout: i64, limit: i64,
+                               domain: &str, action: &str) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
     let collection = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
@@ -1774,12 +1784,17 @@ pub async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomain
     };
     collection.update_many(filtre, ops, None).await?;
 
-    // Resubmit jobs - duplicates in the Q will be caught when requesting job decryption key
     let filtre = doc!{"etat": VIDEO_CONVERSION_ETAT_PENDING, "retry": {"$lte": CONST_MAX_RETRY}};
     let options = FindOptions::builder().limit(limit).build();
+
+    // Resubmit jobs - duplicates in the Q will be caught when requesting job decryption key
+    let mut fuuids = Vec::new();
     let mut curseur = collection.find(filtre, options).await?;
     while curseur.advance().await? {
         let row = curseur.deserialize_current()?;
+        if let Some(fuuid) = row.fuuid.as_ref() {
+            fuuids.push(fuuid.to_owned());
+        }
 
         let trigger: JobTrigger = match action {
             "processIndex" => {
@@ -1796,7 +1811,7 @@ pub async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomain
                         // Cleanup job pour fichier inconnu
                         let filtre = doc!{"job_id": &row.job_id};
                         collection.delete_one(filtre, None).await?;
-                        Err(CommonError::String(format!("sauvegarder_job_index Fichier inconnu tuuid (job maintenant supprimee):{}", row.tuuid)))?
+                        Err(CommonError::String(format!("reactiver_jobs Fichier inconnu tuuid (job maintenant supprimee):{}", row.tuuid)))?
                     }
                 }
             },
@@ -1804,6 +1819,49 @@ pub async fn reactiver_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomain
         };
 
         emettre_processing_trigger(middleware, trigger, domain, action).await;
+    }
+
+    debug!("reactiver_jobs Job collection {}, fuuids: {}", nom_collection, fuuids.len());
+
+    // Synchronise with core in case some files were received without GrosFichiers being notified.
+    if ! fuuids.is_empty() {
+        if let Err(e) = sync_jobs_core_filehosts(middleware, nom_collection, &fuuids).await {
+            warn!("reactiver_jobs Error sync jobs with fuuids in core: {:?}", e);
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct FuuidVisitResponseItem {pub fuuid: String, pub visits: HashMap<String, i64>}
+
+#[derive(Deserialize)]
+struct RequestFilehostsForFuuidsResponse {fuuids: Vec<FuuidVisitResponseItem>}
+
+pub async fn sync_jobs_core_filehosts<M>(middleware: &M, nom_collection: &str, fuuids: &Vec<String>)
+    -> Result<(), CommonError>
+    where M: MongoDao + GenerateurMessages + ValidateurX509
+{
+    debug!("Sync filehost_ids for {} fuuids", fuuids.len());
+    let routage = RoutageMessageAction::builder(
+        DOMAINE_TOPOLOGIE, "requestFilehostsForFuuids", vec![Securite::L3Protege])
+        .build();
+    if let Some(TypeMessage::Valide(response)) = middleware.transmettre_requete(routage, json!({"fuuids": fuuids})).await? {
+        debug!("Response: {}", from_utf8(&response.message.buffer)?);
+        let response: RequestFilehostsForFuuidsResponse = deser_message_buffer!(response.message);
+
+        let collection_jobs = middleware.get_collection(nom_collection)?;
+        for fuuid_visits in response.fuuids {
+            // Update the jobs table
+            let filehost_ids: Vec<&String> = fuuid_visits.visits.keys().collect();
+            let filtre = doc!{"fuuid": &fuuid_visits.fuuid};
+            let ops = doc!{"$addToSet": {"filehost_ids": {"$each": filehost_ids}}, "$currentDate": {CHAMP_MODIFICATION: true}};
+            collection_jobs.update_many(filtre.clone(), ops, None).await?;
+
+            // Update visits in the versions tables
+            sauvegarder_visites(middleware, fuuid_visits.fuuid.as_str(), &fuuid_visits.visits).await?;
+        }
     }
 
     Ok(())
