@@ -298,7 +298,7 @@ struct JobDetail {
     mimetype: Option<String>,
     filehost_ids: Vec<String>,
     #[serde(skip_serializing_if="Option::is_none")]
-    pct_progres: Option<usize>,
+    pct_progres: Option<i32>,
     #[serde(skip_serializing_if="Option::is_none")]
     etat: Option<u16>,
     #[serde(skip_serializing_if="Option::is_none")]
