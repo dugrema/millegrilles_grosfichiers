@@ -70,7 +70,7 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
     }
 
     // Start reindexing.
-    reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 0, 10000, "solrrelai", "processIndex").await?;
+    reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 0, 5000, "solrrelai", "processIndex", true).await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }

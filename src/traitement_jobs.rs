@@ -1756,16 +1756,16 @@ where M: MongoDao
     Ok(())
 }
 
-pub async fn entretien_jobs_expirees<M>(middleware: &M)
+pub async fn entretien_jobs_expirees<M>(middleware: &M, fetch_filehosts: bool)
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_IMAGES_JOBS, 180, 1000 , "media", "processImage").await {
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_IMAGES_JOBS, 180, 1000 , "media", "processImage", fetch_filehosts).await {
         error!("entretien_jobs_expirees Erreur entretien images: {:?}", e);
     }
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_VIDEO_JOBS, 600, 100, "media", "processVideo").await {
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_VIDEO_JOBS, 600, 100, "media", "processVideo", fetch_filehosts).await {
         error!("entretien_jobs_expirees Erreur entretien videos: {:?}", e);
     }
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 180, 10000, "solrrelai", "processIndex").await {
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 180, 2000, "solrrelai", "processIndex", fetch_filehosts).await {
         error!("entretien_jobs_expirees Erreur entretien index: {:?}", e);
     }
 }
@@ -1788,7 +1788,7 @@ where M: MongoDao + GenerateurMessages + ValidateurX509
 /// Resubmits a batch of pending jobs to queue. Reactivates running jobs that have expired.
 pub async fn reactiver_jobs<M>(middleware: &M,
                                nom_collection: &str, timeout: i64, limit: i64,
-                               domain: &str, action: &str) -> Result<(), CommonError>
+                               domain: &str, action: &str, fetch_filehosts: bool) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
     let collection = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
@@ -1842,7 +1842,7 @@ pub async fn reactiver_jobs<M>(middleware: &M,
     debug!("reactiver_jobs Job collection {}, fuuids: {}", nom_collection, fuuids.len());
 
     // Synchronise with core in case some files were received without GrosFichiers being notified.
-    if ! fuuids.is_empty() {
+    if ! fuuids.is_empty() && fetch_filehosts {
         if let Err(e) = sync_jobs_core_filehosts(middleware, nom_collection, &fuuids).await {
             warn!("reactiver_jobs Error sync jobs with fuuids in core: {:?}", e);
         }

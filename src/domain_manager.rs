@@ -660,7 +660,8 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     {
         // Restart expired media jobs
         info!("entretien_jobs_expirees STARTING");
-        entretien_jobs_expirees(middleware).await;
+        let fetch_filehosts = minutes == 2;  // Once an hour
+        entretien_jobs_expirees(middleware, fetch_filehosts).await;
         info!("entretien_jobs_expirees DONE");
     }
     if hours % 3 == 2 && minutes == 27
