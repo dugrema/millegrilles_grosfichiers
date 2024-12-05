@@ -5,7 +5,7 @@ use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::backup::BackupStarter;
 use millegrilles_common_rust::certificats::ValidateurX509;
-use millegrilles_common_rust::chrono::Timelike;
+use millegrilles_common_rust::chrono::{Duration, Timelike, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::{Securite, CHAMP_CREATION, CHAMP_MODIFICATION, DEFAULT_Q_TTL, TOPOLOGIE_NOM_DOMAINE};
 use millegrilles_common_rust::db_structs::TransactionValide;
@@ -647,6 +647,11 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     }
 
     let date_epoch = trigger.get_date();
+
+    if date_epoch < Utc::now() - Duration::seconds(90) {
+        return Ok(())  // Trigger too old, ignore
+    }
+
     let minutes = date_epoch.minute();
     let hours = date_epoch.hour();
 
