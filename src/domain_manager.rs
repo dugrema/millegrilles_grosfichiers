@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::thread::sleep;
-use log::{debug, error};
+use log::{debug, error, info};
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::backup::BackupStarter;
@@ -652,29 +652,39 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
 
     if hours % 3 == 0 && minutes == 21
     {
+        info!("creer_jobs_manquantes STARTING");
         creer_jobs_manquantes(middleware).await;  // Creer jobs media/indexation manquantes (recovery)
+        info!("creer_jobs_manquantes DONE");
     }
     if minutes % 4 == 2
     {
         // Restart expired media jobs
+        info!("entretien_jobs_expirees STARTING");
         entretien_jobs_expirees(middleware).await;
+        info!("entretien_jobs_expirees DONE");
     }
     if hours % 3 == 2 && minutes == 27
     {
         // Remove media/indexation jobs that will never complete
+        info!("maintenance_impossible_jobs STARTING");
         maintenance_impossible_jobs(middleware, gestionnaire).await;
+        info!("maintenance_impossible_jobs DONE");
     }
 
     // Recalculer les quotas a toutes les 3 heures
     if hours % 3 == 1 && minutes == 14 {
+        info!("calculer_quotas STARTING");
         calculer_quotas(middleware).await;
+        info!("calculer_quotas DONE");
     }
 
     // Reclamer les fichiers pour eviter qu'ils soient supprimes. Execute des petites batch toutes
     // les 3 minutes pour s'assurer que tous les fichiers sont identifies aux 3 jours.
     {
         let nouveaux = minutes % 3 != 0;  // Check fichiers presents nul part toutes les minutes
+        info!("reclamer_fichiers STARTING");
         reclamer_fichiers(middleware, gestionnaire, nouveaux).await;
+        info!("reclamer_fichiers DONE");
     }
 
     Ok(())
