@@ -1283,13 +1283,14 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnai
             None => {
                 // Ancienne approche
                 // let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
-                if let Some(fuuids) = doc_mappe.fuuids {
-                    for d in fuuids {
-                        if hachage_bytes_demandes.remove(d) {
-                            hachage_bytes.push(d.to_owned());
-                        }
-                    }
-                }
+                hachage_bytes.push(doc_mappe.fuuid.to_owned());
+                // if let Some(fuuids) = doc_mappe.fuuids {
+                //     for d in fuuids {
+                //         if hachage_bytes_demandes.remove(d) {
+                //             hachage_bytes.push(d.to_owned());
+                //         }
+                //     }
+                // }
                 if let Some(metadata) = doc_mappe.metadata {
                     if let Some(ref_hachage_bytes) = metadata.ref_hachage_bytes {
                         if hachage_bytes_demandes.remove(ref_hachage_bytes) {
