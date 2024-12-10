@@ -1753,7 +1753,7 @@ fn obsolete() -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError> {
 }
 
 /// Fait un touch sur les fichiers_rep identifies. User_id optionnel (e.g. pour ops systeme comme visites)
-async fn touch_fichiers_rep<M,U,S,V>(middleware: &M, user_id: Option<U>, fuuids_in: V) -> Result<(), CommonError>
+pub async fn touch_fichiers_rep<M,U,S,V>(middleware: &M, user_id: Option<U>, fuuids_in: V) -> Result<(), CommonError>
     where
         M: GenerateurMessages + MongoDao,
         U: AsRef<str>,
@@ -1819,14 +1819,16 @@ async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &Gros
 
     // MAJ de la version du fichier
     {
-        let mut filtre = doc! { CHAMP_FUUID: &transaction_mappee.fuuid };
-        if let Some(inner) = user_id {
-            // Note : legacy, supporte ancienne transaction (pre 2023.6) qui n'avait pas le user_id
-            filtre.insert(CHAMP_USER_ID, inner);
-        }
-        if let Some(inner) = tuuid.as_ref() {
-            filtre.insert(CHAMP_TUUID, inner);
-        }
+        let filtre = match tuuid.as_ref() {
+            Some(tuuid) => doc! { CHAMP_TUUID: tuuid },
+            None => {
+                match user_id {
+                    Some(user_id) => doc! { "fuuids_versions": &transaction_mappee.fuuid, CHAMP_USER_ID: user_id },
+                    None => doc! { "fuuids_versions": &transaction_mappee.fuuid } // Note : legacy, supporte ancienne transaction (pre 2023.6) qui n'avait pas le user_id
+                }
+            },
+        };
+
         let mut set_ops = doc! {};
 
         // Si on a le thumbnail, on va marquer media_traite
@@ -1884,17 +1886,16 @@ async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &Gros
             Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
         }
 
-        if let Err(e) = set_flag_image_traitee(middleware, tuuid.as_ref(), fuuid).await {
-            error!("transaction_associer_conversions Erreur set flag true pour traitement job images {:?}/{} : {:?}", user_id, fuuid, e);
-        }
+        // if let Err(e) = set_flag_image_traitee(middleware, tuuid.as_ref(), fuuid).await {
+        //     error!("transaction_associer_conversions Erreur set flag true pour traitement job images {:?}/{} : {:?}", user_id, fuuid, e);
+        // }
     }
 
-    // S'assurer d'appliquer le filtre sur la version courante
-    {
-        if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), &fuuids).await {
-            error!("transaction_associer_conversions Erreur touch_fichiers_rep {:?}/{} : {:?}", user_id, fuuid, e);
-        }
-    }
+    // {
+    //     if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), &fuuids).await {
+    //         error!("transaction_associer_conversions Erreur touch_fichiers_rep {:?}/{} : {:?}", user_id, fuuid, e);
+    //     }
+    // }
 
     // // Emettre fichier pour que tous les clients recoivent la mise a jour
     // if let Some(tuuid) = tuuid {
@@ -1967,116 +1968,108 @@ async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichie
         }
     };
 
-    // Appliquer le filtre sur la version courante (pour l'usager si applicable)
-    // Note : obsolete depuis 2023.9 (refact structure fichiersRep). fuuid_v_courante n'est pas dans fichierRep
-    let mut fuuid_video_existant = None;
-    {
-        let mut filtre = doc! {
-            CHAMP_TUUID: &transaction_mappee.tuuid,
-            CHAMP_FUUID_V_COURANTE: &transaction_mappee.fuuid,
-            CHAMP_USER_ID: &transaction_mappee.user_id,
-        };
-
-        // if let Some(user_id) = transaction_mappee.user_id.as_ref() {
-        //     // Utiliser un filtre pour un usager
-        //     filtre.insert(CHAMP_USER_ID, user_id.to_owned());
-        // }
-
-        // Verifier si le video existe deja - retirer le fuuid_video si c'est le cas
-        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-        {
-            let doc_existant: Option<FichierDetail> = match collection.find_one(filtre.clone(), None).await {
-                Ok(d) => match d {
-                    Some(d) => match convertir_bson_deserializable(d) {
-                        Ok(d) => d,
-                        Err(e) => Err(format!("transactions.transaction_associer_video Erreur conversion bson fichier (video) : {:?}", e))?
-                    },
-                    None => None
-                },
-                Err(e) => Err(format!("transaction_associer_video Erreur chargement fichier (video) : {:?}", e))?
-            };
-            if let Some(d) = doc_existant {
-                if let Some(version_courante) = d.version_courante {
-                    if let Some(v) = version_courante.video {
-                        if let Some(video) = v.get(cle_video.as_str()) {
-                            fuuid_video_existant = Some(video.fuuid_video.to_owned());
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(fuuid_video) = fuuid_video_existant.as_ref() {
-            let ops = doc! {
-                "$pull": {
-                    CHAMP_FUUIDS: &fuuid_video,
-                    CHAMP_FUUIDS_RECLAMES: &fuuid_video
-                },
-                // "$unset": {format!("version_courante.fuuidMimetypes.{}", fuuid_video): true},
-            };
-            match collection.update_many(filtre.clone(), ops, None).await {
-                Ok(inner) => debug!("transaction_associer_video Suppression video : {:?}", inner),
-                Err(e) => Err(format!("transactions.transaction_associer_video Erreur suppression video existant : {:?}", e))?
-            }
-        }
-
-        let mut set_ops = doc! {
-            format!("version_courante.video.{}", &cle_video): &doc_video,
-        };
-        // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
-        //     set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
-        // }
-
-        // Combiner les fuuids hors de l'info de version
-        let add_to_set = doc! {
-            CHAMP_FUUIDS: {"$each": &fuuids},
-            CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids},
-        };
-
-        let mut ops = doc! {
-            "$set": set_ops,
-            "$addToSet": add_to_set,
-            "$currentDate": { CHAMP_MODIFICATION: true }
-        };
-
-        match collection.update_many(filtre, ops, None).await {
-            Ok(inner) => debug!("transaction_associer_video Update versions : {:?}", inner),
-            Err(e) => Err(format!("transactions.transaction_associer_video Erreur maj versions : {:?}", e))?
-        }
-    }
-    // Fin obsolete depuis 2023.9
+    // // Appliquer le filtre sur la version courante (pour l'usager si applicable)
+    // // Note : obsolete depuis 2023.9 (refact structure fichiersRep). fuuid_v_courante n'est pas dans fichierRep
+    // let mut fuuid_video_existant = None;
+    // {
+    //     let mut filtre = doc! {CHAMP_TUUID: &transaction_mappee.tuuid};
+    //
+    //     // Verifier si le video existe deja - retirer le fuuid_video si c'est le cas
+    //     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    //     {
+    //         let doc_existant: Option<FichierDetail> = match collection.find_one(filtre.clone(), None).await {
+    //             Ok(d) => match d {
+    //                 Some(d) => match convertir_bson_deserializable(d) {
+    //                     Ok(d) => d,
+    //                     Err(e) => Err(format!("transactions.transaction_associer_video Erreur conversion bson fichier (video) : {:?}", e))?
+    //                 },
+    //                 None => None
+    //             },
+    //             Err(e) => Err(format!("transaction_associer_video Erreur chargement fichier (video) : {:?}", e))?
+    //         };
+    //         if let Some(d) = doc_existant {
+    //             if let Some(version_courante) = d.version_courante {
+    //                 if let Some(v) = version_courante.video {
+    //                     if let Some(video) = v.get(cle_video.as_str()) {
+    //                         fuuid_video_existant = Some(video.fuuid_video.to_owned());
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    //
+    //     if let Some(fuuid_video) = fuuid_video_existant.as_ref() {
+    //         let ops = doc! {
+    //             "$pull": {
+    //                 CHAMP_FUUIDS: &fuuid_video,
+    //                 CHAMP_FUUIDS_RECLAMES: &fuuid_video
+    //             },
+    //             // "$unset": {format!("version_courante.fuuidMimetypes.{}", fuuid_video): true},
+    //         };
+    //         match collection.update_many(filtre.clone(), ops, None).await {
+    //             Ok(inner) => debug!("transaction_associer_video Suppression video : {:?}", inner),
+    //             Err(e) => Err(format!("transactions.transaction_associer_video Erreur suppression video existant : {:?}", e))?
+    //         }
+    //     }
+    //
+    //     let mut set_ops = doc! {
+    //         format!("version_courante.video.{}", &cle_video): &doc_video,
+    //     };
+    //     // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
+    //     //     set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
+    //     // }
+    //
+    //     // Combiner les fuuids hors de l'info de version
+    //     let add_to_set = doc! {
+    //         CHAMP_FUUIDS: {"$each": &fuuids},
+    //         CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids},
+    //     };
+    //
+    //     let mut ops = doc! {
+    //         "$set": set_ops,
+    //         "$addToSet": add_to_set,
+    //         "$currentDate": { CHAMP_MODIFICATION: true }
+    //     };
+    //
+    //     match collection.update_many(filtre, ops, None).await {
+    //         Ok(inner) => debug!("transaction_associer_video Update versions : {:?}", inner),
+    //         Err(e) => Err(format!("transactions.transaction_associer_video Erreur maj versions : {:?}", e))?
+    //     }
+    // }
+    // // Fin obsolete depuis 2023.9
 
     // MAJ de la version du fichier
     {
-        let filtre = doc! {
-            CHAMP_FUUID: &transaction_mappee.fuuid,
-            // CHAMP_TUUID: &transaction_mappee.tuuid,
-            CHAMP_USER_ID: &transaction_mappee.user_id,
+        let filtre = match tuuid.as_ref() {
+            Some(tuuid) => doc!{CHAMP_TUUID: tuuid},
+            None => doc! {
+                // Old transaction, less efficient (tuuid is indexed uniquely)
+                // CHAMP_FUUID: &transaction_mappee.fuuid,
+                "fuuids_versions": &transaction_mappee.fuuid,
+                CHAMP_USER_ID: &transaction_mappee.user_id,
+            }
         };
 
-        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
 
-        if let Some(fuuid_video) = fuuid_video_existant.as_ref() {
-            let ops = doc! {
-                "$pull": {
-                    CHAMP_FUUIDS: &fuuid_video,
-                    CHAMP_FUUIDS_RECLAMES: &fuuid_video,
-                },
-                // "$unset": {format!("fuuidMimetypes.{}", fuuid_video): true},
-            };
-            match collection.update_many(filtre.clone(), ops, None).await {
-                Ok(inner) => debug!("transaction_associer_video Suppression video : {:?}", inner),
-                Err(e) => Err(format!("transactions.transaction_associer_video Erreur suppression video existant : {:?}", e))?
-            }
-        }
+        // if let Some(fuuid_video) = fuuid_video_existant.as_ref() {
+        //     let ops = doc! {
+        //         "$pull": {
+        //             CHAMP_FUUIDS: &fuuid_video,
+        //             CHAMP_FUUIDS_RECLAMES: &fuuid_video,
+        //         },
+        //         // "$unset": {format!("fuuidMimetypes.{}", fuuid_video): true},
+        //     };
+        //     match collection.update_many(filtre.clone(), ops, None).await {
+        //         Ok(inner) => debug!("transaction_associer_video Suppression video : {:?}", inner),
+        //         Err(e) => Err(format!("transactions.transaction_associer_video Erreur suppression video existant : {:?}", e))?
+        //     }
+        // }
 
         let mut set_ops = doc! {
             CHAMP_FLAG_VIDEO_TRAITE: true,
             format!("video.{}", &cle_video): &doc_video,
         };
-        // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
-        //     set_ops.insert(format!("{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
-        // }
         let add_to_set = doc! {
             CHAMP_FUUIDS: {"$each": &fuuids},
             CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids},
@@ -2086,30 +2079,14 @@ async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichie
             "$addToSet": add_to_set,
             "$currentDate": { CHAMP_MODIFICATION: true }
         };
-        match collection.update_one(filtre, ops, None).await {
-            Ok(inner) => debug!("transaction_associer_video Update versions : {:?}", inner),
+        match collection_versions.find_one_and_update(filtre, ops, None).await {
+            Ok(Some(old_existing)) => {
+                debug!("transaction_associer_video Update versions : {:?}", old_existing);
+                // TODO Check if the new video replaces an existing one
+            },
+            Ok(None) => info!("transaction_associer_video No existing document found, skipped : {:?}", transaction_mappee.fuuid),
             Err(e) => Err(format!("transactions.transaction_associer_video Erreur maj versions : {:?}", e))?
         }
-    }
-
-    {   // Supprimer job dans table videos
-        // Traiter la commande
-        let mut cles_supplementaires = HashMap::new();
-        cles_supplementaires.insert(CHAMP_CLE_CONVERSION.to_string(), cle_video.clone());
-        if let Err(e) = set_flag_video_traite(middleware, tuuid.as_ref(), &transaction_mappee.fuuid, job_id).await {
-            error!("transaction_associer_video Erreur traitement flag : {:?}", e);
-        }
-    }
-
-    // // Emettre fichier pour que tous les clients recoivent la mise a jour
-    // if let Some(t) = tuuid.as_ref() {
-    //     if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, t, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
-    //         warn!("transaction_associer_video Erreur emettre_evenement_maj_fichier : {:?}", e);
-    //     }
-    // }
-
-    if let Err(e) = touch_fichiers_rep(middleware, Some(&transaction_mappee.user_id), &fuuids).await {
-        error!("transaction_associer_video Erreur touch_fichiers_rep {:?}/{:?} : {:?}", transaction_mappee.user_id, fuuids, e);
     }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
@@ -2804,7 +2781,7 @@ async fn traiter_transaction_supprimer_orphelins<M>(middleware: &M, transaction:
     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     for (fuuid, supprimer) in resultat.versions_supprimees {
         if supprimer {
-            info!("traiter_transaction_supprimer_orphelins Supprimer fuuid {}", fuuid);
+            debug!("traiter_transaction_supprimer_orphelins Supprimer fuuid {}", fuuid);
             let filtre_rep = doc! { CHAMP_FUUIDS_VERSIONS: &fuuid };
             let ops = doc! {
                 "$pull": { CHAMP_FUUIDS_VERSIONS: &fuuid },

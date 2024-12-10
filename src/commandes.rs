@@ -34,7 +34,7 @@ use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids};
 use crate::traitement_index::{reset_flag_indexe, sauvegarder_job_index, set_flag_index_traite};
 use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
-use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_images, sauvegarder_job_video};
+use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_images, sauvegarder_job_video, set_flag_image_traitee, set_flag_video_traite};
 use crate::transactions::*;
 
 const REQUETE_MAITREDESCLES_VERIFIER_PREUVE: &str = "verifierPreuve";
@@ -436,15 +436,24 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gest
     if commande.user_id.is_none() && commande.tuuid.is_none() {
         Err(format!("grosfichiers.commande_associer_conversions: User_id ou tuuid obligatoire depuis version 2023.6 {:?}", m.type_message))?
     }
+    let tuuid = commande.user_id.expect("tuuid");
+    let user_id = commande.tuuid.expect("user_id");
 
     // Traiter la transaction
     let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
 
+    if let Err(e) = touch_fichiers_rep(middleware, Some(user_id.as_str()), &vec![commande.fuuid.as_str()]).await {
+        error!("commande_associer_conversions Erreur touch_fichiers_rep {:?}/{} : {:?}", user_id, commande.fuuid, e);
+    }
+
+    let fuuid = &commande.fuuid;
+    if let Err(e) = set_flag_image_traitee(middleware, Some(tuuid.as_str()), fuuid).await {
+        error!("transaction_associer_conversions Erreur set flag true pour traitement job images {:?}/{} : {:?}", user_id, fuuid, e);
+    }
+
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    if let Some(tuuid) = commande.tuuid {
-        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION).await {
-            warn!("transaction_associer_conversions Erreur emettre_evenement_maj_fichier : {:?}", e);
-        }
+    if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION).await {
+        warn!("commande_associer_conversions Erreur emettre_evenement_maj_fichier : {:?}", e);
     }
 
     Ok(response)
@@ -467,13 +476,21 @@ async fn commande_associer_video<M>(middleware: &M, m: MessageValide, gestionnai
         Err(format!("grosfichiers.commande_associer_video: Autorisation invalide pour message {:?}", m.type_message))?
     }
 
+    let user_id = m.certificat.get_user_id()?;
+    let fuuid = &commande.fuuid;
+
     // Traiter la transaction
     let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
+
+    // Touch - s'assure que le client va voir que le fichier a ete modifie (sync)
+    if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), vec![fuuid]).await {
+        error!("commande_associer_video Erreur touch_fichiers_rep {:?}/{:?} : {:?}", user_id, fuuid, e);
+    }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
     if let Some(t) = commande.tuuid.as_ref() {
         if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, t, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
-            warn!("transaction_associer_video Erreur emettre_evenement_maj_fichier : {:?}", e);
+            warn!("commande_associer_video Erreur emettre_evenement_maj_fichier : {:?}", e);
         }
     }
 
