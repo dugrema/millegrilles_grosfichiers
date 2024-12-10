@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::thread::sleep;
 use log::{debug, error, info};
-use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::backup::BackupStarter;
 use millegrilles_common_rust::certificats::ValidateurX509;
@@ -10,7 +10,7 @@ use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::constantes::{Securite, CHAMP_CREATION, CHAMP_MODIFICATION, DEFAULT_Q_TTL, TOPOLOGIE_NOM_DOMAINE};
 use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, ConsommateurMessagesBus, GestionnaireBusMillegrilles, GestionnaireDomaineV2};
-use millegrilles_common_rust::domaines_v2::GestionnaireDomaineSimple;
+use millegrilles_common_rust::domaines_v2::{prepare_mongodb_domain_indexes, GestionnaireDomaineSimple};
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao};
@@ -136,6 +136,18 @@ impl GestionnaireDomaineSimple for GrosFichiersDomainManager {
         M: MiddlewareMessages + BackupStarter + MongoDao
     {
         traiter_cedule(self, middleware, trigger).await?;
+        Ok(())
+    }
+
+    async fn preparer_database_mongodb<M>(&self, middleware: &M) -> Result<(), Error>
+    where
+        M: MongoDao + ConfigMessages
+    {
+        // Handle transaction collection init being overridden
+        if let Some(collection_name) = self.get_collection_transactions() {
+            prepare_mongodb_domain_indexes(middleware, collection_name).await?;
+        }
+        preparer_index_mongodb(middleware).await?;  // Specialised indexes for domain collections
         Ok(())
     }
 }
