@@ -33,15 +33,12 @@ use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::mapstringepochseconds;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
 use crate::domain_manager::GrosFichiersDomainManager;
-use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection};
-// use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, EvenementContenuCollection};
+use crate::evenements::{emettre_evenement_contenu_collection, EvenementContenuCollection};
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, verifier_acces_usager, verifier_acces_usager_tuuids};
 use crate::traitement_jobs::{JobHandler, JobHandlerVersions};
 use crate::traitement_media::{set_flag_image_traitee, set_flag_video_traite};
-// use crate::traitement_media::emettre_commande_media;
-// use crate::traitement_index::emettre_commande_indexation;
 
 pub async fn consommer_transaction<M>(gestionnaire: &GrosFichiersDomainManager, middleware: &M, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
@@ -63,16 +60,13 @@ where
         TRANSACTION_NOUVELLE_COLLECTION |
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION |
         TRANSACTION_DEPLACER_FICHIERS_COLLECTION |
-        // TRANSACTION_RETIRER_DOCUMENTS_COLLECTION |
         TRANSACTION_SUPPRIMER_DOCUMENTS |
         TRANSACTION_RECUPERER_DOCUMENTS |
         TRANSACTION_RECUPERER_DOCUMENTS_V2 |
         TRANSACTION_ARCHIVER_DOCUMENTS |
-        // TRANSACTION_CHANGER_FAVORIS |
         TRANSACTION_DECRIRE_FICHIER |
         TRANSACTION_DECRIRE_COLLECTION |
         TRANSACTION_COPIER_FICHIER_TIERS |
-        // TRANSACTION_FAVORIS_CREERPATH |
         TRANSACTION_SUPPRIMER_VIDEO |
         TRANSACTION_ASSOCIER_CONVERSIONS |
         TRANSACTION_ASSOCIER_VIDEO |
@@ -112,32 +106,41 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GrosFichiersDomainManag
     };
 
     match action.as_str() {
+        // Adding, updating files
         TRANSACTION_NOUVELLE_VERSION => transaction_nouvelle_version(gestionnaire, middleware, transaction).await,
         TRANSACTION_NOUVELLE_COLLECTION => transaction_nouvelle_collection(middleware, gestionnaire, transaction).await,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION => transaction_ajouter_fichiers_collection(middleware, gestionnaire, transaction).await,
-        TRANSACTION_DEPLACER_FICHIERS_COLLECTION => transaction_deplacer_fichiers_collection(middleware, gestionnaire, transaction).await,
-        // TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => transaction_retirer_documents_collection(middleware, transaction).await,
-        TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, gestionnaire, transaction).await,
-        TRANSACTION_RECUPERER_DOCUMENTS => transaction_recuperer_documents(middleware, gestionnaire, transaction).await,
-        TRANSACTION_RECUPERER_DOCUMENTS_V2 => transaction_recuperer_documents_v2(middleware, transaction).await,
-        TRANSACTION_ARCHIVER_DOCUMENTS => transaction_archiver_documents(middleware, gestionnaire, transaction).await,
-        // TRANSACTION_CHANGER_FAVORIS => transaction_changer_favoris(middleware, transaction).await,
         TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, gestionnaire, transaction).await,
         TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, gestionnaire, transaction).await,
         TRANSACTION_DECRIRE_FICHIER => transaction_decrire_fichier(middleware, gestionnaire, transaction).await,
-        TRANSACTION_DECRIRE_COLLECTION => transaction_decire_collection(middleware, gestionnaire, transaction).await,
-        TRANSACTION_COPIER_FICHIER_TIERS => transaction_copier_fichier_tiers(gestionnaire, middleware, transaction).await,
-        // TRANSACTION_FAVORIS_CREERPATH => transaction_favoris_creerpath(middleware, transaction).await,
+        TRANSACTION_DECRIRE_COLLECTION => transaction_decrire_collection(middleware, gestionnaire, transaction).await,
+
+        //
+        TRANSACTION_DEPLACER_FICHIERS_COLLECTION => transaction_deplacer_fichiers_collection(middleware, gestionnaire, transaction).await,
+        TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, gestionnaire, transaction).await,
+        TRANSACTION_RECUPERER_DOCUMENTS_V2 => transaction_recuperer_documents_v2(middleware, transaction).await,
+        TRANSACTION_SUPPRIMER_ORPHELINS => transaction_supprimer_orphelins(middleware, gestionnaire, transaction).await,
+
+        // Media
         TRANSACTION_SUPPRIMER_VIDEO => transaction_supprimer_video(middleware, gestionnaire, transaction).await,
-        TRANSACTION_IMAGE_SUPPRIMER_JOB => transaction_supprimer_job_image(middleware, gestionnaire, transaction).await,
         TRANSACTION_IMAGE_SUPPRIMER_JOB_V2 => transaction_supprimer_job_image_v2(middleware, gestionnaire, transaction).await,
-        TRANSACTION_VIDEO_SUPPRIMER_JOB => transaction_supprimer_job_video(middleware, gestionnaire, transaction).await,
         TRANSACTION_VIDEO_SUPPRIMER_JOB_V2 => transaction_supprimer_job_video_v2(middleware, gestionnaire, transaction).await,
+
+        // Sharing
         TRANSACTION_AJOUTER_CONTACT_LOCAL => transaction_ajouter_contact_local(middleware, gestionnaire, transaction).await,
         TRANSACTION_SUPPRIMER_CONTACTS => transaction_supprimer_contacts(middleware, gestionnaire, transaction).await,
         TRANSACTION_PARTAGER_COLLECTIONS => transaction_partager_collections(middleware, gestionnaire, transaction).await,
         TRANSACTION_SUPPRIMER_PARTAGE_USAGER => transaction_supprimer_partage_usager(middleware, gestionnaire, transaction).await,
-        TRANSACTION_SUPPRIMER_ORPHELINS => transaction_supprimer_orphelins(middleware, gestionnaire, transaction).await,
+
+        // Legacy but still required (no command associated)
+        TRANSACTION_RECUPERER_DOCUMENTS => transaction_recuperer_documents(middleware, gestionnaire, transaction).await,
+
+        // Obsolete transactions - keep to avoid getting an error on rebuild
+        TRANSACTION_IMAGE_SUPPRIMER_JOB => obsolete(),
+        TRANSACTION_VIDEO_SUPPRIMER_JOB => obsolete(),
+        TRANSACTION_COPIER_FICHIER_TIERS => obsolete(),
+        TRANSACTION_ARCHIVER_DOCUMENTS => obsolete(),
+
         _ => Err(format!("core_backup.aiguillage_transaction: Transaction {} est de type non gere : {}", transaction.transaction.id, action))?
     }
 }
@@ -717,14 +720,14 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GrosFichiersDomainManage
             }
         }
 
-        // Emettre fichier pour que tous les clients recoivent la mise a jour
-        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await {
-            warn!("transaction_nouvelle_version Erreur emettre_evenement_maj_fichier : {:?}", e);
-        }
-
-        let mut evenement_contenu = EvenementContenuCollection::new(cuuid.clone());
-        evenement_contenu.fichiers_ajoutes = Some(vec![tuuid.clone()]);
-        emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
+        // // Emettre fichier pour que tous les clients recoivent la mise a jour
+        // if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await {
+        //     warn!("transaction_nouvelle_version Erreur emettre_evenement_maj_fichier : {:?}", e);
+        // }
+        //
+        // let mut evenement_contenu = EvenementContenuCollection::new(cuuid.clone());
+        // evenement_contenu.fichiers_ajoutes = Some(vec![tuuid.clone()]);
+        // emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
     }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
@@ -736,13 +739,9 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &GrosF
 {
     debug!("transaction_nouvelle_collection Consommer transaction : {}", transaction.transaction.id);
     let transaction_collection: TransactionNouvelleCollection = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_collection: TransactionNouvelleCollection = match transaction.clone().convertir::<TransactionNouvelleCollection>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion transaction : {:?}", e))?
-    // };
 
     // Conserver champs transaction uniquement (filtrer champs meta)
-    let mut doc_bson_transaction = match convertir_to_bson(&transaction_collection) {
+    let doc_bson_transaction = match convertir_to_bson(&transaction_collection) {
         Ok(d) => d,
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion transaction en bson : {:?}", e))?
     };
@@ -751,17 +750,12 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &GrosF
 
     let tuuid = &transaction.transaction.id.to_owned();
     let cuuid = transaction_collection.cuuid;
-    // let nom_collection = transaction_collection.nom;
     let metadata = match convertir_to_bson(&transaction_collection.metadata) {
         Ok(d) => d,
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion metadata chiffre en bson {:?}", e))?
     };
 
     let date_courante = millegrilles_common_rust::bson::DateTime::now();
-    // let securite = match transaction_collection.securite {
-    //     Some(s) => s,
-    //     None => SECURITE_3_PROTEGE.to_owned()
-    // };
     let favoris = match transaction_collection.favoris {
         Some(f) => f,
         None => false
@@ -774,11 +768,9 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &GrosF
     // Creer document de collection (fichiersRep)
     let mut doc_collection = doc! {
         CHAMP_TUUID: &tuuid,
-        // CHAMP_NOM: nom_collection,
         CHAMP_METADATA: metadata,
         CHAMP_CREATION: &date_courante,
         CHAMP_MODIFICATION: &date_courante,
-        // CHAMP_SECURITE: &securite,
         CHAMP_USER_ID: &user_id,
         CHAMP_SUPPRIME: false,
         CHAMP_SUPPRIME_INDIRECT: false,
@@ -792,15 +784,13 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &GrosF
 
     // Ajouter collection parent au besoin
     if let Some(c) = cuuid.as_ref() {
-        //let mut arr = millegrilles_common_rust::bson::Array::new();
-        //arr.push(millegrilles_common_rust::bson::Bson::String(c.clone()));
         doc_collection.insert("cuuid", c.clone());
 
         // Charger le cuuid pour ajouter path vers root
         match get_path_cuuid(middleware, c).await {
             Ok(inner) => {
                 if let Some(path_cuuids) = inner {
-                    let mut path_cuuids_modifie: Vec<Bson> = path_cuuids.iter().map(|c| Bson::String(c.to_owned())).collect();
+                    let path_cuuids_modifie: Vec<Bson> = path_cuuids.iter().map(|c| Bson::String(c.to_owned())).collect();
                     doc_collection.insert("path_cuuids", path_cuuids_modifie);
                 }
             },
@@ -814,25 +804,25 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &GrosF
     };
     debug!("grosfichiers.transaction_nouvelle_collection Resultat transaction update : {:?}", resultat);
 
-    // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid).await?;
-    {
-        // let mut evenement_contenu = EvenementContenuCollection::new();
-        let mut evenement_contenu = match cuuid.as_ref() {
-            Some(cuuid) => Ok(EvenementContenuCollection::new(cuuid.clone())),
-            None => match user_id {
-                Some(inner) => Ok(EvenementContenuCollection::new(inner.clone())),
-                None => Err(format!("cuuid et user_id sont None, erreur event emettre_evenement_contenu_collection"))
-            }
-        };
-        match evenement_contenu {
-            Ok(mut inner) => {
-                inner.collections_ajoutees = Some(vec![tuuid.clone()]);
-                emettre_evenement_contenu_collection(middleware, gestionnaire, inner).await?;
-            },
-            Err(e) => error!("transaction_nouvelle_collection {}", e)
-        }
-    }
+    // // Emettre fichier pour que tous les clients recoivent la mise a jour
+    // emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid).await?;
+    // {
+    //     // let mut evenement_contenu = EvenementContenuCollection::new();
+    //     let mut evenement_contenu = match cuuid.as_ref() {
+    //         Some(cuuid) => Ok(EvenementContenuCollection::new(cuuid.clone())),
+    //         None => match user_id {
+    //             Some(inner) => Ok(EvenementContenuCollection::new(inner.clone())),
+    //             None => Err(format!("cuuid et user_id sont None, erreur event emettre_evenement_contenu_collection"))
+    //         }
+    //     };
+    //     match evenement_contenu {
+    //         Ok(mut inner) => {
+    //             inner.collections_ajoutees = Some(vec![tuuid.clone()]);
+    //             emettre_evenement_contenu_collection(middleware, gestionnaire, inner).await?;
+    //         },
+    //         Err(e) => error!("transaction_nouvelle_collection {}", e)
+    //     }
+    // }
 
     let reponse = json!({"ok": true, "tuuid": tuuid});
     Ok(Some(middleware.build_reponse(reponse)?.0))
@@ -1044,30 +1034,18 @@ async fn transaction_ajouter_fichiers_collection<M>(middleware: &M, gestionnaire
         Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur dupliquer_structure_repertoires sur transcation : {:?}", e))?
     }
 
-    for tuuid in &transaction_collection.inclure_tuuids {
-        // Emettre fichier pour que tous les clients recoivent la mise a jour
-        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION).await {
-            warn!("transaction_ajouter_fichiers_collection Erreur emettre_evenement_maj_fichier : {:?}", e)
-        }
+    // for tuuid in &transaction_collection.inclure_tuuids {
+    //     // Emettre fichier pour que tous les clients recoivent la mise a jour
+    //     if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION).await {
+    //         warn!("transaction_ajouter_fichiers_collection Erreur emettre_evenement_maj_fichier : {:?}", e)
+    //     }
+    // }
 
-        // {
-        //     let mut parametres = HashMap::new();
-        //     parametres.insert("mimetype".to_string(), Bson::String(mimetype.clone()));
-        //     parametres.insert("fuuid".to_string(), Bson::String(fuuid.clone()));
-        //     if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
-        //         middleware, &tuuid, &user_id, None,
-        //         None, Some(parametres), true).await {
-        //         error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
-        //     }
-        // }
-    }
-
-    {
-        let mut evenement_contenu = EvenementContenuCollection::new(transaction_collection.cuuid.clone());
-        // evenement_contenu.cuuid = Some(transaction_collection.cuuid.clone());
-        evenement_contenu.fichiers_ajoutes = Some(transaction_collection.inclure_tuuids.clone());
-        emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
-    }
+    // {
+    //     let mut evenement_contenu = EvenementContenuCollection::new(transaction_collection.cuuid.clone());
+    //     evenement_contenu.fichiers_ajoutes = Some(transaction_collection.inclure_tuuids.clone());
+    //     emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
+    // }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -1278,16 +1256,8 @@ async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnair
 {
     debug!("transaction_deplacer_fichiers_collection Consommer transaction : {}", transaction.transaction.id);
     let user_id = transaction.certificat.get_user_id()?;
-    // let user_id = match transaction.get_enveloppe_certificat() {
-    //     Some(e) => e.get_user_id()?.to_owned(),
-    //     None => None
-    // };
 
     let transaction_collection: TransactionDeplacerFichiersCollection = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_collection: TransactionDeplacerFichiersCollection = match transaction.convertir::<TransactionDeplacerFichiersCollection>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Erreur conversion transaction : {:?}", e))?
-    // };
 
     let path_cuuids_destination = match get_path_cuuid(middleware, transaction_collection.cuuid_destination.as_str()).await {
         Ok(inner) => match inner {
@@ -1323,77 +1293,27 @@ async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnair
         error!("transaction_deplacer_fichiers_collection Erreur recalculer_cuuids_fichiers : {:?}", e);
     }
 
-    for tuuid in &transaction_collection.inclure_tuuids {
-        // Emettre fichier pour que tous les clients recoivent la mise a jour
-        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_DEPLACER_FICHIER_COLLECTION).await {
-            warn!("transaction_deplacer_fichiers_collection Erreur emettre_evenement_maj_fichier : {:?}", e);
-        }
-    }
+    // for tuuid in &transaction_collection.inclure_tuuids {
+    //     // Emettre fichier pour que tous les clients recoivent la mise a jour
+    //     if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_DEPLACER_FICHIER_COLLECTION).await {
+    //         warn!("transaction_deplacer_fichiers_collection Erreur emettre_evenement_maj_fichier : {:?}", e);
+    //     }
+    // }
 
-    {
-        let mut evenement_source = EvenementContenuCollection::new(transaction_collection.cuuid_origine.clone());
-        // evenement_source.cuuid = Some(transaction_collection.cuuid_origine.clone());
-        evenement_source.retires = Some(transaction_collection.inclure_tuuids.clone());
-        emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_source).await?;
-
-        let mut evenement_destination = EvenementContenuCollection::new(transaction_collection.cuuid_destination.clone());
-        // evenement_destination.cuuid = Some(transaction_collection.cuuid_destination.clone());
-        evenement_destination.fichiers_ajoutes = Some(transaction_collection.inclure_tuuids.clone());
-        emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_destination).await?;
-    }
+    // {
+    //     let mut evenement_source = EvenementContenuCollection::new(transaction_collection.cuuid_origine.clone());
+    //     // evenement_source.cuuid = Some(transaction_collection.cuuid_origine.clone());
+    //     evenement_source.retires = Some(transaction_collection.inclure_tuuids.clone());
+    //     emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_source).await?;
+    //
+    //     let mut evenement_destination = EvenementContenuCollection::new(transaction_collection.cuuid_destination.clone());
+    //     // evenement_destination.cuuid = Some(transaction_collection.cuuid_destination.clone());
+    //     evenement_destination.fichiers_ajoutes = Some(transaction_collection.inclure_tuuids.clone());
+    //     emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_destination).await?;
+    // }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
-
-// /// Obsolete - conserver pour support legacy
-// async fn transaction_retirer_documents_collection<M, T>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: T) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-//     where
-//         M: GenerateurMessages + MongoDao,
-//         T: Transaction
-// {
-//     debug!("transaction_retirer_documents_collection Consommer transaction : {:?}", &transaction);
-//     let transaction_collection: TransactionRetirerDocumentsCollection = match transaction.clone().convertir::<TransactionRetirerDocumentsCollection>() {
-//         Ok(t) => t,
-//         Err(e) => Err(format!("grosfichiers.transaction_retirer_documents_collection Erreur conversion transaction : {:?}", e))?
-//     };
-//
-//     // Conserver champs transaction uniquement (filtrer champs meta)
-//     let pull_from_array = doc! {CHAMP_CUUIDS: &transaction_collection.cuuid};
-//     let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.retirer_tuuids}};
-//     let ops = doc! {
-//         "$pull": pull_from_array,
-//         "$currentDate": {CHAMP_MODIFICATION: true}
-//     };
-//
-//     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-//     let resultat = match collection.update_many(filtre, ops, None).await {
-//         Ok(r) => r,
-//         Err(e) => Err(format!("grosfichiers.transaction_retirer_documents_collection Erreur update_one sur transcation : {:?}", e))?
-//     };
-//     debug!("grosfichiers.transaction_retirer_documents_collection Resultat transaction update : {:?}", resultat);
-//
-//     // Recalculer les paths des sous-repertoires et fichiers
-//     todo!("fonction obsolete, doit supporter quand meme - fix me");
-//     // if let Err(e) = recalculer_path_cuuids(middleware, &transaction_collection.cuuid).await {
-//     //     error!("grosfichiers.transaction_nouvelle_version Erreur recalculer_cuuids_fichiers : {:?}", e);
-//     // }
-//
-//     // for tuuid in &transaction_collection.retirer_tuuids {
-//     //     // Emettre fichier pour que tous les clients recoivent la mise a jour
-//     //     if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_RETIRER_COLLECTION).await {
-//     //         warn!("transaction_retirer_documents_collection Erreur emettre_evenement_maj_fichier : {:?}", e);
-//     //     }
-//     // }
-//
-//     // {
-//     //     let mut evenement_contenu = EvenementContenuCollection::new(transaction_collection.cuuid.clone());
-//     //     // evenement_contenu.cuuid = Some(transaction_collection.cuuid.clone());
-//     //     evenement_contenu.retires = Some(transaction_collection.retirer_tuuids.clone());
-//     //     emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
-//     // }
-//
-//     Ok(Some(middleware.reponse_ok(None, None)?))
-// }
 
 async fn find_tuuids_retires<M,U,S>(middleware: &M, user_id: U, tuuids_in: Vec<S>)
     -> Result<HashMap<String, Vec<String>>, CommonError>
@@ -1574,7 +1494,6 @@ async fn supprimer_tuuids<M,U,T>(middleware: &M, user_id_in: U, tuuids_in: Vec<T
     supprimer_versions_conditionnel(middleware, &user_id, &fuuids_a_supprimer).await?;
 
     // Parcourir les elements pour recuperer les tuuids qui viennent d'etre supprimes (indirect)
-    // let tuuids: Vec<&str> = transaction_collection.tuuids.iter().map(|c| c.as_str()).collect();
     let tuuids_retires_par_cuuid = find_tuuids_retires(middleware, user_id, tuuids).await?;
 
     Ok(tuuids_retires_par_cuuid)
@@ -1586,10 +1505,6 @@ async fn transaction_supprimer_documents<M>(middleware: &M, gestionnaire: &GrosF
 {
     debug!("transaction_supprimer_documents Consommer transaction : {}", transaction.transaction.id);
     let transaction_collection: TransactionSupprimerDocuments = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_collection: TransactionSupprimerDocuments = match transaction.clone().convertir::<TransactionSupprimerDocuments>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur conversion transaction : {:?}", e))?
-    // };
 
     let user_id = match transaction.certificat.get_user_id()? {
         Some(inner) => inner,
@@ -1597,8 +1512,6 @@ async fn transaction_supprimer_documents<M>(middleware: &M, gestionnaire: &GrosF
     };
 
     // Conserver liste de tuuids par cuuid, utilise pour evenement
-    // let mut tuuids_retires_par_cuuid: HashMap<String, Vec<String>> = HashMap::new();
-
     let mut tuuids_retires_par_cuuid: HashMap<String, Vec<String>> = match supprimer_tuuids(
         middleware, &user_id, transaction_collection.tuuids).await {
         Ok(inner) => inner,
@@ -1607,10 +1520,10 @@ async fn transaction_supprimer_documents<M>(middleware: &M, gestionnaire: &GrosF
 
     debug!("transaction_supprimer_documents Emettre messages pour tuuids retires : {:?}", tuuids_retires_par_cuuid);
 
+    // TODO: Mettre dans commandes
     // Emettre evenements supprime par cuuid
     for (cuuid, liste) in tuuids_retires_par_cuuid {
         let mut evenement = EvenementContenuCollection::new(cuuid);
-        // evenement.cuuid = Some(cuuid);
         evenement.retires = Some(liste);
         emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
     }
@@ -1622,12 +1535,9 @@ async fn transaction_recuperer_documents<M>(middleware: &M, gestionnaire: &GrosF
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
+    // LEGACY
     debug!("transaction_recuperer_documents Consommer transaction : {}", transaction.transaction.id);
     let transaction_collection: TransactionListeDocuments = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_collection: TransactionListeDocuments = match transaction.clone().convertir::<TransactionListeDocuments>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_recuperer_documents Erreur conversion transaction : {:?}", e))?
-    // };
 
     // Conserver champs transaction uniquement (filtrer champs meta)
     let filtre = doc! {CHAMP_TUUID: {"$in": &transaction_collection.tuuids}};
@@ -1643,12 +1553,13 @@ async fn transaction_recuperer_documents<M>(middleware: &M, gestionnaire: &GrosF
     };
     debug!("grosfichiers.transaction_recuperer_documents Resultat transaction update : {:?}", resultat);
 
-    for tuuid in &transaction_collection.tuuids {
-        // Emettre fichier pour que tous les clients recoivent la mise a jour
-        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_RECUPERER).await {
-            warn!("transaction_recuperer_documents Erreur emettre_evenement_maj_fichier : {:?}", e);
-        }
-    }
+    // Note : evenement non necessaires - transaction legacy seulement
+    // for tuuid in &transaction_collection.tuuids {
+    //     // Emettre fichier pour que tous les clients recoivent la mise a jour
+    //     if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_RECUPERER).await {
+    //         warn!("transaction_recuperer_documents Erreur emettre_evenement_maj_fichier : {:?}", e);
+    //     }
+    // }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -1803,72 +1714,6 @@ async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_
         collection.update_many(filtre, ops, None).await?;
     }
 
-    // let mut curseur = {
-    //     let filtre = doc! {
-    //         CHAMP_TUUID: {"$in": tuuids},
-    //         CHAMP_USER_ID: user_id
-    //     };
-    //     let collection_nodes = middleware.get_collection_typed::<NodeFichiersRepBorrow>(NOM_COLLECTION_FICHIERS_REP)?;
-    //     collection_nodes.find(filtre, None).await?
-    // };
-    //
-    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    // // Conserver la liste de fuuids pour les marquer comme supprime: false dans versions.
-    // let mut fuuids_recuperer = Vec::new();
-    //
-    // while curseur.advance().await? {
-    //     let row = curseur.deserialize_current()?;
-    //     let type_node = TypeNode::try_from(row.type_node)?;
-    //     match type_node {
-    //         TypeNode::Fichier => {
-    //             // Recuperer le fichier nomme directement (peu importe son etat)
-    //             let filtre = doc!{ CHAMP_TUUID: row.tuuid, CHAMP_USER_ID: user_id };
-    //             let ops = doc! {
-    //                 "$set": { CHAMP_SUPPRIME: false, CHAMP_SUPPRIME_INDIRECT: false, CHAMP_ARCHIVE: false },
-    //                 "$currentDate": { CHAMP_MODIFICATION: true },
-    //             };
-    //             collection.update_one(filtre, ops, None).await?;
-    //
-    //             // S'assurer que le fichier est marque supprime: false dans versions
-    //             if let Some(fuuids) = row.fuuids_versions {
-    //                 fuuids_recuperer.extend(fuuids.into_iter().map(|s| s.to_owned()));
-    //             }
-    //         },
-    //         TypeNode::Repertoire | TypeNode::Collection => {
-    //             // Recupere le repertoire, ses sous-repertoires et fichiers
-    //             // Va ignorer les sous-repertoires qui n'ont pas le flag supprime_indirect: true
-    //             let cuuid = row.tuuid;
-    //
-    //             let filtre = doc! {
-    //                 CHAMP_USER_ID: user_id,
-    //                 "$or": [
-    //                     { CHAMP_TUUID: cuuid },
-    //                     { CHAMP_PATH_CUUIDS: cuuid, CHAMP_SUPPRIME_INDIRECT: true }
-    //                 ]
-    //             };
-    //             let ops = doc! {
-    //                 "$set": { CHAMP_SUPPRIME: false, CHAMP_SUPPRIME_INDIRECT: false },
-    //                 "$currentDate": { CHAMP_MODIFICATION: true },
-    //             };
-    //             collection.update_many(filtre, ops, None).await?;
-    //         }
-    //     }
-    // }
-    //
-    // debug!("recuperer_tuuids Recuperer fuuids : {:?}", fuuids_recuperer);
-    // if ! fuuids_recuperer.is_empty() {
-    //     // Marquer les fuuids comme supprime: false dans la table de versions
-    //     // Note : un message de recuperation a deja ete emis vers consignation fichiers pour
-    //     //        verifier que les originaux existente.
-    //     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    //     let filtre = doc! { CHAMP_USER_ID: user_id, CHAMP_FUUID: {"$in": fuuids_recuperer} };
-    //     let ops = doc! {
-    //         "$set": { CHAMP_SUPPRIME: false },
-    //         "$currentDate": { CHAMP_MODIFICATION: true }
-    //     };
-    //     collection.update_many(filtre, ops, None).await?;
-    // }
-
     Ok(())
 }
 
@@ -1884,10 +1729,6 @@ async fn transaction_recuperer_documents_v2<M>(middleware: &M, transaction: Tran
     };
 
     let transaction: TransactionRecupererDocumentsV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction: TransactionRecupererDocumentsV2 = match transaction.clone().convertir() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_recuperer_documents_v2 Erreur conversion transaction : {:?}", e))?
-    // };
 
     for (cuuid, paths) in transaction.items {
         // Recuperer le cuuid (parent) jusqu'a la racine au besoin
@@ -1906,48 +1747,9 @@ async fn transaction_recuperer_documents_v2<M>(middleware: &M, transaction: Tran
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_archiver_documents<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao
-{
-    debug!("transaction_archiver_documents Consommer transaction : {}", transaction.transaction.id);
-    let transaction_collection: TransactionListeDocuments = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_collection: TransactionListeDocuments = match transaction.clone().convertir::<TransactionListeDocuments>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("transactions.transaction_archiver_documents Erreur conversion transaction : {:?}", e))?
-    // };
-
-    let user_id = transaction.certificat.get_user_id()?;
-    // let user_id = match transaction.get_enveloppe_certificat() {
-    //     Some(e) => e.get_user_id()?.to_owned(),
-    //     None => None
-    // };
-
-    // Conserver champs transaction uniquement (filtrer champs meta)
-    let filtre = match user_id.as_ref() {
-        Some(u) => doc! {CHAMP_USER_ID: u, CHAMP_TUUID: {"$in": &transaction_collection.tuuids}},
-        None => doc! {CHAMP_TUUID: {"$in": &transaction_collection.tuuids}}
-    };
-    let ops = doc! {
-        "$set": {CHAMP_ARCHIVE: true},
-        "$currentDate": {CHAMP_MODIFICATION: true}
-    };
-
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let resultat = match collection.update_many(filtre, ops, None).await {
-        Ok(r) => r,
-        Err(e) => Err(format!("transactions.transaction_archiver_documents Erreur update_many sur transcation : {:?}", e))?
-    };
-    debug!("transaction_archiver_documents Resultat transaction update : {:?}", resultat);
-
-    for tuuid in &transaction_collection.tuuids {
-        // Emettre fichier pour que tous les clients recoivent la mise a jour
-        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ARCHIVER).await {
-            warn!("transaction_archiver_documents Erreur emettre_evenement_maj_fichier : {:?}", e);
-        }
-    }
-
-    Ok(Some(middleware.reponse_ok(None, None)?))
+fn obsolete() -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError> {
+    // Obsolete - no effect
+    Ok(None)
 }
 
 /// Fait un touch sur les fichiers_rep identifies. User_id optionnel (e.g. pour ops systeme comme visites)
@@ -2085,9 +1887,6 @@ async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &Gros
         if let Err(e) = set_flag_image_traitee(middleware, tuuid.as_ref(), fuuid).await {
             error!("transaction_associer_conversions Erreur set flag true pour traitement job images {:?}/{} : {:?}", user_id, fuuid, e);
         }
-        // if let Err(e) = gestionnaire.image_job_handler.set_flag(middleware, fuuid, user_id, None, true).await {
-        //     error!("transaction_associer_conversions Erreur set flag true pour traitement job images {:?}/{} : {:?}", user_id, fuuid, e);
-        // }
     }
 
     // S'assurer d'appliquer le filtre sur la version courante
@@ -2097,12 +1896,12 @@ async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &Gros
         }
     }
 
-    // Emettre fichier pour que tous les clients recoivent la mise a jour
-    if let Some(tuuid) = tuuid {
-        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION).await {
-            warn!("transaction_associer_conversions Erreur emettre_evenement_maj_fichier : {:?}", e);
-        }
-    }
+    // // Emettre fichier pour que tous les clients recoivent la mise a jour
+    // if let Some(tuuid) = tuuid {
+    //     if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION).await {
+    //         warn!("transaction_associer_conversions Erreur emettre_evenement_maj_fichier : {:?}", e);
+    //     }
+    // }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -2302,12 +2101,12 @@ async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichie
         }
     }
 
-    // Emettre fichier pour que tous les clients recoivent la mise a jour
-    if let Some(t) = tuuid.as_ref() {
-        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, t, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
-            warn!("transaction_associer_video Erreur emettre_evenement_maj_fichier : {:?}", e);
-        }
-    }
+    // // Emettre fichier pour que tous les clients recoivent la mise a jour
+    // if let Some(t) = tuuid.as_ref() {
+    //     if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, t, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
+    //         warn!("transaction_associer_video Erreur emettre_evenement_maj_fichier : {:?}", e);
+    //     }
+    // }
 
     if let Err(e) = touch_fichiers_rep(middleware, Some(&transaction_mappee.user_id), &fuuids).await {
         error!("transaction_associer_video Erreur touch_fichiers_rep {:?}/{:?} : {:?}", transaction_mappee.user_id, fuuids, e);
@@ -2322,10 +2121,6 @@ async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &GrosFichi
 {
     debug!("transaction_decire_fichier Consommer transaction : {}", transaction.transaction.id);
     let transaction_mappee: TransactionDecrireFichier = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_mappee: TransactionDecrireFichier = match transaction.clone().convertir::<TransactionDecrireFichier>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("transactions.transaction_decire_fichier Erreur conversion transaction : {:?}", e))?
-    // };
 
     let user_id = transaction.certificat.get_user_id()?;
 
@@ -2334,19 +2129,6 @@ async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &GrosFichi
     if let Some(inner) = &user_id {
         filtre.insert("user_id", inner);
     }
-
-    // {
-    //     // Reset flag indexe
-    //     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    //     let ops = doc! {
-    //         "$set": { CHAMP_FLAG_INDEX: false },
-    //         "$unset": { CHAMP_FLAG_INDEX_ERREUR: true },
-    //         "$currentDate": { CHAMP_MODIFICATION: true },
-    //     };
-    //     if let Err(e) = collection_versions.update_one(filtre.clone(), ops, None).await {
-    //         Err(format!("transactions.transaction_decire_collection Erreur maj versions fichiers tuuid {} : {:?}", tuuid, e))?
-    //     }
-    // }
 
     let mut set_ops = doc! {
         CHAMP_FLAG_INDEX: false,
@@ -2383,33 +2165,29 @@ async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &GrosFichi
         Err(e) => Err(format!("transaction_decire_fichier Erreur update description : {:?}", e))?
     }
 
-    // Emettre fichier pour que tous les clients recoivent la mise a jour
-    if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_DECRIRE_FICHIER).await {
-        warn!("transaction_decire_fichier Erreur emettre_evenement_maj_fichier : {:?}", e);
-    }
+    // // Emettre fichier pour que tous les clients recoivent la mise a jour
+    // if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_DECRIRE_FICHIER).await {
+    //     warn!("transaction_decire_fichier Erreur emettre_evenement_maj_fichier : {:?}", e);
+    // }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_decire_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_decrire_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_decire_collection Consommer transaction : {}", transaction.transaction.id);
+    debug!("transaction_decrire_collection Consommer transaction : {}", transaction.transaction.id);
     let transaction_mappee: TransactionDecrireCollection = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_mappee: TransactionDecrireCollection = match transaction.clone().convertir::<TransactionDecrireCollection>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion transaction : {:?}", e))?
-    // };
 
-    let user_id = transaction.certificat.get_user_id()?;
+    // let user_id = transaction.certificat.get_user_id()?;
 
     let tuuid = transaction_mappee.tuuid.as_str();
     let filtre = doc! { CHAMP_TUUID: tuuid };
 
     let doc_metadata = match convertir_to_bson(&transaction_mappee.metadata) {
         Ok(d) => d,
-        Err(e) => Err(format!("transactions.transaction_decire_collection Erreur conversion transaction : {:?}", e))?
+        Err(e) => Err(format!("transactions.transaction_decrire_collection Erreur conversion transaction : {:?}", e))?
     };
 
     let mut set_ops = doc! {
@@ -2423,265 +2201,44 @@ async fn transaction_decire_collection<M>(middleware: &M, gestionnaire: &GrosFic
         "$currentDate": { CHAMP_MODIFICATION: true }
     };
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    match collection.find_one_and_update(filtre, ops, None).await {
-        Ok(inner) => {
-            debug!("transactions.transaction_decire_collection Update description : {:?}", inner);
-            if let Some(d) = inner {
-                // Emettre evenement de maj contenu sur chaque cuuid
-                match convertir_bson_deserializable::<FichierDetail>(d) {
-                    Ok(fichier) => {
-                        if let Some(favoris) = fichier.favoris {
-                            if let Some(u) = user_id {
-                                if favoris {
-                                    let mut evenement = EvenementContenuCollection::new(u);
-                                    // evenement.cuuid = Some(u);
-                                    evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
-                                    emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
-                                }
-                            }
-                        }
-                        if let Some(cuuids) = fichier.cuuids {
-                            for cuuid in cuuids {
-                                let mut evenement = EvenementContenuCollection::new(cuuid);
-                                // evenement.cuuid = Some(cuuid);
-                                evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
-                                emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
-                            }
-                        }
-                    },
-                    Err(e) => warn!("transaction_decire_collection Erreur conversion a FichierDetail : {:?}", e)
-                }
-            }
-        },
-        Err(e) => Err(format!("transactions.transaction_decire_collection Erreur update description : {:?}", e))?
-    }
+    collection.update_one(filtre, ops, None).await?;
+    // match collection.find_one_and_update(filtre, ops, None).await {
+    //     Ok(inner) => {
+    //         debug!("transactions.transaction_decrire_collection Update description : {:?}", inner);
+    //         if let Some(d) = inner {
+    //             // Emettre evenement de maj contenu sur chaque cuuid
+    //             match convertir_bson_deserializable::<FichierDetail>(d) {
+    //                 Ok(fichier) => {
+    //                     if let Some(favoris) = fichier.favoris {
+    //                         if let Some(u) = user_id {
+    //                             if favoris {
+    //                                 let mut evenement = EvenementContenuCollection::new(u);
+    //                                 // evenement.cuuid = Some(u);
+    //                                 evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
+    //                                 emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
+    //                             }
+    //                         }
+    //                     }
+    //                     if let Some(cuuids) = fichier.cuuids {
+    //                         for cuuid in cuuids {
+    //                             let mut evenement = EvenementContenuCollection::new(cuuid);
+    //                             // evenement.cuuid = Some(cuuid);
+    //                             evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
+    //                             emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
+    //                         }
+    //                     }
+    //                 },
+    //                 Err(e) => warn!("transaction_decrire_collection Erreur conversion a FichierDetail : {:?}", e)
+    //             }
+    //         }
+    //     },
+    //     Err(e) => Err(format!("transactions.transaction_decrire_collection Erreur update description : {:?}", e))?
+    // }
 
-    // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid).await?;
+    // // Emettre fichier pour que tous les clients recoivent la mise a jour
+    // emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid).await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
-}
-
-async fn transaction_copier_fichier_tiers<M>(gestionnaire: &GrosFichiersDomainManager, middleware: &M, transaction: TransactionValide)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao
-{
-    warn!("transaction_copier_fichier_tiers Transaction OBSOLETE - SKIP");
-    Ok(None)
-    // debug!("transaction_copier_fichier_tiers Consommer transaction : {:?}", &transaction);
-    // let transaction_fichier: TransactionCopierFichierTiers = match transaction.clone().convertir::<TransactionCopierFichierTiers>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur conversion transaction : {:?}", e))?
-    // };
-    //
-    // let user_id = match transaction_fichier.user_id.as_ref() {
-    //     Some(inner) => inner,
-    //     None => Err(format!("transactions.transaction_copier_fichier_tiers user_id manquant"))?
-    // };
-    //
-    // // Detecter si le fichier existe deja pour l'usager (par fuuid)
-    // let tuuid = {
-    //     let filtre = doc!{CHAMP_USER_ID: &user_id, CHAMP_FUUIDS: &transaction_fichier.fuuid};
-    //     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    //     match collection.find_one(filtre, None).await {
-    //         Ok(inner) => {
-    //             match inner {
-    //                 Some(doc) => {
-    //                     // Le document existe deja, reutiliser le tuuid et ajouter au nouveau cuuid
-    //                     let fichier: FichierDetail = match convertir_bson_deserializable(doc) {
-    //                         Ok(inner) => inner,
-    //                         Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur mapping a FichierDetail : {:?}", e))?
-    //                     };
-    //                     fichier.tuuid
-    //                 },
-    //                 None => {
-    //                     // Nouveau fichier, utiliser uuid_transaction pour le tuuid
-    //                     &transaction.transaction.id.to_string()
-    //                 }
-    //             }
-    //         },
-    //         Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur verification fuuid existant : {:?}", e))?
-    //     }
-    // };
-    //
-    // // Conserver champs transaction uniquement (filtrer champs meta)
-    // let mut doc_bson_transaction = match convertir_to_bson(&transaction_fichier) {
-    //     Ok(d) => d,
-    //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur conversion transaction en bson : {:?}", e))?
-    // };
-    //
-    // debug!("transaction_copier_fichier_tiers Tuuid {} Doc bson : {:?}", tuuid, doc_bson_transaction);
-    //
-    // let fuuid = transaction_fichier.fuuid;
-    // let cuuid = transaction_fichier.cuuid;
-    // let metadata = transaction_fichier.metadata;
-    // let mimetype = transaction_fichier.mimetype;
-    //
-    // let mut fuuids = HashSet::new();
-    // let mut fuuids_reclames = HashSet::new();
-    // fuuids.insert(fuuid.as_str());
-    // fuuids_reclames.insert(fuuid.as_str());
-    // let images_presentes = match &transaction_fichier.images {
-    //     Some(images) => {
-    //         let presentes = ! images.is_empty();
-    //         for image in images.values() {
-    //             fuuids.insert(image.hachage.as_str());
-    //             if image.data_chiffre.is_none() {
-    //                 fuuids_reclames.insert(image.hachage.as_str());
-    //             }
-    //         }
-    //         presentes
-    //     },
-    //     None => false
-    // };
-    // let videos_presents = match &transaction_fichier.video {
-    //     Some(videos) => {
-    //         let presents = ! videos.is_empty();
-    //         for video in videos.values() {
-    //             fuuids.insert(video.fuuid_video.as_str());
-    //             fuuids_reclames.insert(video.fuuid_video.as_str());
-    //         }
-    //         presents
-    //     },
-    //     None => false
-    // };
-    //
-    // let fuuids: Vec<&str> = fuuids.into_iter().collect();  // Convertir en vec
-    // let fuuids_reclames: Vec<&str> = fuuids_reclames.into_iter().collect();  // Convertir en vec
-    //
-    // debug!("transaction_copier_fichier_tiers Fuuids fichier : {:?}", fuuids);
-    // doc_bson_transaction.insert(CHAMP_FUUIDS, &fuuids);
-    // doc_bson_transaction.insert(CHAMP_FUUIDS_RECLAMES, &fuuids_reclames);
-    //
-    // // Retirer champ CUUID, pas utile dans l'information de version
-    // doc_bson_transaction.remove(CHAMP_CUUID);
-    //
-    // // Inserer document de version
-    // {
-    //     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    //     let mut doc_version = doc_bson_transaction.clone();
-    //     doc_version.insert(CHAMP_TUUID, &tuuid);
-    //     doc_version.insert(CHAMP_FUUIDS, &fuuids);
-    //     doc_version.insert(CHAMP_FUUIDS_RECLAMES, &fuuids_reclames);
-    //
-    //     // Information optionnelle pour accelerer indexation/traitement media
-    //     if mimetype.starts_with("image") {
-    //         doc_version.insert(CHAMP_FLAG_MEDIA, "image");
-    //
-    //         // Si au moins 1 image est presente dans l'entree, on ne fait pas de traitements supplementaires
-    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, images_presentes);
-    //     } else if mimetype.starts_with("video") {
-    //         doc_version.insert(CHAMP_FLAG_MEDIA, "video");
-    //
-    //         // Si au moins 1 image est presente dans l'entree, on ne fait pas de traitements supplementaires
-    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, images_presentes);
-    //
-    //         // Si au moins 1 video est present dans l'entree, on ne fait pas de traitements supplementaires
-    //         doc_version.insert(CHAMP_FLAG_VIDEO_TRAITE, videos_presents);
-    //     } else if mimetype =="application/pdf" {
-    //         doc_version.insert(CHAMP_FLAG_MEDIA, "poster");
-    //
-    //         // Si au moins 1 image est presente dans l'entree, on ne fait pas de traitements supplementaires
-    //         doc_version.insert(CHAMP_FLAG_MEDIA_TRAITE, images_presentes);
-    //     }
-    //     doc_version.insert(CHAMP_FLAG_INDEX, false);
-    //
-    //     // Champs date
-    //     doc_version.insert(CHAMP_CREATION, Utc::now());
-    //
-    //     let ops = doc! {
-    //         "$setOnInsert": doc_version,
-    //         "$currentDate": {CHAMP_MODIFICATION: true}
-    //     };
-    //
-    //     let filtre = doc! { "fuuid": &fuuid, "tuuid": &tuuid };
-    //     let options = UpdateOptions::builder()
-    //         .upsert(true)
-    //         .build();
-    //
-    //     match collection.update_one(filtre, ops, options).await {
-    //         Ok(resultat_update) => {
-    //             if resultat_update.upserted_id.is_none() && resultat_update.matched_count != 1 {
-    //                Err(format!("transactions.transaction_copier_fichier_tiers Erreur mise a jour versionsFichiers, echec insertion document (updated count == 0)"))?;
-    //             }
-    //         },
-    //         Err(e) => Err(format!("transactions.transaction_copier_fichier_tiers Erreur update versionFichiers : {:?}", e))?
-    //     }
-    // }
-    //
-    // // Retirer champs cles - ils sont inutiles dans la version_courante
-    // doc_bson_transaction.remove(CHAMP_TUUID);
-    // doc_bson_transaction.remove(CHAMP_FUUID);
-    // doc_bson_transaction.remove(CHAMP_METADATA);
-    // doc_bson_transaction.remove(CHAMP_FUUIDS);
-    // doc_bson_transaction.remove(CHAMP_FUUIDS_RECLAMES);
-    // doc_bson_transaction.remove(CHAMP_USER_ID);
-    //
-    // let filtre = doc! {CHAMP_TUUID: &tuuid};
-    // let mut add_to_set = doc!{
-    //     "fuuids": {"$each": &fuuids},
-    //     "fuuids_reclames": {"$each": &fuuids_reclames},
-    // };
-    //
-    // // Ajouter collection
-    // add_to_set.insert("cuuids", &cuuid);
-    //
-    // let metadata = match metadata {
-    //     Some(inner) => match convertir_to_bson(inner) {
-    //         Ok(metadata) => Some(metadata),
-    //         Err(e) => Err(format!("Erreur conversion metadata a bson : {:?}", e))?
-    //     },
-    //     None => None
-    // };
-    //
-    // let ops = doc! {
-    //     "$set": {
-    //         // "version_courante": doc_bson_transaction,
-    //         CHAMP_FUUIDS_VERSIONS: vec![&fuuid],
-    //         CHAMP_MIMETYPE: &mimetype,
-    //         CHAMP_SUPPRIME: false,
-    //         CHAMP_FLAG_INDEX: false,
-    //     },
-    //     "$addToSet": add_to_set,
-    //     "$setOnInsert": {
-    //         CHAMP_TUUID: &tuuid,
-    //         CHAMP_CREATION: Utc::now(),
-    //         CHAMP_USER_ID: &user_id,
-    //         CHAMP_METADATA: metadata,
-    //         CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
-    //     },
-    //     "$currentDate": {CHAMP_MODIFICATION: true}
-    // };
-    // let opts = UpdateOptions::builder().upsert(true).build();
-    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    // debug!("nouveau fichier update ops : {:?}", ops);
-    // let resultat = match collection.update_one(filtre, ops, opts).await {
-    //     Ok(r) => r,
-    //     Err(e) => Err(format!("grosfichiers.transaction_copier_fichier_tiers Erreur update_one sur transcation : {:?}", e))?
-    // };
-    // debug!("transaction_copier_fichier_tiers nouveau fichier Resultat transaction update : {:?}", resultat);
-    //
-    // if let Err(e) = recalculer_path_cuuids(middleware, cuuid).await {
-    //     Err(format!("grosfichiers.transaction_copier_fichier_tiers Erreur update_one sur transcation : {:?}", e))?
-    // }
-    //
-    // {
-    //     let mut parametres = HashMap::new();
-    //     parametres.insert("mimetype".to_string(), Bson::String(mimetype.clone()));
-    //     parametres.insert("fuuid".to_string(), Bson::String(fuuid.clone()));
-    //     if let Err(e) = gestionnaire.indexation_job_handler.sauvegarder_job(
-    //         middleware, &tuuid, user_id, None,
-    //         None, Some(parametres), true).await {
-    //         error!("transaction_decire_fichier Erreur ajout_job_indexation : {:?}", e);
-    //     }
-    // }
-    //
-    // // Emettre fichier pour que tous les clients recoivent la mise a jour
-    // if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_COPIER_FICHIER_TIERS).await {
-    //     warn!("transaction_copier_fichier_tiers Erreur emettre_evenement_maj_fichier : {:?}", e);
-    // }
-    //
-    // middleware.reponse_ok()
 }
 
 async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
@@ -2689,10 +2246,6 @@ async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: Transacti
 {
     debug!("transaction_favoris_creerpath Consommer transaction : {}", transaction.transaction.id);
     let transaction_collection: TransactionFavorisCreerpath = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_collection: TransactionFavorisCreerpath = match transaction.clone().convertir::<TransactionFavorisCreerpath>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur conversion transaction : {:?}", e))?
-    // };
     let uuid_transaction = &transaction.transaction.id;
 
     let user_id = match &transaction_collection.user_id {
@@ -2702,15 +2255,6 @@ async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: Transacti
                 Some(inner) => inner,
                 None => Err(CommonError::Str("grosfichiers.transaction_favoris_creerpath Erreur user_id absent du certificat"))?
             }
-            // match transaction.get_enveloppe_certificat() {
-            //     Some(c) => {
-            //         match c.get_user_id()? {
-            //             Some(u) => Ok(u.to_owned()),
-            //             None => Err(format!("grosfichiers.transaction_favoris_creerpath user_id manquant"))
-            //         }
-            //     },
-            //     None => Err(format!("grosfichiers.transaction_favoris_creerpath Certificat non charge"))
-            // }
         }
     };
 
@@ -2828,12 +2372,6 @@ async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: Transacti
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
     Ok(Some(middleware.build_reponse(json!({CHAMP_TUUID: &tuuid_leaf}))?.0))
-    // let reponse = match middleware.formatter_reponse(json!({CHAMP_TUUID: &tuuid_leaf}), None) {
-    //     Ok(r) => Ok(r),
-    //     Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
-    // }?;
-    //
-    // Ok(Some(reponse))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2852,17 +2390,9 @@ async fn transaction_supprimer_video<M>(middleware: &M, gestionnaire: &GrosFichi
 {
     debug!("transaction_supprimer_video Consommer transaction : {}", transaction.transaction.id);
     let transaction_collection: TransactionSupprimerVideo = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_collection: TransactionSupprimerVideo = match transaction.clone().convertir::<TransactionSupprimerVideo>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur conversion transaction : {:?}", e))?
-    // };
 
     let fuuid = &transaction_collection.fuuid_video;
 
-    // let enveloppe = match transaction.get_enveloppe_certificat() {
-    //     Some(e) => e,
-    //     None => Err(format!("transaction_supprimer_video Certificat inconnu, transaction ignoree"))?
-    // };
     let user_id = transaction.certificat.get_user_id()?;
 
     let mut labels_videos = Vec::new();
@@ -2876,7 +2406,7 @@ async fn transaction_supprimer_video<M>(middleware: &M, gestionnaire: &GrosFichi
         Err(e) => Err(format!("transaction_supprimer_video Erreur chargement info document : {:?}", e))?
     };
 
-    let tuuid = doc_video.tuuid;
+    // let tuuid = doc_video.tuuid;
 
     let mut ops_unset = doc!{};
     if let Some(map_video) = doc_video.video.as_ref() {
@@ -2914,10 +2444,10 @@ async fn transaction_supprimer_video<M>(middleware: &M, gestionnaire: &GrosFichi
         error!("transaction_favoris_creerpath Erreur touch_fichiers_rep {:?}/{:?} : {:?}", user_id, fuuid, e);
     }
 
-    // Emettre fichier pour que tous les clients recoivent la mise a jour
-    if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
-        warn!("transaction_favoris_creerpath Erreur emettre_evenement_maj_fichier : {:?}", e);
-    }
+    // // Emettre fichier pour que tous les clients recoivent la mise a jour
+    // if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
+    //     warn!("transaction_favoris_creerpath Erreur emettre_evenement_maj_fichier : {:?}", e);
+    // }
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
     match middleware.reponse_ok(None, None) {
@@ -2927,27 +2457,27 @@ async fn transaction_supprimer_video<M>(middleware: &M, gestionnaire: &GrosFichi
 }
 
 
-async fn transaction_supprimer_job_image<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao
-{
-    // NOTE : OBSOLETE
-    debug!("transaction_supprimer_job_image Consommer transaction : {}", transaction.transaction.id);
-    let transaction_supprimer_job: TransactionSupprimerJobImage = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let user_id = get_user_effectif(&transaction, &transaction_supprimer_job)?;
-    let fuuid = &transaction_supprimer_job.fuuid;
-
-    // Indiquer que la job a ete completee et ne doit pas etre redemarree.
-    if let Err(e) = set_flag_image_traitee(middleware, None::<&str>, fuuid).await {
-        Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag image : {:?}", e))?
-    }
-
-    // Retourner le tuuid comme reponse, aucune transaction necessaire
-    match middleware.reponse_ok(None, None) {
-        Ok(r) => Ok(Some(r)),
-        Err(e) => Err(CommonError::Str("transactions.transaction_supprimer_job_image Erreur formattage reponse"))
-    }
-}
+// async fn transaction_supprimer_job_image<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+//     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+//     where M: GenerateurMessages + MongoDao
+// {
+//     // NOTE : OBSOLETE
+//     debug!("transaction_supprimer_job_image Consommer transaction : {}", transaction.transaction.id);
+//     let transaction_supprimer_job: TransactionSupprimerJobImage = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+//     // let user_id = get_user_effectif(&transaction, &transaction_supprimer_job)?;
+//     let fuuid = &transaction_supprimer_job.fuuid;
+//
+//     // Indiquer que la job a ete completee et ne doit pas etre redemarree.
+//     if let Err(e) = set_flag_image_traitee(middleware, None::<&str>, fuuid).await {
+//         Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag image : {:?}", e))?
+//     }
+//
+//     // Retourner le tuuid comme reponse, aucune transaction necessaire
+//     match middleware.reponse_ok(None, None) {
+//         Ok(r) => Ok(Some(r)),
+//         Err(e) => Err(CommonError::Str("transactions.transaction_supprimer_job_image Erreur formattage reponse"))
+//     }
+// }
 
 async fn transaction_supprimer_job_image_v2<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
                                             -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
@@ -2970,31 +2500,31 @@ where M: GenerateurMessages + MongoDao
     }
 }
 
-async fn transaction_supprimer_job_video<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao
-{
-    // NOTE : Obsolete
-    debug!("transaction_supprimer_job_video Consommer transaction : {}", transaction.transaction.id);
-    let transaction_supprimer: TransactionSupprimerJobVideo = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-
-    let job_id = match transaction_supprimer.job_id.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None};
-
-    let fuuid = &transaction_supprimer.fuuid;
-    let mut cles_supplementaires = HashMap::new();
-    cles_supplementaires.insert("cle_conversion".to_string(), transaction_supprimer.cle_conversion.clone());
-
-    // Indiquer que la job a ete completee et ne doit pas etre redemarree.
-    if let Err(e) = set_flag_video_traite(middleware, None::<&str>, fuuid, job_id).await {
-        Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag video : {:?}", e))?
-    }
-
-    // Retourner le tuuid comme reponse, aucune transaction necessaire
-    match middleware.reponse_ok(None, None) {
-        Ok(r) => Ok(Some(r)),
-        Err(e) => Err(CommonError::Str("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
-    }
-}
+// async fn transaction_supprimer_job_video<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+//     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+//     where M: GenerateurMessages + MongoDao
+// {
+//     // NOTE : Obsolete
+//     debug!("transaction_supprimer_job_video Consommer transaction : {}", transaction.transaction.id);
+//     let transaction_supprimer: TransactionSupprimerJobVideo = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+//
+//     let job_id = match transaction_supprimer.job_id.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None};
+//
+//     let fuuid = &transaction_supprimer.fuuid;
+//     let mut cles_supplementaires = HashMap::new();
+//     cles_supplementaires.insert("cle_conversion".to_string(), transaction_supprimer.cle_conversion.clone());
+//
+//     // Indiquer que la job a ete completee et ne doit pas etre redemarree.
+//     if let Err(e) = set_flag_video_traite(middleware, None::<&str>, fuuid, job_id).await {
+//         Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag video : {:?}", e))?
+//     }
+//
+//     // Retourner le tuuid comme reponse, aucune transaction necessaire
+//     match middleware.reponse_ok(None, None) {
+//         Ok(r) => Ok(Some(r)),
+//         Err(e) => Err(CommonError::Str("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
+//     }
+// }
 
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3042,10 +2572,6 @@ async fn transaction_ajouter_contact_local<M>(middleware: &M, gestionnaire: &Gro
     let uuid_transaction = transaction.transaction.id.clone();
 
     let transaction_mappee: TransactionAjouterContactLocal = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_mappee: TransactionAjouterContactLocal = match transaction.convertir() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_ajouter_contact_local Erreur conversion transaction : {:?}", e))?
-    // };
 
     let filtre = doc! {
         CHAMP_CONTACT_ID: uuid_transaction,
@@ -3087,19 +2613,8 @@ async fn transaction_supprimer_contacts<M>(middleware: &M, gestionnaire: &GrosFi
         Some(inner) => inner,
         None => Err(CommonError::Str("grosfichiers.transaction_supprimer_contacts Erreur user_id absent du certificat"))?
     };
-    // let user_id = match transaction.get_enveloppe_certificat() {
-    //     Some(inner) => match inner.get_user_id()? {
-    //         Some(inner) => inner.to_owned(),
-    //         None => Err(format!("grosfichiers.transaction_supprimer_contacts User_id manquant du certificat"))?
-    //     },
-    //     None => Err(format!("grosfichiers.transaction_supprimer_contacts Erreur enveloppe manquante"))?
-    // };
 
     let transaction_mappee: TransactionSupprimerContacts = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_mappee: TransactionSupprimerContacts = match transaction.convertir() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_supprimer_contacts Erreur conversion transaction : {:?}", e))?
-    // };
 
     let filtre = doc! {
         CHAMP_USER_ID: &user_id,
@@ -3132,19 +2647,8 @@ async fn transaction_partager_collections<M>(middleware: &M, gestionnaire: &Gros
         Some(inner) => inner,
         None => Err(CommonError::Str("grosfichiers.transaction_partager_collections Erreur user_id absent du certificat"))?
     };
-    // let user_id = match transaction.get_enveloppe_certificat() {
-    //     Some(inner) => match inner.get_user_id()? {
-    //         Some(inner) => inner.to_owned(),
-    //         None => Err(format!("grosfichiers.transaction_partager_collections User_id manquant du certificat"))?
-    //     },
-    //     None => Err(format!("grosfichiers.transaction_partager_collections Erreur enveloppe manquante"))?
-    // };
 
     let transaction_mappee: TransactionPartagerCollections = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_mappee: TransactionPartagerCollections = match transaction.convertir() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_partager_collections Erreur conversion transaction : {:?}", e))?
-    // };
 
     let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
     for contact_id in transaction_mappee.contact_ids {
@@ -3188,19 +2692,8 @@ async fn transaction_supprimer_partage_usager<M>(middleware: &M, gestionnaire: &
         Some(inner) => inner,
         None => Err(CommonError::Str("grosfichiers.transaction_supprimer_partage_usager Erreur user_id absent du certificat"))?
     };
-    // let user_id = match transaction.get_enveloppe_certificat() {
-    //     Some(inner) => match inner.get_user_id()? {
-    //         Some(inner) => inner.to_owned(),
-    //         None => Err(format!("grosfichiers.transaction_supprimer_partage_usager User_id manquant du certificat"))?
-    //     },
-    //     None => Err(format!("grosfichiers.transaction_supprimer_partage_usager Erreur enveloppe manquante"))?
-    // };
 
     let transaction_mappee: TransactionSupprimerPartageUsager = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_mappee: TransactionSupprimerPartageUsager = match transaction.convertir() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_supprimer_partage_usager Erreur conversion transaction : {:?}", e))?
-    // };
 
     let filtre = doc! {
         CHAMP_USER_ID: &user_id,
@@ -3294,10 +2787,6 @@ async fn transaction_supprimer_orphelins<M>(middleware: &M, gestionnaire: &GrosF
 {
     debug!("transaction_supprimer_partage_usager Consommer transaction : {}", transaction.transaction.id);
     let transaction_mappee: TransactionSupprimerOrphelins = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_mappee: TransactionSupprimerOrphelins = match transaction.convertir() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("grosfichiers.transaction_supprimer_orphelins Erreur conversion transaction : {:?}", e))?
-    // };
     match traiter_transaction_supprimer_orphelins(middleware, transaction_mappee).await {
         Ok(inner) => Ok(inner),
         Err(e) => Err(format!("transaction_supprimer_orphelins Erreur traitement {:?}", e))?
@@ -3337,5 +2826,4 @@ async fn traiter_transaction_supprimer_orphelins<M>(middleware: &M, transaction:
 
     let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };
     Ok(Some(middleware.build_reponse(reponse)?.0))
-    // Ok(Some(middleware.formatter_reponse(reponse, None)?))
 }

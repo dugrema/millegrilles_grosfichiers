@@ -28,7 +28,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use crate::domain_manager::GrosFichiersDomainManager;
-use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_maj_fichier, evenement_fichiers_syncpret, EvenementContenuCollection};
+use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, evenement_fichiers_syncpret, EvenementContenuCollection};
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids};
@@ -76,16 +76,10 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         TRANSACTION_ASSOCIER_VIDEO => commande_associer_video(middleware, m, gestionnaire).await,
         TRANSACTION_AJOUTER_FICHIERS_COLLECTION => commande_ajouter_fichiers_collection(middleware, m, gestionnaire).await,
         TRANSACTION_DEPLACER_FICHIERS_COLLECTION => commande_deplacer_fichiers_collection(middleware, m, gestionnaire).await,
-        // TRANSACTION_RETIRER_DOCUMENTS_COLLECTION => commande_retirer_documents_collection(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => commande_supprimer_documents(middleware, m, gestionnaire).await,
-        // TRANSACTION_RECUPERER_DOCUMENTS => commande_recuperer_documents(middleware, m, gestionnaire).await,
         TRANSACTION_RECUPERER_DOCUMENTS_V2 => commande_recuperer_documents_v2(middleware, m, gestionnaire).await,
-        // TRANSACTION_ARCHIVER_DOCUMENTS => commande_archiver_documents(middleware, m, gestionnaire).await,
-        // TRANSACTION_CHANGER_FAVORIS => commande_changer_favoris(middleware, m, gestionnaire).await,
         TRANSACTION_DECRIRE_FICHIER => commande_decrire_fichier(middleware, m, gestionnaire).await,
         TRANSACTION_DECRIRE_COLLECTION => commande_decrire_collection(middleware, m, gestionnaire).await,
-        // TRANSACTION_COPIER_FICHIER_TIERS => commande_copier_fichier_tiers(middleware, m, gestionnaire).await,
-        // TRANSACTION_FAVORIS_CREERPATH => commande_favoris_creerpath(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_VIDEO => commande_supprimer_video(middleware, m, gestionnaire).await,
         TRANSACTION_SUPPRIMER_ORPHELINS => commande_supprimer_orphelins(middleware, m, gestionnaire).await,
 
@@ -94,23 +88,14 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
 
         COMMANDE_JOB_GET_KEY => commande_get_job_key(middleware, m).await,
         COMMANDE_COMPLETER_PREVIEWS => commande_completer_previews(middleware, m, gestionnaire).await,
-        // COMMANDE_NOUVEAU_FICHIER => commande_nouveau_fichier(middleware, m, gestionnaire).await,
-        // COMMANDE_GET_CLE_JOB_CONVERSION => commande_get_cle_job_conversion(middleware, m, gestionnaire).await,
-
-        // COMMANDE_IMAGE_GET_JOB => commande_image_get_job(middleware, m, gestionnaire).await,
-        // TRANSACTION_IMAGE_SUPPRIMER_JOB => commande_supprimer_job_image(middleware, m, gestionnaire).await,
         TRANSACTION_IMAGE_SUPPRIMER_JOB_V2 => commande_supprimer_job_image_v2(middleware, m, gestionnaire).await,
 
         // Video
         COMMANDE_VIDEO_TRANSCODER => commande_video_convertir(middleware, m, gestionnaire).await,
-        // COMMANDE_VIDEO_ARRETER_CONVERSION => commande_video_arreter_conversion(middleware, m, gestionnaire).await,
-        // COMMANDE_VIDEO_GET_JOB => commande_video_get_job(middleware, m, gestionnaire).await,
-        // TRANSACTION_VIDEO_SUPPRIMER_JOB => commande_supprimer_job_video(middleware, m, gestionnaire).await,
         TRANSACTION_VIDEO_SUPPRIMER_JOB_V2 => commande_supprimer_job_video_v2(middleware, m, gestionnaire).await,
 
         // Indexation
         COMMANDE_REINDEXER => commande_reindexer(middleware, m, gestionnaire).await,
-        // COMMANDE_INDEXATION_GET_JOB => commande_indexation_get_job(middleware, m, gestionnaire).await,
         TRANSACTION_CONFIRMER_FICHIER_INDEXE => commande_confirmer_fichier_indexe(middleware, m, gestionnaire).await,
 
         // Partage de collections
@@ -133,6 +118,8 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gest
     debug!("commande_nouvelle_version Consommer commande : {:?}", & m.type_message);
     let commande: TransactionNouvelleVersion = message_owned.deserialize()?;
 
+    let cuuid = commande.cuuid.as_str();
+
     // Autorisation: Action usager avec compte prive ou delegation globale
     let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
@@ -148,7 +135,7 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gest
     }
 
     // Valider la nouvelle version
-    {
+    let tuuid = {
         let fichier_rep = match NodeFichierRepOwned::from_nouvelle_version(
             middleware, &commande, uuid_transaction, &user_id).await {
             Ok(inner) => inner,
@@ -168,7 +155,9 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gest
         if count > 0 {
             return Ok(Some(middleware.reponse_err(Some(409), None, Some("Fuuid exists"))?))
         }
-    }
+
+        tuuid
+    };
 
     // Traiter la cle
     match message_owned.attachements.take() {
@@ -182,18 +171,27 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gest
             None => {
                 error!("Cle de nouvelle version manquante (1)");
                 return Ok(Some(middleware.reponse_err(None, None, Some("Cle manquante"))?));
-                // return Ok(Some(middleware.build_reponse(json!({"ok": false, "err": "Cle manquante"}))?.0));
             }
         },
         None => {
             error!("Cle de nouvelle version manquante (2)");
             return Ok(Some(middleware.reponse_err(None, None, Some("Cle manquante"))?));
-            // return Ok(Some(middleware.build_reponse(json!({"ok": false, "err": "Cle manquante"}))?.0));
         }
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
+    let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
+
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await {
+        warn!("transaction_nouvelle_version Erreur emettre_evenement_maj_fichier : {:?}", e);
+    }
+
+    let mut evenement_contenu = EvenementContenuCollection::new(cuuid.to_owned());
+    evenement_contenu.fichiers_ajoutes = Some(vec![tuuid.clone()]);
+    emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
+
+    Ok(response)
 }
 
 async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
@@ -316,6 +314,11 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
         }
     }
 
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_DECRIRE_FICHIER).await {
+        warn!("transaction_decire_fichier Erreur emettre_evenement_maj_fichier : {:?}", e);
+    }
+
     Ok(resultat)
 }
 
@@ -327,6 +330,8 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, g
     let mut message_owned = m.message.parse_to_owned()?;
     let commande: TransactionNouvelleCollection = message_owned.deserialize()?;
     debug!("Commande commande_nouvelle_collection versions parsed : {:?}", commande);
+
+    let cuuid = commande.cuuid.as_ref();
 
     // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
     // Verifier si on a un certificat delegation globale
@@ -351,10 +356,6 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, g
     match message_owned.attachements.take() {
         Some(mut attachements) => match attachements.remove("cle") {
             Some(cle) => {
-                // if let Some(reponse) = transmettre_cle_attachee(middleware, cle).await? {
-                //     error!("Erreur sauvegarde cle : {:?}", reponse);
-                //     return Ok(Some(reponse));
-                // }
                 if let Some(reponse) = transmettre_cle_attachee_domaines(middleware, cle).await? {
                     error!("Erreur sauvegarde cle : {:?}", reponse);
                     return Ok(Some(reponse));
@@ -380,13 +381,33 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, g
     let tuuid = &message_owned.id;
     let metadata = commande.metadata;
     if user_id.is_some() && metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
-        let user_id = user_id.expect("user_id");
+        let user_id = user_id.as_ref().expect("user_id");
         let cle_id = metadata.cle_id.expect("cle_id");
         let format = metadata.format.expect("format");
         let nonce = metadata.nonce.expect("nonce");
         let filehost_ids: Vec<&str> = Vec::new();
         let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, "", &filehost_ids, cle_id, format, nonce);
         sauvegarder_job_index(middleware, &job).await?;
+    }
+
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid).await?;
+    {
+        // let mut evenement_contenu = EvenementContenuCollection::new();
+        let mut evenement_contenu = match cuuid.as_ref() {
+            Some(cuuid) => Ok(EvenementContenuCollection::new(cuuid.clone())),
+            None => match user_id {
+                Some(inner) => Ok(EvenementContenuCollection::new(inner.clone())),
+                None => Err(format!("cuuid et user_id sont None, erreur event emettre_evenement_contenu_collection"))
+            }
+        };
+        match evenement_contenu {
+            Ok(mut inner) => {
+                inner.collections_ajoutees = Some(vec![tuuid.clone()]);
+                emettre_evenement_contenu_collection(middleware, gestionnaire, inner).await?;
+            },
+            Err(e) => error!("transaction_nouvelle_collection {}", e)
+        }
     }
 
     Ok(result)
@@ -417,7 +438,16 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gest
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
+    let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
+
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    if let Some(tuuid) = commande.tuuid {
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION).await {
+            warn!("transaction_associer_conversions Erreur emettre_evenement_maj_fichier : {:?}", e);
+        }
+    }
+
+    Ok(response)
 }
 
 async fn commande_associer_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
@@ -438,7 +468,16 @@ async fn commande_associer_video<M>(middleware: &M, m: MessageValide, gestionnai
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
+    let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
+
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    if let Some(t) = commande.tuuid.as_ref() {
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, t, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
+            warn!("transaction_associer_video Erreur emettre_evenement_maj_fichier : {:?}", e);
+        }
+    }
+
+    Ok(response)
 }
 
 pub struct InformationAutorisation {
@@ -616,7 +655,20 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
+    let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
+
+    for tuuid in &commande.inclure_tuuids {
+        // Emettre fichier pour que tous les clients recoivent la mise a jour
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_AJOUTER_FICHIER_COLLECTION).await {
+            warn!("transaction_ajouter_fichiers_collection Erreur emettre_evenement_maj_fichier : {:?}", e)
+        }
+    }
+
+    let mut evenement_contenu = EvenementContenuCollection::new(commande.cuuid.clone());
+    evenement_contenu.fichiers_ajoutes = Some(commande.inclure_tuuids.clone());
+    emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
+
+    Ok(response)
 }
 
 async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
@@ -652,7 +704,23 @@ async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageVali
     }
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
+    let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
+
+    for tuuid in &commande.inclure_tuuids {
+        // Emettre fichier pour que tous les clients recoivent la mise a jour
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_DEPLACER_FICHIER_COLLECTION).await {
+            warn!("transaction_deplacer_fichiers_collection Erreur emettre_evenement_maj_fichier : {:?}", e);
+        }
+    }
+
+    let mut evenement_source = EvenementContenuCollection::new(commande.cuuid_origine.clone());
+    evenement_source.retires = Some(commande.inclure_tuuids.clone());
+    emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_source).await?;
+    let mut evenement_destination = EvenementContenuCollection::new(commande.cuuid_destination.clone());
+    evenement_destination.fichiers_ajoutes = Some(commande.inclure_tuuids.clone());
+    emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_destination).await?;
+
+    Ok(response)
 }
 
 async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
@@ -742,6 +810,16 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
         },
         None => warn!("Erreur suppression tuuids:{:?} de l'index - aucune reponse", commande.tuuids)
     }
+
+    // TODO - mettre evenements ici (liste generee dans transaction)
+    // debug!("transaction_supprimer_documents Emettre messages pour tuuids retires : {:?}", tuuids_retires_par_cuuid);
+    //
+    // // Emettre evenements supprime par cuuid
+    // for (cuuid, liste) in tuuids_retires_par_cuuid {
+    //     let mut evenement = EvenementContenuCollection::new(cuuid);
+    //     evenement.retires = Some(liste);
+    //     emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
+    // }
 
     Ok(result)
 }
@@ -1038,7 +1116,7 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestio
     let tuuid = &commande.tuuid;
     if let Some(metadata) = commande.metadata {
         if user_id.is_some() && metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
-            let user_id = user_id.expect("user_id");
+            let user_id = user_id.as_ref().expect("user_id");
             let cle_id = metadata.cle_id.expect("cle_id");
             let format = metadata.format.expect("format");
             let nonce = metadata.nonce.expect("nonce");
@@ -1047,6 +1125,44 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestio
             sauvegarder_job_index(middleware, &job).await?;
         }
     }
+
+    let filtre = doc! { CHAMP_TUUID: tuuid };
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    match collection.find_one(filtre, None).await {
+        Ok(inner) => {
+            debug!("transactions.transaction_decrire_collection Update description : {:?}", inner);
+            if let Some(d) = inner {
+                // Emettre evenement de maj contenu sur chaque cuuid
+                match convertir_bson_deserializable::<FichierDetail>(d) {
+                    Ok(fichier) => {
+                        if let Some(favoris) = fichier.favoris {
+                            if let Some(u) = user_id {
+                                if favoris {
+                                    let mut evenement = EvenementContenuCollection::new(u);
+                                    // evenement.cuuid = Some(u);
+                                    evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
+                                    emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
+                                }
+                            }
+                        }
+                        if let Some(cuuids) = fichier.cuuids {
+                            for cuuid in cuuids {
+                                let mut evenement = EvenementContenuCollection::new(cuuid);
+                                // evenement.cuuid = Some(cuuid);
+                                evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
+                                emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
+                            }
+                        }
+                    },
+                    Err(e) => warn!("transaction_decrire_collection Erreur conversion a FichierDetail : {:?}", e)
+                }
+            }
+        },
+        Err(e) => Err(format!("transactions.transaction_decrire_collection Erreur update description : {:?}", e))?
+    }
+
+    // Emettre fichier pour que tous les clients recoivent la mise a jour
+    emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid).await?;
 
     Ok(result)
 }
@@ -1716,8 +1832,27 @@ async fn commande_supprimer_video<M>(middleware: &M, m: MessageValide, gestionna
     let result = collection.count_documents(filtre_fichier, None).await?;
 
     if result > 0 {
+        // Recuperer information - utilisee pour emettre evenement apres transactions
+        let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
+        let collection_fichier_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+        let doc_video = match collection_fichier_versions.find_one(filtre.clone(), None).await {
+            Ok(d) => match d {
+                Some(d) => d,
+                None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
+            },
+            Err(e) => Err(format!("transaction_supprimer_video Erreur chargement info document : {:?}", e))?
+        };
+
         // Traiter la transaction
-        Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
+        let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
+
+        // Emettre fichier pour que tous les clients recoivent la mise a jour
+        let tuuid = doc_video.tuuid;
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
+            warn!("transaction_favoris_creerpath Erreur emettre_evenement_maj_fichier : {:?}", e);
+        }
+
+        Ok(response)
     } else {
         Ok(Some(middleware.reponse_ok(None, None)?))
     }
