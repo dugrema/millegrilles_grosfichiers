@@ -18,12 +18,13 @@ use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, Gestionn
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction_serializable, sauvegarder_traiter_transaction_serializable_v2};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, start_transaction_regular, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::mongodb::ClientSession;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job, JobTrigger, creer_jobs_manquantes_queue, creer_jobs_manquantes_fichiersrep, reactiver_jobs};
@@ -35,7 +36,8 @@ const REQUETE_LISTE_NOEUDS: &str = "listeNoeuds";
 #[derive(Clone, Debug)]
 pub struct IndexationJobHandler {}
 
-pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
     debug!("reset_flag_indexe Reset flags pour tous les fichiers");
@@ -49,13 +51,13 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
 
     // Reset tables rep et versions
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    collection.update_many(filtre.clone(), ops.clone(), None).await?;
+    collection.update_many_with_session(filtre.clone(), ops.clone(), None, session).await?;
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    collection.update_many(filtre.clone(), ops, None).await?;
+    collection.update_many_with_session(filtre.clone(), ops, None, session).await?;
 
     // Index - tables VERSION et FICHIER_REP
-    creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX).await?;
-    creer_jobs_manquantes_fichiersrep(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX).await?;
+    creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX, session).await?;
+    creer_jobs_manquantes_fichiersrep(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX, session).await?;
 
     // Reset le serveur d'indexation
     let routage = RoutageMessageAction::builder("solrrelai", "reindexerConsignation", vec![Securite::L3Protege])
@@ -70,7 +72,7 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
     }
 
     // Start reindexing.
-    reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 0, 5000, "solrrelai", "processIndex", true).await?;
+    reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 0, 5000, "solrrelai", "processIndex", true, session).await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -333,6 +335,24 @@ async fn entretien_supprimer_visites_expirees<M>(middleware: &M)
     -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages
 {
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+    match entretien_supprimer_visites_expirees_session(middleware, &mut session).await {
+        Ok(()) => {
+            session.commit_transaction().await?;
+            Ok(())
+        },
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)
+        }
+    }
+}
+
+async fn entretien_supprimer_visites_expirees_session<M>(middleware: &M, session: &mut ClientSession)
+    -> Result<(), CommonError>
+    where M: MongoDao + GenerateurMessages
+{
     debug!("entretien_supprimer_visites_expirees Debut");
 
     let routage = RoutageMessageAction::builder(DOMAINE_TOPOLOGIE, REQUETE_LISTE_NOEUDS, vec![Securite::L3Protege])
@@ -362,7 +382,7 @@ async fn entretien_supprimer_visites_expirees<M>(middleware: &M)
             "$currentDate": {CHAMP_MODIFICATION: true}
         };
         debug!("entretien_supprimer_visites_expirees Filtre : {:?}, Ops: {:?}", filtre, ops);
-        collection.update_many(filtre, ops, None).await?;
+        collection.update_many_with_session(filtre, ops, None, session).await?;
     }
 
     debug!("entretien_supprimer_visites_expirees Fin");
@@ -370,6 +390,26 @@ async fn entretien_supprimer_visites_expirees<M>(middleware: &M)
 }
 
 async fn entretien_supprimer_fichiersrep_index<M>(middleware: &M)
+    -> Result<(), CommonError>
+    where M: MongoDao + GenerateurMessages
+{
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+
+    match entretien_supprimer_fichiersrep_index_session(middleware, &mut session).await {
+        Ok(()) => {
+            session.commit_transaction().await?;
+            Ok(())
+        },
+        Err(e) => {
+            // error!("creer_jobs_manquantes_session Error: {:?}", e);
+            session.abort_transaction().await?;
+            Err(e)
+        }
+    }
+}
+
+async fn entretien_supprimer_fichiersrep_index_session<M>(middleware: &M, session: &mut ClientSession)
     -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages
 {
@@ -384,10 +424,10 @@ async fn entretien_supprimer_fichiersrep_index<M>(middleware: &M)
     };
     let collection = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
         NOM_COLLECTION_FICHIERS_REP)?;
-    let mut curseur = collection.find(filtre, None).await?;
+    let mut curseur = collection.find_with_session(filtre, None, session).await?;
 
     let mut tuuids_supprimer = Vec::new();
-    while curseur.advance().await? {
+    while curseur.advance(session).await? {
         let row = curseur.deserialize_current()?;
         tuuids_supprimer.push(row.tuuid.to_owned());
         if tuuids_supprimer.len() > 1000 {
@@ -411,7 +451,7 @@ async fn entretien_supprimer_fichiersrep_index<M>(middleware: &M)
             "$set": {CHAMP_FLAG_INDEX: false},
             "$currentDate": {CHAMP_MODIFICATION: true}
         };
-        collection.update_many(filtre, ops, None).await?;
+        collection.update_many_with_session(filtre, ops, None, session).await?;
     }
 
     debug!("entretien_supprimer_fichiersrep_index Fin");
@@ -419,6 +459,26 @@ async fn entretien_supprimer_fichiersrep_index<M>(middleware: &M)
 }
 
 async fn entretien_retirer_supprimes_sans_visites<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager)
+    -> Result<(), CommonError>
+    where M: MongoDao + GenerateurMessages + ValidateurX509
+{
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+
+    match entretien_retirer_supprimes_sans_visites_session(middleware, gestionnaire, &mut session).await {
+        Ok(()) => {
+            session.commit_transaction().await?;
+            Ok(())
+        },
+        Err(e) => {
+            // error!("creer_jobs_manquantes_session Error: {:?}", e);
+            session.abort_transaction().await?;
+            Err(e)
+        }
+    }
+}
+
+async fn entretien_retirer_supprimes_sans_visites_session<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
     -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
@@ -435,8 +495,8 @@ async fn entretien_retirer_supprimes_sans_visites<M>(middleware: &M, gestionnair
         let mut fuuids_supprimes = Vec::new();
         let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
         let options = FindOptions::builder().limit(1000).build();
-        let mut curseur = collection.find(filtre, options).await?;
-        while curseur.advance().await? {
+        let mut curseur = collection.find_with_session(filtre, options, session).await?;
+        while curseur.advance(session).await? {
             let row = curseur.deserialize_current()?;
             debug!("Marquer {:?} comme retire (orphelin supprime)", row);
             fuuids_supprimes.push(row.fuuid.to_owned());
@@ -448,12 +508,12 @@ async fn entretien_retirer_supprimes_sans_visites<M>(middleware: &M, gestionnair
     let transaction = TransactionSupprimerOrphelins { fuuids: fuuids_supprimes };
 
     sauvegarder_traiter_transaction_serializable_v2(
-        middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_SUPPRIMER_ORPHELINS).await?;
+        middleware, &transaction, gestionnaire, session, DOMAINE_NOM, TRANSACTION_SUPPRIMER_ORPHELINS).await?;
 
     Ok(())
 }
 
-pub async fn set_flag_index_traite<M>(middleware: &M, job_id: &str, tuuid: &str, fuuid: Option<&str>) -> Result<(), CommonError>
+pub async fn set_flag_index_traite<M>(middleware: &M, job_id: &str, tuuid: &str, fuuid: Option<&str>, session: &mut ClientSession) -> Result<(), CommonError>
 where M: MongoDao
 {
     if let Some(fuuid) = fuuid {
@@ -464,7 +524,7 @@ where M: MongoDao
             "$set": {CHAMP_FLAG_INDEX: true},
             "$currentDate": {CHAMP_MODIFICATION: true},
         };
-        collection.update_many(filtre, ops, None).await?;
+        collection.update_many_with_session(filtre, ops, None, session).await?;
     }
 
     // Set flag version reps (si applicable)
@@ -474,24 +534,24 @@ where M: MongoDao
         "$set": {CHAMP_FLAG_INDEX: true},
         "$currentDate": {CHAMP_MODIFICATION: true},
     };
-    collection.update_many(filtre, ops, None).await?;
+    collection.update_many_with_session(filtre, ops, None, session).await?;
 
     // Supprimer job image
     let filtre_job = doc!{"job_id": &job_id};
     let collection = middleware.get_collection(NOM_COLLECTION_INDEXATION_JOBS)?;
-    collection.delete_many(filtre_job, None).await?;
+    collection.delete_many_with_session(filtre_job, None, session).await?;
 
     Ok(())
 }
 
 
-pub async fn sauvegarder_job_index<M>(middleware: &M, job: &BackgroundJob) -> Result<BackgroundJob, CommonError>
+pub async fn sauvegarder_job_index<M>(middleware: &M, job: &BackgroundJob, session: &mut ClientSession) -> Result<BackgroundJob, CommonError>
 where M: MongoDao + GenerateurMessages
 {
     // Charger metadata dans le trigger
     let collection = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
     let filtre = doc!{"tuuid": &job.tuuid};
-    let trigger = match collection.find_one(filtre, None).await? {
+    let trigger = match collection.find_one_with_session(filtre, None, session).await? {
         Some(fichier) => {
             let mut trigger = JobTrigger::from(job);
             trigger.metadata = Some(fichier.metadata);
@@ -501,5 +561,5 @@ where M: MongoDao + GenerateurMessages
         None => Err(CommonError::String(format!("sauvegarder_job_index Fichier inconnu tuuid:{}", job.tuuid)))?
     };
 
-    sauvegarder_job(middleware, job, Some(trigger), NOM_COLLECTION_INDEXATION_JOBS, "solrrelai", "processIndex").await
+    sauvegarder_job(middleware, job, Some(trigger), NOM_COLLECTION_INDEXATION_JOBS, "solrrelai", "processIndex", session).await
 }

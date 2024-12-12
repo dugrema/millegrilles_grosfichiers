@@ -16,6 +16,7 @@ use millegrilles_common_rust::messages_generiques::CommandeUsager;
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable_v2, sauvegarder_traiter_transaction_v2};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{MessageMilleGrillesBufferDefault, optionepochseconds};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao, opt_chrono_datetime_as_bson_datetime};
+use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::json;
@@ -369,7 +370,7 @@ pub async fn commande_supprimer_job_image<M>(middleware: &M, m: MessageValide, g
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct CommandeSupprimerJobImageV2 {tuuid: String, fuuid: String, job_id: String}
 
-pub async fn commande_supprimer_job_image_v2<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+pub async fn commande_supprimer_job_image_v2<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -383,11 +384,11 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     }
 
     debug!("commande_supprimer_job_image_v2 Supprimer job fuuid : {:?}", commande.fuuid);
-    sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
+    sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
 
     let filtre = doc! {"job_id": commande.job_id};
     let collection = middleware.get_collection(NOM_COLLECTION_IMAGES_JOBS)?;
-    collection.delete_one(filtre, None).await?;
+    collection.delete_one_with_session(filtre, None, session).await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -399,7 +400,7 @@ pub async fn commande_supprimer_job_video<M>(middleware: &M, m: MessageValide, g
     Ok(Some(middleware.reponse_err(Some(999), None, Some("Obsolete"))?))
 }
 
-pub async fn commande_supprimer_job_video_v2<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+pub async fn commande_supprimer_job_video_v2<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -430,7 +431,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     let job_initiale = true;
     let collection = middleware.get_collection_typed::<BackgroundJob>(NOM_COLLECTION_VIDEO_JOBS)?;
     let filtre = doc!{"job_id": &commande.job_id};
-    if let Some(job) = collection.find_one(filtre, None).await? {
+    if let Some(job) = collection.find_one_with_session(filtre, None, session).await? {
         let initial = match job.params {
             Some(inner) => inner.defaults.is_some(),
             None => false
@@ -439,7 +440,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         if initial {
             debug!("commande_supprimer_job_video_v2 Error during initial video processing, abort for good on fuuid {}", commande.fuuid);
             // Convertir en transaction pour desactiver le flag de traitement video et supprimer la job
-            sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?;
+            sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
         }
 
         // Emettre un evenement pour clients
@@ -453,7 +454,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     }
 
     debug!("Supprimer job video {}", commande.job_id);
-    set_flag_video_traite(middleware, Some(&commande.tuuid), &commande.fuuid, Some(&commande.job_id)).await?;
+    set_flag_video_traite(middleware, Some(&commande.tuuid), &commande.fuuid, Some(&commande.job_id), session).await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -492,7 +493,8 @@ fn job_video_supportee<S>(mimetype: S) -> bool
     is_mimetype_video(mimetype)
 }
 
-pub async fn set_flag_image_traitee<M,S>(middleware: &M, tuuid_in: Option<S>, fuuid: &str) -> Result<(), CommonError>
+pub async fn set_flag_image_traitee<M,S>(middleware: &M, tuuid_in: Option<S>, fuuid: &str, session: &mut ClientSession)
+    -> Result<(), CommonError>
     where M: MongoDao, S: ToString
 {
     let tuuid = match &tuuid_in {Some(inner)=>Some(inner.to_string()), None=>None};
@@ -508,16 +510,17 @@ pub async fn set_flag_image_traitee<M,S>(middleware: &M, tuuid_in: Option<S>, fu
         "$set": {CHAMP_FLAG_MEDIA_TRAITE: true},
         "$currentDate": {CHAMP_MODIFICATION: true},
     };
-    collection.update_many(filtre.clone(), ops, None).await?;
+    collection.update_many_with_session(filtre.clone(), ops, None, session).await?;
 
     // Supprimer job image
     let collection = middleware.get_collection(NOM_COLLECTION_IMAGES_JOBS)?;
-    collection.delete_many(filtre, None).await?;
+    collection.delete_many_with_session(filtre, None, session).await?;
 
     Ok(())
 }
 
-pub async fn set_flag_video_traite<M,S>(middleware: &M, tuuid_in: Option<S>, fuuid: &str, job_id: Option<&str>) -> Result<(), CommonError>
+pub async fn set_flag_video_traite<M,S>(middleware: &M, tuuid_in: Option<S>, fuuid: &str, job_id: Option<&str>, session: &mut ClientSession)
+    -> Result<(), CommonError>
     where M: MongoDao, S: ToString
 {
     let tuuid = match &tuuid_in {Some(inner)=>Some(inner.to_string()), None=>None};
@@ -536,7 +539,7 @@ pub async fn set_flag_video_traite<M,S>(middleware: &M, tuuid_in: Option<S>, fuu
         },
         "$currentDate": {CHAMP_MODIFICATION: true},
     };
-    collection.update_many(filtre_video.clone(), ops, None).await?;
+    collection.update_many_with_session(filtre_video.clone(), ops, None, session).await?;
 
     // Supprimer job image
     let filtre_job = match job_id {
@@ -544,28 +547,28 @@ pub async fn set_flag_video_traite<M,S>(middleware: &M, tuuid_in: Option<S>, fuu
         None => filtre_video
     };
     let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
-    collection.delete_many(filtre_job, None).await?;
+    collection.delete_many_with_session(filtre_job, None, session).await?;
 
     Ok(())
 }
 
-pub async fn sauvegarder_job_images<M>(middleware: &M, job: &BackgroundJob) -> Result<Option<BackgroundJob>, CommonError>
+pub async fn sauvegarder_job_images<M>(middleware: &M, job: &BackgroundJob, session: &mut ClientSession) -> Result<Option<BackgroundJob>, CommonError>
 where M: GenerateurMessages + MongoDao
 {
     let mimetype = job.mimetype.as_str();
     if job_image_supportee(mimetype) {
-        Ok(Some(sauvegarder_job(middleware, job, None, NOM_COLLECTION_IMAGES_JOBS, "media", "processImage").await?))
+        Ok(Some(sauvegarder_job(middleware, job, None, NOM_COLLECTION_IMAGES_JOBS, "media", "processImage", session).await?))
     } else {
         Ok(None)
     }
 }
 
-pub async fn sauvegarder_job_video<M>(middleware: &M, job: &BackgroundJob) -> Result<Option<BackgroundJob>, CommonError>
+pub async fn sauvegarder_job_video<M>(middleware: &M, job: &BackgroundJob, session: &mut ClientSession) -> Result<Option<BackgroundJob>, CommonError>
 where M: GenerateurMessages + MongoDao
 {
     let mimetype = job.mimetype.as_str();
     if job_video_supportee(mimetype) {
-        Ok(Some(sauvegarder_job(middleware, job, None, NOM_COLLECTION_VIDEO_JOBS, "media", "processVideo").await?))
+        Ok(Some(sauvegarder_job(middleware, job, None, NOM_COLLECTION_VIDEO_JOBS, "media", "processVideo", session).await?))
     } else {
         Ok(None)
     }

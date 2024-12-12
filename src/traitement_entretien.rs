@@ -5,12 +5,13 @@ use log::{debug, error, info, warn};
 use millegrilles_common_rust::bson::doc;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, start_transaction_regular, MongoDao};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
+use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::{FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::redis::SetOptions;
@@ -20,10 +21,21 @@ use crate::evenements::declencher_traitement_nouveau_fuuid;
 use crate::grosfichiers_constantes::*;
 
 pub async fn calculer_quotas<M>(middleware: &M)
+-> Result<(), CommonError>
 where M: MongoDao
 {
-    if let Err(e) = calculer_quotas_fichiers_usagers(middleware).await {
-        error!("calculer_quotas Erreur calculer_quotas_fichiers_usagers : {:?}", e)
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+    match calculer_quotas_fichiers_usagers(middleware, &mut session).await {
+        Ok(()) => {
+            session.commit_transaction().await?;
+            Ok(())
+        },
+        Err(e) => {
+            // error!("creer_jobs_manquantes_session Error: {:?}", e);
+            session.abort_transaction().await?;
+            Err(e)
+        }
     }
 }
 
@@ -35,7 +47,7 @@ struct QuotaFichiersAggregateRow {
     nombre_total_versions: i64,
 }
 
-async fn calculer_quotas_fichiers_usagers<M>(middleware: &M) -> Result<(), CommonError>
+async fn calculer_quotas_fichiers_usagers<M>(middleware: &M, session: &mut ClientSession) -> Result<(), CommonError>
 where M: MongoDao
 {
     let pipeline = vec! [
@@ -49,8 +61,8 @@ where M: MongoDao
 
     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     let collection_quotas = middleware.get_collection(NOM_COLLECTION_QUOTAS_USAGERS)?;
-    let mut result = collection_versions.aggregate(pipeline, None).await?;
-    while let Some(row) = result.next().await {
+    let mut result = collection_versions.aggregate_with_session(pipeline, None, session).await?;
+    while let Some(row) = result.next(session).await {
         let row = row?;
         let row: QuotaFichiersAggregateRow = convertir_bson_deserializable(row)?;
         let filtre_upsert = doc!{"user_id": row.user_id};
@@ -63,29 +75,50 @@ where M: MongoDao
             "$currentDate": {CHAMP_MODIFICATION: true}
         };
         let options = UpdateOptions::builder().upsert(true).build();
-        collection_quotas.update_one(filtre_upsert, ops, options).await?;
+        collection_quotas.update_one_with_session(filtre_upsert, ops, options, session).await?;
     }
 
     Ok(())
 }
 
 pub async fn reclamer_fichiers<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, nouveau: bool)
-where M: GenerateurMessages + MongoDao
+    -> Result<(), CommonError>
+    where M: GenerateurMessages + MongoDao
+{
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+    match reclamer_fichiers_session(middleware, gestionnaire, nouveau, &mut session).await {
+        Ok(()) => {
+            session.commit_transaction().await?;
+            Ok(())
+        },
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)
+        }
+    }
+
+}
+
+pub async fn reclamer_fichiers_session<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, nouveau: bool, session: &mut ClientSession)
+    -> Result<(), CommonError>
+    where M: GenerateurMessages + MongoDao
 {
     debug!("verifier_visites Debut");
 
-    if let Err(e) = verifier_visites_nouvelles(middleware, gestionnaire).await {
+    if let Err(e) = verifier_visites_nouvelles(middleware, gestionnaire, session).await {
         error!("verifier_visites Erreur entretien visites nouveaux: {:?}", e);
     }
 
     if ! nouveau {
         // Detecter fichiers
-        if let Err(e) = verifier_visites_expirees(middleware).await {
+        if let Err(e) = verifier_visites_expirees_session(middleware, session).await {
             error!("verifier_visites Erreur entretien visites fichiers: {:?}", e);
         }
     }
 
     debug!("verifier_visites Fin");
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -95,8 +128,8 @@ struct FuuidRow {
 
 const VISIT_BATCH_SIZE: usize = 1000;
 
-async fn verifier_visites_nouvelles<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager) -> Result<(), CommonError>
-    where M: GenerateurMessages + MongoDao
+async fn verifier_visites_nouvelles<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession) -> Result<(), CommonError>
+where M: GenerateurMessages + MongoDao
 {
     let now = Utc::now();
 
@@ -121,9 +154,9 @@ async fn verifier_visites_nouvelles<M>(middleware: &M, gestionnaire: &GrosFichie
         .build();
 
     let visits = {
-        let mut curseur = collection_versions.find(filtre, options).await?;
+        let mut curseur = collection_versions.find_with_session(filtre, options, session).await?;
         let mut visits = Vec::with_capacity(VISIT_BATCH_SIZE);
-        while let Some(row) = curseur.next().await {
+        while let Some(row) = curseur.next(session).await {
             let fuuids = row?.fuuids_reclames;
             visits.extend(fuuids);
             if visits.len() > VISIT_BATCH_SIZE {
@@ -146,19 +179,18 @@ async fn verifier_visites_nouvelles<M>(middleware: &M, gestionnaire: &GrosFichie
         debug!("verifier_visites_nouvelles Visite {} nouveaux fuuids", visites.len());
         for item in visites {
             // Emettre evenement consigne pour indiquer que le fichier n'est plus nouveau
-            sauvegarder_visites(middleware, item.fuuid.as_str(), &item.visits).await?;
-            declencher_traitement_nouveau_fuuid(middleware, gestionnaire, &item.fuuid, item.visits.keys().collect()).await?;
+            sauvegarder_visites(middleware, item.fuuid.as_str(), &item.visits, session).await?;
+            declencher_traitement_nouveau_fuuid(middleware, gestionnaire, &item.fuuid, item.visits.keys().collect(), session).await?;
         }
     }
     if let Some(unknown) = reponse.unknown {
         debug!("verifier_visites_nouvelles {} fuuids inconnus", unknown.len());
-        sauvegarder_fuuid_inconnu(middleware, &unknown).await?;
+        sauvegarder_fuuid_inconnu(middleware, &unknown, session).await?;
     }
 
     Ok(())
 }
-
-async fn verifier_visites_expirees<M>(middleware: &M) -> Result<(), CommonError>
+async fn verifier_visites_expirees_session<M>(middleware: &M, session: &mut ClientSession) -> Result<(), CommonError>
 where M: GenerateurMessages + MongoDao
 {
     debug!("verifier_visites_expirees Reclamer fuuids");
@@ -213,13 +245,13 @@ where M: GenerateurMessages + MongoDao
         if let Some(visites) = reponse.visits {
             debug!("verifier_visites_expirees Visite {} fuuids", visites.len());
             for item in visites {
-                sauvegarder_visites(middleware, item.fuuid.as_str(), &item.visits).await?;
+                sauvegarder_visites(middleware, item.fuuid.as_str(), &item.visits, session).await?;
                 visits_set.remove(item.fuuid.as_str());
             }
         }
         if let Some(unknown) = reponse.unknown {
             debug!("verifier_visites_expirees {} fuuids inconnus", unknown.len());
-            sauvegarder_fuuid_inconnu(middleware, &unknown).await?;
+            sauvegarder_fuuid_inconnu(middleware, &unknown, session).await?;
             for f in &unknown {
                 visits_set.remove(f.as_str());
             }
@@ -229,7 +261,7 @@ where M: GenerateurMessages + MongoDao
             warn!("verifier_visites_expirees {} fuuids sans reponse sur claim, marquer inconnus", visits_set.len());
             // Record remaining fuuids as also missing
             let remaining: Vec<String> = visits_set.iter().map(|v| v.to_string()).collect();
-            sauvegarder_fuuid_inconnu(middleware, &remaining).await?;
+            sauvegarder_fuuid_inconnu(middleware, &remaining, session).await?;
         }
 
         if visits.len() < VISIT_BATCH_SIZE {
@@ -277,7 +309,7 @@ async fn verifier_visites_topologies<M>(middleware: &M, fuuids: &Vec<String>) ->
     }
 }
 
-pub async fn sauvegarder_visites<M>(middleware: &M, fuuid: &str, visites: &HashMap<String, i64>)
+pub async fn sauvegarder_visites<M>(middleware: &M, fuuid: &str, visites: &HashMap<String, i64>, session: &mut ClientSession)
     -> Result<(), CommonError>
     where M: MongoDao
 {
@@ -289,12 +321,12 @@ pub async fn sauvegarder_visites<M>(middleware: &M, fuuid: &str, visites: &HashM
 
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     // Note : update many - la table de versions est unique par fuuid/user_id et fuuid/tuuid.
-    collection.update_many(filtre, ops, None).await?;
+    collection.update_many_with_session(filtre, ops, None, session).await?;
 
     Ok(())
 }
 
-async fn sauvegarder_fuuid_inconnu<M>(middleware: &M, fuuids: &Vec<String>) -> Result<(), CommonError>
+async fn sauvegarder_fuuid_inconnu<M>(middleware: &M, fuuids: &Vec<String>, session: &mut ClientSession) -> Result<(), CommonError>
 where M: MongoDao
 {
     let filtre = doc!{"fuuid": {"$in": fuuids}};
@@ -303,7 +335,7 @@ where M: MongoDao
     };
 
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    collection.update_many(filtre, ops, None).await?;
+    collection.update_many_with_session(filtre, ops, None, session).await?;
 
     Ok(())
 }

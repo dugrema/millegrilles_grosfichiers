@@ -12,7 +12,7 @@ use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L1Public, L2Prive, L3Protege};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, start_transaction_regular, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
@@ -20,6 +20,7 @@ use millegrilles_common_rust::tokio::time as tokio_time;
 use millegrilles_common_rust::tokio::time::{Duration as DurationTokio, timeout};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use crate::domain_manager::GrosFichiersDomainManager;
 // use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_fichier, EvenementContenuCollection};
@@ -52,15 +53,29 @@ pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GrosFichiersD
         }
     };
 
-    match action.as_str() {
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+
+    let result = match action.as_str() {
         EVENEMENT_TRANSCODAGE_PROGRES => evenement_transcodage_progres(middleware, m).await,
-        EVENEMENT_FICHIERS_SYNCPRET => evenement_fichiers_syncpret(middleware, m).await,
+        EVENEMENT_FICHIERS_SYNCPRET => evenement_fichiers_syncpret(middleware, m, &mut session).await,
         EVENEMENT_FICHIERS_VISITER_FUUIDS => evenement_visiter_fuuids(middleware, m).await,
-        EVENEMENT_FILEHOST_NEWFUUID => evenement_filehost_newfuuid(middleware, gestionnaire, m).await,
+        EVENEMENT_FILEHOST_NEWFUUID => evenement_filehost_newfuuid(middleware, gestionnaire, m, &mut session).await,
         EVENEMENT_FICHIERS_SYNC_PRIMAIRE => evenement_fichier_sync_primaire(middleware, gestionnaire, m).await,
         EVENEMENT_CEDULE => Ok(None),  // Obsolete
         EVENEMENT_RESET_VISITS_CLAIMS => evenement_reset_claims(middleware, gestionnaire, m).await,
         _ => Err(format!("grosfichiers.consommer_evenement: Mauvais type d'action pour un evenement : {}", action))?,
+    };
+
+    match result {
+        Ok(result) => {
+            session.commit_transaction().await?;
+            Ok(result)
+        },
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)
+        }
     }
 }
 
@@ -126,7 +141,7 @@ struct RowFichiersSyncpret<'a> {
     archive: Option<bool>,
 }
 
-pub async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValide)
+pub async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -164,10 +179,10 @@ pub async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValide)
     let projection = doc!{ CHAMP_ARCHIVE: 1, CHAMP_FUUIDS_RECLAMES: 1 };
     let options = FindOptions::builder().projection(projection).build();
     let filtre = doc! { CHAMP_SUPPRIME: false, CHAMP_FUUIDS_RECLAMES: {"$exists": true} };
-    let mut curseur = collection.find(filtre, Some(options)).await?;
+    let mut curseur = collection.find_with_session(filtre, Some(options), session).await?;
     // while let Some(f) = curseur.next().await {
     let mut total = 0 as i64;
-    while curseur.advance().await? {
+    while curseur.advance(session).await? {
         let info_fichier = curseur.deserialize_current()?;
         // let info_fichier: RowFichiersSyncpret = convertir_bson_deserializable(f?)?;
         let archive = match info_fichier.archive { Some(b) => b, None => false };
@@ -331,7 +346,7 @@ struct FilecontrolerNewFuuidEvent {
 }
 
 // async fn evenement_fichier_consigne<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, m: MessageValide)
-async fn evenement_filehost_newfuuid<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, m: MessageValide)
+async fn evenement_filehost_newfuuid<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, m: MessageValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -355,13 +370,13 @@ async fn evenement_filehost_newfuuid<M>(middleware: &M, gestionnaire: &GrosFichi
     marquer_visites_fuuids(middleware, &vec![evenement.fuuid.clone()], date_visite, filehost_id.clone()).await?;
 
     let fuuid = &evenement.fuuid;
-    declencher_traitement_nouveau_fuuid(middleware, gestionnaire, fuuid, vec![filehost_id.as_str()]).await?;
+    declencher_traitement_nouveau_fuuid(middleware, gestionnaire, fuuid, vec![filehost_id.as_str()], session).await?;
 
     Ok(None)
 }
 
 pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnaire: &GrosFichiersDomainManager,
-                                                      fuuid: &str, filehost_ids: Vec<V>)
+                                                      fuuid: &str, filehost_ids: Vec<V>, session: &mut ClientSession)
     -> Result<(), CommonError>
     where M: GenerateurMessages + MongoDao, V: ToString
 {
@@ -376,8 +391,8 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
 
     let filehost_ids = filehost_ids.into_iter().map(|f|f.to_string()).collect();
 
-    let mut curseur = collection.find(filtre, Some(options)).await?;
-    while curseur.advance().await? {
+    let mut curseur = collection.find_with_session(filtre, Some(options), session).await?;
+    while curseur.advance(session).await? {
         let doc_fuuid = curseur.deserialize_current()?;
 
         let cle_id = match doc_fuuid.cle_id.as_ref() {
@@ -400,7 +415,7 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
             None => false
         };
 
-        emettre_evenement_maj_fichier(middleware, gestionnaire, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION).await?;
+        emettre_evenement_maj_fichier(middleware, gestionnaire, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION, session).await?;
         let tuuid = doc_fuuid.tuuid;
 
         // Extract information for background job if all fields present
@@ -418,7 +433,7 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
 
             if ! image_traitee {
                 // Note : La job est uniquement creee si le format est une image. Exclus les videos.
-                sauvegarder_job_images(middleware, &job).await?;
+                sauvegarder_job_images(middleware, &job, session).await?;
             }
 
             if ! video_traite {
@@ -441,13 +456,13 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
                 let user_id = doc_fuuid.user_id.clone();
                 job.user_id = Some(user_id);
                 debug!("declencher_traitement_nouveau_fuuid Create new default video job for tuuid:{}/fuuid:{:?} ", tuuid, job.fuuid);
-                sauvegarder_job_video(middleware, &job).await?;
+                sauvegarder_job_video(middleware, &job, session).await?;
             }
 
             if ! index_traite {
                 let user_id = doc_fuuid.user_id.clone();
                 job.user_id = Some(user_id);
-                sauvegarder_job_index(middleware, &job).await?;
+                sauvegarder_job_index(middleware, &job, session).await?;
             }
 
         }
@@ -829,7 +844,7 @@ impl EvenementContenuCollection {
     }
 }
 
-pub async fn emettre_evenement_maj_fichier<M, S, T>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, tuuid: S, action: T)
+pub async fn emettre_evenement_maj_fichier<M, S, T>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, tuuid: S, action: T, session: &mut ClientSession)
                                                     -> Result<(), CommonError>
 where
     M: GenerateurMessages + MongoDao,
@@ -843,8 +858,8 @@ where
     // Charger fichier
     let filtre = doc! {CHAMP_TUUID: tuuid_str};
     let collection = middleware.get_collection_typed::<NodeFichiersRepBorrow>(NOM_COLLECTION_FICHIERS_REP)?;
-    let mut curseur = collection.find(filtre, None).await?;
-    if curseur.advance().await? {
+    let mut curseur = collection.find_with_session(filtre, None, session).await?;
+    if curseur.advance(session).await? {
         let doc_fichier = curseur.deserialize_current()?;
 
         // Extraire liste de fuuids directement
@@ -874,7 +889,7 @@ where
     Ok(())
 }
 
-pub async fn emettre_evenement_maj_collection<M, S>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, tuuid: S) -> Result<(), CommonError>
+pub async fn emettre_evenement_maj_collection<M, S>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, tuuid: S, session: &mut ClientSession) -> Result<(), CommonError>
 where
     M: GenerateurMessages + MongoDao,
     S: AsRef<str>
@@ -885,7 +900,7 @@ where
     // Charger fichier
     let filtre = doc! {CHAMP_TUUID: tuuid_str};
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let doc_fichier = match collection.find_one(filtre, None).await {
+    let doc_fichier = match collection.find_one_with_session(filtre, None, session).await {
         Ok(inner) => inner,
         Err(e) => Err(format!("grosfichiers.where Erreur collection.find_one pour {} : {:?}", tuuid_str, e))?
     };

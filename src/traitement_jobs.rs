@@ -13,7 +13,7 @@ use millegrilles_common_rust::dechiffrage::DataChiffre;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao, opt_chrono_datetime_as_bson_datetime};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao, opt_chrono_datetime_as_bson_datetime, start_transaction_regular};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::serde_json::{json, Value};
@@ -25,6 +25,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiff
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleSecreteSerialisee;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
+use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::uuid::{uuid, Uuid};
@@ -1581,7 +1582,7 @@ pub struct ParametresConfirmerJobIndexation {
     // pub cle_conversion: Option<String>,
 }
 
-pub async fn sauvegarder_job<'a, M>(middleware: &M, job: &BackgroundJob, trigger: Option<JobTrigger<'a>>, nom_collection: &str, domain: &str, action_trigger: &str)
+pub async fn sauvegarder_job<'a, M>(middleware: &M, job: &BackgroundJob, trigger: Option<JobTrigger<'a>>, nom_collection: &str, domain: &str, action_trigger: &str, session: &mut ClientSession)
     -> Result<BackgroundJob, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1603,18 +1604,17 @@ pub async fn sauvegarder_job<'a, M>(middleware: &M, job: &BackgroundJob, trigger
     };
     let filtre = doc!{"tuuid": &job.tuuid, "fuuid": &job.fuuid, "cle_conversion": &cle_conversion};
     let ops = doc! {
-        // "$setOnInsert": {"job_id": new_job_id, "etat": VIDEO_CONVERSION_ETAT_PENDING, "date_maj": None::<chrono::DateTime<Utc>>, "retry": 0},
         "$addToSet": {"filehost_ids": {"$each": &job.filehost_ids}},  // Merge the filehost_ids if appropriate
         "$currentDate": {CHAMP_MODIFICATION: true},
     };
     let options = FindOneAndUpdateOptions::builder().return_document(ReturnDocument::After).build();
-    let updated_job = match collection.find_one_and_update(filtre, ops, options).await? {
+    let updated_job = match collection.find_one_and_update_with_session(filtre, ops, options, session).await? {
         Some(inner) => inner,
         None => {
-            error!("sauvegarder_job No job updated, returning cloned job");
+            debug!("sauvegarder_job No job updated, returning cloned job");
             let mut job_copy = job.clone();
             job_copy.cle_conversion = Some(cle_conversion);
-            collection.insert_one(job_copy, None).await?;
+            collection.insert_one_with_session(job_copy, None, session).await?;
             job.clone()
         }
     };
@@ -1628,41 +1628,62 @@ pub async fn sauvegarder_job<'a, M>(middleware: &M, job: &BackgroundJob, trigger
     Ok(updated_job)
 }
 
-pub async fn creer_jobs_manquantes<M>(middleware: &M)
+pub async fn creer_jobs_manquantes<M>(middleware: &M) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages
 {
-    if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_IMAGES_JOBS, CHAMP_FLAG_MEDIA_TRAITE).await {
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+
+    match creer_jobs_manquantes_session(middleware, &mut session).await {
+        Ok(()) => {
+            session.commit_transaction().await?;
+            Ok(())
+        },
+        Err(e) => {
+            // error!("creer_jobs_manquantes_session Error: {:?}", e);
+            session.abort_transaction().await?;
+            Err(e)
+        }
+    }
+}
+
+async fn creer_jobs_manquantes_session<M>(middleware: &M, session: &mut ClientSession) -> Result<(), CommonError>
+where M: MongoDao + GenerateurMessages
+{
+    if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_IMAGES_JOBS, CHAMP_FLAG_MEDIA_TRAITE, session).await {
         error!("creer_jobs_manquantes Erreur creation jobs manquantes images: {:?}", e);
     }
-    if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_VIDEO_JOBS, CHAMP_FLAG_VIDEO_TRAITE).await {
+    if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_VIDEO_JOBS, CHAMP_FLAG_VIDEO_TRAITE, session).await {
         error!("creer_jobs_manquantes Erreur creation jobs manquantes videos: {:?}", e);
     }
 
     // Index - visiter tables VERSION et FICHIER_REP
-    if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX).await {
+    if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX, session).await {
         error!("creer_jobs_manquantes Erreur creation jobs manquantes index: {:?}", e);
     }
-    if let Err(e) = creer_jobs_manquantes_fichiersrep(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX).await {
+    if let Err(e) = creer_jobs_manquantes_fichiersrep(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX, session).await {
         error!("creer_jobs_manquantes Erreur creation jobs manquantes index: {:?}", e);
     }
+
+    Ok(())
 }
 
-pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, flag_job: &str) -> Result<(), CommonError>
+pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, flag_job: &str, session: &mut ClientSession) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages
 {
     let collection_version = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
     let filtre_version = doc!{"supprime": false, flag_job: false, "visites.nouveau": {"$exists": false}};
     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
-    let mut curseur = collection_version.find(filtre_version, None).await?;
+    let mut curseur = collection_version.find_with_session(filtre_version, None, session).await?;
     let mut fuuids = Vec::new();
-    while curseur.advance().await? {
+    while curseur.advance(session).await? {
         let row = curseur.deserialize_current()?;
         let fuuid = row.fuuid;
         let tuuid = row.tuuid;
 
         // Verifier si une job existe pour ce tuuid/fuuid. Ignorer fichiers en cours d'upload (nouveau).
         let filtre_job = doc! {"tuuid": tuuid, "fuuid": fuuid};
-        let count = collection_jobs.count_documents(filtre_job, None).await?;
+        let count = collection_jobs.count_documents_with_session(filtre_job, None, session).await?;
 
         if count == 0 {
             debug!("creer_jobs_manquantes_queue Creer job {} manquante pour tuuid {}", flag_job, tuuid);
@@ -1694,7 +1715,7 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
                 } else if flag_job == CHAMP_FLAG_INDEX {
                     job.user_id = Some(row.user_id.to_string());
                 }
-                collection_jobs.insert_one(job, None).await?;
+                collection_jobs.insert_one_with_session(job, None, session).await?;
                 fuuids.push(fuuid.to_owned());
             } else {
                 // Old format. The keymaster has the key where cle_id == fuuid.
@@ -1712,7 +1733,7 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
                         let nonce = key.nonce.expect("nonce");
                         let visites: Vec<&String> = vec![];
                         let job = BackgroundJob::new_index(tuuid, Some(fuuid), user_id, mimetype, &visites, cle_id, format, nonce);
-                        collection_jobs.insert_one(job, None).await?;
+                        collection_jobs.insert_one_with_session(job, None, session).await?;
                     }
                 }
             }
@@ -1722,21 +1743,21 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
     Ok(())
 }
 
-pub async fn creer_jobs_manquantes_fichiersrep<M>(middleware: &M, nom_collection: &str, flag_job: &str) -> Result<(), CommonError>
+pub async fn creer_jobs_manquantes_fichiersrep<M>(middleware: &M, nom_collection: &str, flag_job: &str, session: &mut ClientSession) -> Result<(), CommonError>
 where M: MongoDao
 {
     let collection_version = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
     let filtre_version = doc!{"supprime": false, "supprime_indirect": false, flag_job: false};
     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
-    let mut curseur = collection_version.find(filtre_version, None).await?;
-    while curseur.advance().await? {
+    let mut curseur = collection_version.find_with_session(filtre_version, None, session).await?;
+    while curseur.advance(session).await? {
         let row = curseur.deserialize_current()?;
         let tuuid = &row.tuuid;
         let user_id = &row.user_id;
 
         // Verifier si une job existe pour ce tuuid/fuuid
         let filtre_job = doc! {"tuuid": tuuid};
-        let count = collection_jobs.count_documents(filtre_job, None).await?;
+        let count = collection_jobs.count_documents_with_session(filtre_job, None, session).await?;
 
         if count == 0 {
             debug!("creer_jobs_manquantes_queue Creer job {} manquante pour tuuid {}", flag_job, tuuid);
@@ -1756,39 +1777,84 @@ where M: MongoDao
     Ok(())
 }
 
-pub async fn entretien_jobs_expirees<M>(middleware: &M, fetch_filehosts: bool)
+pub async fn entretien_jobs_expirees<M>(middleware: &M, fetch_filehosts: bool) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_IMAGES_JOBS, 180, 1000 , "media", "processImage", fetch_filehosts).await {
-        error!("entretien_jobs_expirees Erreur entretien images: {:?}", e);
-    }
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_VIDEO_JOBS, 600, 100, "media", "processVideo", fetch_filehosts).await {
-        error!("entretien_jobs_expirees Erreur entretien videos: {:?}", e);
-    }
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 180, 2000, "solrrelai", "processIndex", fetch_filehosts).await {
-        error!("entretien_jobs_expirees Erreur entretien index: {:?}", e);
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+
+    match entretien_jobs_expirees_session(middleware, fetch_filehosts, &mut session).await {
+        Ok(()) => {
+            session.commit_transaction().await?;
+            Ok(())
+        },
+        Err(e) => {
+            // error!("creer_jobs_manquantes_session Error: {:?}", e);
+            session.abort_transaction().await?;
+            Err(e)
+        }
     }
 }
 
-pub async fn maintenance_impossible_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager)
-where M: MongoDao + GenerateurMessages + ValidateurX509
+async fn entretien_jobs_expirees_session<M>(middleware: &M, fetch_filehosts: bool, session: &mut ClientSession)
+    -> Result<(), CommonError>
+    where M: MongoDao + GenerateurMessages + ValidateurX509
 {
-    // Cleanup of jobs that will never complete
-    if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_IMAGES_JOBS, 180, "processImage").await {
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_IMAGES_JOBS, 180, 1000 , "media", "processImage", fetch_filehosts, session).await {
         error!("entretien_jobs_expirees Erreur entretien images: {:?}", e);
     }
-    if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_VIDEO_JOBS, 600, "processVideo").await {
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_VIDEO_JOBS, 600, 100, "media", "processVideo", fetch_filehosts, session).await {
         error!("entretien_jobs_expirees Erreur entretien videos: {:?}", e);
     }
-    if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_INDEXATION_JOBS, 180, "processIndex").await {
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 180, 2000, "solrrelai", "processIndex", fetch_filehosts, session).await {
         error!("entretien_jobs_expirees Erreur entretien index: {:?}", e);
     }
+    Ok(())
+}
+
+pub async fn maintenance_impossible_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager)
+    -> Result<(), CommonError>
+    where M: MongoDao + GenerateurMessages + ValidateurX509
+{
+    let mut session = middleware.get_session().await?;
+    start_transaction_regular(&mut session).await?;
+
+    match maintenance_impossible_jobs_session(middleware, gestionnaire, &mut session).await {
+        Ok(()) => {
+            session.commit_transaction().await?;
+            Ok(())
+        },
+        Err(e) => {
+            // error!("creer_jobs_manquantes_session Error: {:?}", e);
+            session.abort_transaction().await?;
+            Err(e)
+        }
+    }
+}
+
+async fn maintenance_impossible_jobs_session<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
+    -> Result<(), CommonError>
+    where M: MongoDao + GenerateurMessages + ValidateurX509
+{
+    // Cleanup of jobs that will never complete
+    if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_IMAGES_JOBS, 180, "processImage", session).await {
+        error!("entretien_jobs_expirees Erreur entretien images: {:?}", e);
+    }
+    if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_VIDEO_JOBS, 600, "processVideo", session).await {
+        error!("entretien_jobs_expirees Erreur entretien videos: {:?}", e);
+    }
+    if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_INDEXATION_JOBS, 180, "processIndex", session).await {
+        error!("entretien_jobs_expirees Erreur entretien index: {:?}", e);
+    }
+
+    Ok(())
 }
 
 /// Resubmits a batch of pending jobs to queue. Reactivates running jobs that have expired.
 pub async fn reactiver_jobs<M>(middleware: &M,
                                nom_collection: &str, timeout: i64, limit: i64,
-                               domain: &str, action: &str, fetch_filehosts: bool) -> Result<(), CommonError>
+                               domain: &str, action: &str, fetch_filehosts: bool, session: &mut ClientSession)
+    -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
     let collection = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
@@ -1800,15 +1866,15 @@ pub async fn reactiver_jobs<M>(middleware: &M,
         "$set": {"etat": VIDEO_CONVERSION_ETAT_PENDING},
         "$inc": {"retry": 1},
     };
-    collection.update_many(filtre, ops, None).await?;
+    collection.update_many_with_session(filtre, ops, None, session).await?;
 
     let filtre = doc!{"etat": VIDEO_CONVERSION_ETAT_PENDING, "retry": {"$lte": CONST_MAX_RETRY}};
     let options = FindOptions::builder().limit(limit).build();
 
     // Resubmit jobs - duplicates in the Q will be caught when requesting job decryption key
     let mut fuuids = Vec::new();
-    let mut curseur = collection.find(filtre, options).await?;
-    while curseur.advance().await? {
+    let mut curseur = collection.find_with_session(filtre, options, session).await?;
+    while curseur.advance(session).await? {
         let row = curseur.deserialize_current()?;
         if let Some(fuuid) = row.fuuid.as_ref() {
             fuuids.push(fuuid.to_owned());
@@ -1843,7 +1909,7 @@ pub async fn reactiver_jobs<M>(middleware: &M,
 
     // Synchronise with core in case some files were received without GrosFichiers being notified.
     if ! fuuids.is_empty() && fetch_filehosts {
-        if let Err(e) = sync_jobs_core_filehosts(middleware, nom_collection, &fuuids).await {
+        if let Err(e) = sync_jobs_core_filehosts(middleware, nom_collection, &fuuids, session).await {
             warn!("reactiver_jobs Error sync jobs with fuuids in core: {:?}", e);
         }
     }
@@ -1857,7 +1923,7 @@ pub struct FuuidVisitResponseItem {pub fuuid: String, pub visits: HashMap<String
 #[derive(Deserialize)]
 struct RequestFilehostsForFuuidsResponse {fuuids: Vec<FuuidVisitResponseItem>}
 
-pub async fn sync_jobs_core_filehosts<M>(middleware: &M, nom_collection: &str, fuuids: &Vec<String>)
+pub async fn sync_jobs_core_filehosts<M>(middleware: &M, nom_collection: &str, fuuids: &Vec<String>, session: &mut ClientSession)
     -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
@@ -1875,10 +1941,10 @@ pub async fn sync_jobs_core_filehosts<M>(middleware: &M, nom_collection: &str, f
             let filehost_ids: Vec<&String> = fuuid_visits.visits.keys().collect();
             let filtre = doc!{"fuuid": &fuuid_visits.fuuid};
             let ops = doc!{"$addToSet": {"filehost_ids": {"$each": filehost_ids}}, "$currentDate": {CHAMP_MODIFICATION: true}};
-            collection_jobs.update_many(filtre.clone(), ops, None).await?;
+            collection_jobs.update_many_with_session(filtre.clone(), ops, None, session).await?;
 
             // Update visits in the versions tables
-            sauvegarder_visites(middleware, fuuid_visits.fuuid.as_str(), &fuuid_visits.visits).await?;
+            sauvegarder_visites(middleware, fuuid_visits.fuuid.as_str(), &fuuid_visits.visits, session).await?;
         }
     }
 
@@ -1887,7 +1953,7 @@ pub async fn sync_jobs_core_filehosts<M>(middleware: &M, nom_collection: &str, f
 
 /// Deactivates for good jobs that have never been picked up or that have too many retries.
 pub async fn remove_impossible_jobs<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager,
-                                       nom_collection: &str, limit: i64, action: &str) -> Result<(), CommonError>
+                                       nom_collection: &str, limit: i64, action: &str, session: &mut ClientSession) -> Result<(), CommonError>
 where M: MongoDao + GenerateurMessages + ValidateurX509 {
 
     let expiration = Utc::now() - Duration::days(1);
@@ -1896,15 +1962,14 @@ where M: MongoDao + GenerateurMessages + ValidateurX509 {
         "$or": [
             {"retry": {"$gt": CONST_MAX_RETRY}},  // Any job with retry > CONST_MAX_RETRY
             {
-                // "date_maj": None::<&str>,
                 CHAMP_MODIFICATION: {"$lte": expiration}
             },
         ]
     };
 
     let options = FindOptions::builder().limit(limit).build();
-    let mut curseur = collection.find(filtre, options).await?;
-    while curseur.advance().await? {
+    let mut curseur = collection.find_with_session(filtre, options, session).await?;
+    while curseur.advance(session).await? {
         let row = curseur.deserialize_current()?;
 
         // Cancel the job, emit a transaction to clear for good
@@ -1920,7 +1985,7 @@ where M: MongoDao + GenerateurMessages + ValidateurX509 {
                             err: None,
                         };
                         sauvegarder_traiter_transaction_serializable_v2(
-                            middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_IMAGE_SUPPRIMER_JOB_V2).await?;
+                            middleware, &transaction, gestionnaire, session, DOMAINE_NOM, TRANSACTION_IMAGE_SUPPRIMER_JOB_V2).await?;
                     },
                     None => {
                         warn!("remove_impossible_jobs Job image tuuid:{} sans fuuid, ignorer", row.tuuid);
@@ -1937,7 +2002,7 @@ where M: MongoDao + GenerateurMessages + ValidateurX509 {
                             job_id: row.job_id.clone(),
                         };
                         sauvegarder_traiter_transaction_serializable_v2(
-                            middleware, &transaction, gestionnaire, DOMAINE_NOM, TRANSACTION_VIDEO_SUPPRIMER_JOB_V2).await?;
+                            middleware, &transaction, gestionnaire, session, DOMAINE_NOM, TRANSACTION_VIDEO_SUPPRIMER_JOB_V2).await?;
                     },
                     None => {
                         warn!("remove_impossible_jobs Job video tuuid:{} sans fuuid, ignorer", row.tuuid);
@@ -1947,13 +2012,13 @@ where M: MongoDao + GenerateurMessages + ValidateurX509 {
             "processIndex" => {
                 // Toggle index flag in reps/versions collections. There are no transactions for indexing.
                 let fuuid = match row.fuuid.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None};
-                set_flag_index_traite(middleware, row.job_id.as_str(), row.tuuid.as_str(), fuuid).await?;
+                set_flag_index_traite(middleware, row.job_id.as_str(), row.tuuid.as_str(), fuuid, session).await?;
             },
             _ => warn!("remove_impossible_jobs Unknown expired job type: {}", action)
         }
 
         let filtre = doc!{"job_id": &row.job_id};
-        collection.delete_one(filtre, None).await?;
+        collection.delete_one_with_session(filtre, None, session).await?;
     }
 
     Ok(())

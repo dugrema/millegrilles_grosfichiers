@@ -16,6 +16,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::Mess
 use millegrilles_common_rust::mongo_dao::{ChampIndex, IndexOptions, MongoDao};
 use millegrilles_common_rust::messages_generiques::MessageCedule;
 use millegrilles_common_rust::middleware::{Middleware, MiddlewareMessages};
+use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::tokio;
@@ -121,11 +122,11 @@ impl ConsommateurMessagesBus for GrosFichiersDomainManager {
 
 #[async_trait]
 impl AiguillageTransactions for GrosFichiersDomainManager {
-    async fn aiguillage_transaction<M>(&self, middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    async fn aiguillage_transaction<M>(&self, middleware: &M, transaction: TransactionValide, session: &mut ClientSession) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao
     {
-        aiguillage_transaction(self, middleware, transaction).await
+        aiguillage_transaction(self, middleware, transaction, session).await
     }
 }
 
@@ -685,7 +686,9 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     if hours % 3 == 0 && minutes == 21
     {
         info!("creer_jobs_manquantes STARTING");
-        creer_jobs_manquantes(middleware).await;  // Creer jobs media/indexation manquantes (recovery)
+        if let Err(e) = creer_jobs_manquantes(middleware).await {  // Creer jobs media/indexation manquantes (recovery)
+            info!("creer_jobs_manquantes Error: {:?}", e);
+        }
         info!("creer_jobs_manquantes DONE");
     }
     if minutes % 4 == 2
@@ -693,21 +696,27 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
         // Restart expired media jobs
         info!("entretien_jobs_expirees STARTING");
         let fetch_filehosts = minutes == 2;  // Once an hour
-        entretien_jobs_expirees(middleware, fetch_filehosts).await;
+        if let Err(e) = entretien_jobs_expirees(middleware, fetch_filehosts).await {
+            error!("entretien_jobs_expirees Error: {:?}", e);
+        }
         info!("entretien_jobs_expirees DONE");
     }
     if hours % 3 == 2 && minutes == 27
     {
         // Remove media/indexation jobs that will never complete
         info!("maintenance_impossible_jobs STARTING");
-        maintenance_impossible_jobs(middleware, gestionnaire).await;
+        if let Err(e) = maintenance_impossible_jobs(middleware, gestionnaire).await {
+            error!("maintenance_impossible_jobs Error: {:?}", e);
+        }
         info!("maintenance_impossible_jobs DONE");
     }
 
     // Recalculer les quotas a toutes les 3 heures
     if hours % 3 == 1 && minutes == 14 {
         info!("calculer_quotas STARTING");
-        calculer_quotas(middleware).await;
+        if let Err(e) = calculer_quotas(middleware).await {
+            error!("calculer_quotas Error: {:?}", e);
+        };
         info!("calculer_quotas DONE");
     }
 
@@ -716,7 +725,9 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     {
         let nouveaux = minutes % 3 != 0;  // Check fichiers presents nul part toutes les minutes
         info!("reclamer_fichiers STARTING");
-        reclamer_fichiers(middleware, gestionnaire, nouveaux).await;
+        if let Err(e) = reclamer_fichiers(middleware, gestionnaire, nouveaux).await {
+            error!("reclamer_fichiers Error: {:?}", e);
+        }
         info!("reclamer_fichiers DONE");
     }
 

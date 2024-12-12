@@ -17,7 +17,7 @@ use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_v2};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao, verifier_erreur_duplication_mongo, convertir_to_bson_array};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao, verifier_erreur_duplication_mongo, convertir_to_bson_array, start_transaction_regular};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::multihash::Code;
@@ -32,6 +32,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epo
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::mapstringepochseconds;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
+use millegrilles_common_rust::mongodb::ClientSession;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::{emettre_evenement_contenu_collection, EvenementContenuCollection};
 
@@ -40,53 +41,7 @@ use crate::requetes::{ContactRow, verifier_acces_usager, verifier_acces_usager_t
 use crate::traitement_jobs::{JobHandler, JobHandlerVersions};
 use crate::traitement_media::{set_flag_image_traitee, set_flag_video_traite};
 
-pub async fn consommer_transaction<M>(gestionnaire: &GrosFichiersDomainManager, middleware: &M, m: MessageValide)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-where
-    M: ValidateurX509 + GenerateurMessages + MongoDao
-{
-    debug!("transactions.consommer_transaction Consommer transaction : {:?}", &m.type_message);
-
-    let action = match &m.type_message {
-        TypeMessageOut::Commande(r) |
-        TypeMessageOut::Transaction(r) => r.action.clone(),
-        _ => Err(CommonError::Str("consommer_transaction Mauvais type de message (doit etre Commande ou Transaction)"))?
-    };
-
-    // Autorisation
-    match action.as_str() {
-        // 4.secure - doivent etre validees par une commande
-        TRANSACTION_NOUVELLE_VERSION |
-        TRANSACTION_NOUVELLE_COLLECTION |
-        TRANSACTION_AJOUTER_FICHIERS_COLLECTION |
-        TRANSACTION_DEPLACER_FICHIERS_COLLECTION |
-        TRANSACTION_SUPPRIMER_DOCUMENTS |
-        TRANSACTION_RECUPERER_DOCUMENTS |
-        TRANSACTION_RECUPERER_DOCUMENTS_V2 |
-        TRANSACTION_ARCHIVER_DOCUMENTS |
-        TRANSACTION_DECRIRE_FICHIER |
-        TRANSACTION_DECRIRE_COLLECTION |
-        TRANSACTION_COPIER_FICHIER_TIERS |
-        TRANSACTION_SUPPRIMER_VIDEO |
-        TRANSACTION_ASSOCIER_CONVERSIONS |
-        TRANSACTION_ASSOCIER_VIDEO |
-        TRANSACTION_IMAGE_SUPPRIMER_JOB |
-        TRANSACTION_IMAGE_SUPPRIMER_JOB_V2 |
-        TRANSACTION_VIDEO_SUPPRIMER_JOB |
-        TRANSACTION_VIDEO_SUPPRIMER_JOB_V2 |
-        TRANSACTION_SUPPRIMER_ORPHELINS => {
-            match m.certificat.verifier_exchanges(vec![Securite::L4Secure])? {
-                true => Ok(()),
-                false => Err(CommonError::Str("transactions.consommer_transaction: pas 4.secure"))
-            }?;
-        },
-        _ => Err(format!("transactions.consommer_transaction: Mauvais type d'action pour une transaction : {:?}", m.type_message))?,
-    }
-
-    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire).await?)
-}
-
-pub async fn aiguillage_transaction<M, T>(gestionnaire: &GrosFichiersDomainManager, middleware: &M, transaction: T)
+pub async fn aiguillage_transaction<M, T>(gestionnaire: &GrosFichiersDomainManager, middleware: &M, transaction: T, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: ValidateurX509 + GenerateurMessages + MongoDao,
@@ -107,33 +62,33 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GrosFichiersDomainManag
 
     match action.as_str() {
         // Adding, updating files
-        TRANSACTION_NOUVELLE_VERSION => transaction_nouvelle_version(gestionnaire, middleware, transaction).await,
-        TRANSACTION_NOUVELLE_COLLECTION => transaction_nouvelle_collection(middleware, gestionnaire, transaction).await,
-        TRANSACTION_AJOUTER_FICHIERS_COLLECTION => transaction_ajouter_fichiers_collection(middleware, gestionnaire, transaction).await,
-        TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, gestionnaire, transaction).await,
-        TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, gestionnaire, transaction).await,
-        TRANSACTION_DECRIRE_FICHIER => transaction_decrire_fichier(middleware, gestionnaire, transaction).await,
-        TRANSACTION_DECRIRE_COLLECTION => transaction_decrire_collection(middleware, gestionnaire, transaction).await,
+        TRANSACTION_NOUVELLE_VERSION => transaction_nouvelle_version(gestionnaire, middleware, transaction, session).await,
+        TRANSACTION_NOUVELLE_COLLECTION => transaction_nouvelle_collection(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_AJOUTER_FICHIERS_COLLECTION => transaction_ajouter_fichiers_collection(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_ASSOCIER_CONVERSIONS => transaction_associer_conversions(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_DECRIRE_FICHIER => transaction_decrire_fichier(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_DECRIRE_COLLECTION => transaction_decrire_collection(middleware, gestionnaire, transaction, session).await,
 
         //
-        TRANSACTION_DEPLACER_FICHIERS_COLLECTION => transaction_deplacer_fichiers_collection(middleware, gestionnaire, transaction).await,
-        TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, gestionnaire, transaction).await,
-        TRANSACTION_RECUPERER_DOCUMENTS_V2 => transaction_recuperer_documents_v2(middleware, transaction).await,
-        TRANSACTION_SUPPRIMER_ORPHELINS => transaction_supprimer_orphelins(middleware, gestionnaire, transaction).await,
+        TRANSACTION_DEPLACER_FICHIERS_COLLECTION => transaction_deplacer_fichiers_collection(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_RECUPERER_DOCUMENTS_V2 => transaction_recuperer_documents_v2(middleware, transaction, session).await,
+        TRANSACTION_SUPPRIMER_ORPHELINS => transaction_supprimer_orphelins(middleware, gestionnaire, transaction, session).await,
 
         // Media
-        TRANSACTION_SUPPRIMER_VIDEO => transaction_supprimer_video(middleware, gestionnaire, transaction).await,
-        TRANSACTION_IMAGE_SUPPRIMER_JOB_V2 => transaction_supprimer_job_image_v2(middleware, gestionnaire, transaction).await,
-        TRANSACTION_VIDEO_SUPPRIMER_JOB_V2 => transaction_supprimer_job_video_v2(middleware, gestionnaire, transaction).await,
+        TRANSACTION_SUPPRIMER_VIDEO => transaction_supprimer_video(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_IMAGE_SUPPRIMER_JOB_V2 => transaction_supprimer_job_image_v2(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_VIDEO_SUPPRIMER_JOB_V2 => transaction_supprimer_job_video_v2(middleware, gestionnaire, transaction, session).await,
 
         // Sharing
-        TRANSACTION_AJOUTER_CONTACT_LOCAL => transaction_ajouter_contact_local(middleware, gestionnaire, transaction).await,
-        TRANSACTION_SUPPRIMER_CONTACTS => transaction_supprimer_contacts(middleware, gestionnaire, transaction).await,
-        TRANSACTION_PARTAGER_COLLECTIONS => transaction_partager_collections(middleware, gestionnaire, transaction).await,
-        TRANSACTION_SUPPRIMER_PARTAGE_USAGER => transaction_supprimer_partage_usager(middleware, gestionnaire, transaction).await,
+        TRANSACTION_AJOUTER_CONTACT_LOCAL => transaction_ajouter_contact_local(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_SUPPRIMER_CONTACTS => transaction_supprimer_contacts(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_PARTAGER_COLLECTIONS => transaction_partager_collections(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_SUPPRIMER_PARTAGE_USAGER => transaction_supprimer_partage_usager(middleware, gestionnaire, transaction, session).await,
 
         // Legacy but still required (no command associated)
-        TRANSACTION_RECUPERER_DOCUMENTS => transaction_recuperer_documents(middleware, gestionnaire, transaction).await,
+        TRANSACTION_RECUPERER_DOCUMENTS => transaction_recuperer_documents(middleware, gestionnaire, transaction, session).await,
 
         // Obsolete transactions - keep to avoid getting an error on rebuild
         TRANSACTION_IMAGE_SUPPRIMER_JOB => obsolete(),
@@ -379,7 +334,7 @@ pub struct NodeFichierRepOwned {
 }
 
 impl NodeFichierRepOwned {
-    pub async fn from_nouvelle_version<M,U,S>(middleware: &M, value: &TransactionNouvelleVersion, uuid_transaction: S, user_id: U)
+    pub async fn from_nouvelle_version<M,U,S>(middleware: &M, value: &TransactionNouvelleVersion, uuid_transaction: S, user_id: U, session: &mut ClientSession)
         -> Result<Self, CommonError>
         where M: MongoDao, S: ToString, U: ToString
     {
@@ -402,8 +357,8 @@ impl NodeFichierRepOwned {
         let filtre = doc!{ CHAMP_TUUID: &cuuid, CHAMP_USER_ID: &user_id };
         let collection_nodes = middleware.get_collection_typed::<NodeFichiersRepBorrow>(
             NOM_COLLECTION_FICHIERS_REP)?;
-        let mut curseur = collection_nodes.find(filtre, None).await?;
-        if curseur.advance().await? {
+        let mut curseur = collection_nodes.find_with_session(filtre, None, session).await?;
+        if curseur.advance(session).await? {
             let row = curseur.deserialize_current()?;
             if let Some(path_parent) = row.path_cuuids {
                 // Inserer les cuuids du parent
@@ -593,7 +548,7 @@ impl NodeFichierVersionOwned {
     // }
 }
 
-async fn transaction_nouvelle_version<M>(gestionnaire: &GrosFichiersDomainManager, middleware: &M, transaction: TransactionValide)
+async fn transaction_nouvelle_version<M>(gestionnaire: &GrosFichiersDomainManager, middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -609,7 +564,7 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GrosFichiersDomainManage
     };
 
     let fichier_rep = match NodeFichierRepOwned::from_nouvelle_version(
-        middleware, &transaction_fichier, &transaction.transaction.id, &user_id).await {
+        middleware, &transaction_fichier, &transaction.transaction.id, &user_id, session).await {
         Ok(inner) => inner,
         Err(e) => Err(format!("grosfichiers.NodeFichierRepOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
     };
@@ -665,7 +620,7 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GrosFichiersDomainManage
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
         let filtre = doc! { CHAMP_FUUID: &fuuid, CHAMP_TUUID: &tuuid, CHAMP_USER_ID: &user_id };
         let options = UpdateOptions::builder().upsert(true).build();
-        match collection.update_one(filtre, ops, options).await {
+        match collection.update_one_with_session(filtre, ops, options, session).await {
             Ok(inner) => {
                 if inner.upserted_id.is_none() {
                     // Row pas inseree, on a une duplication
@@ -697,7 +652,7 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GrosFichiersDomainManage
         let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
         let filtre = doc! { CHAMP_TUUID: &tuuid, CHAMP_USER_ID: &user_id };
         let options = UpdateOptions::builder().upsert(true).build();
-        match collection.update_one(filtre, ops, options).await {
+        match collection.update_one_with_session(filtre, ops, options, session).await {
             Ok(inner) => (),
             Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur update_one fichier_version : {:?}", e))?
         };
@@ -715,7 +670,7 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GrosFichiersDomainManage
                 "$currentDate": {CHAMP_MODIFICATION: true},
             };
             let options = UpdateOptions::builder().upsert(true).build();
-            if let Err(e) = collection_quotas.update_one(filtre, ops, options).await {
+            if let Err(e) = collection_quotas.update_one_with_session(filtre, ops, options, session).await {
                 error!("transaction_nouvelle_version Erreur mise a jour quota usager : {:?}", e);
             }
         }
@@ -733,7 +688,7 @@ async fn transaction_nouvelle_version<M>(gestionnaire: &GrosFichiersDomainManage
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -787,7 +742,7 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &GrosF
         doc_collection.insert("cuuid", c.clone());
 
         // Charger le cuuid pour ajouter path vers root
-        match get_path_cuuid(middleware, c).await {
+        match get_path_cuuid(middleware, c, session).await {
             Ok(inner) => {
                 if let Some(path_cuuids) = inner {
                     let path_cuuids_modifie: Vec<Bson> = path_cuuids.iter().map(|c| Bson::String(c.to_owned())).collect();
@@ -798,7 +753,7 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, gestionnaire: &GrosF
         }
     }
 
-    let resultat = match collection.insert_one(doc_collection, None).await {
+    let resultat = match collection.insert_one_with_session(doc_collection, None, session).await {
         Ok(r) => r,
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur update_one sur transcation : {:?}", e))?
     };
@@ -835,7 +790,7 @@ struct RowRepertoirePaths {
     path_cuuids: Option<Vec<String>>,
 }
 
-async fn get_path_cuuid<M,S>(middleware: &M, cuuid: S)
+async fn get_path_cuuid<M,S>(middleware: &M, cuuid: S, session: &mut ClientSession)
     -> Result<Option<Vec<String>>, CommonError>
     where M: MongoDao, S: AsRef<str>
 {
@@ -844,7 +799,7 @@ async fn get_path_cuuid<M,S>(middleware: &M, cuuid: S)
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let filtre = doc! { CHAMP_TUUID: cuuid };
     let options = FindOneOptions::builder().projection(doc!{CHAMP_TUUID: 1, CHAMP_CUUID: 1, CHAMP_PATH_CUUIDS: 1}).build();
-    let doc_parent: RowRepertoirePaths = match collection.find_one(filtre, options).await? {
+    let doc_parent: RowRepertoirePaths = match collection.find_one_with_session(filtre, options, session).await? {
         Some(inner) => convertir_bson_deserializable(inner)?,
         None => {
             return Ok(None)
@@ -901,7 +856,7 @@ pub struct RowFichiersRepCuuidNode {
 //     let options = FindOptions::builder()
 //         .projection(doc!{ CHAMP_TUUID: 1, CHAMP_CUUIDS: 1})
 //         .build();
-//     let mut curseur = collection.find(filtre, options).await?;
+//     let mut curseur = collection.find_with_session(filtre, options).await?;
 //     while let Some(r) = curseur.next().await {
 //         let row: RowFichiersRepCuuidNode = convertir_bson_deserializable(r?)?;
 //
@@ -915,7 +870,7 @@ pub struct RowFichiersRepCuuidNode {
 //                     None => {
 //                         // Charger le cuuid
 //                         let filtre = doc! { CHAMP_TUUID: &cuuid };
-//                         let doc_cuuid: RowRepertoirePaths = match collection.find_one(filtre, None).await? {
+//                         let doc_cuuid: RowRepertoirePaths = match collection.find_one_with_session(filtre, None).await? {
 //                             Some(inner) => match convertir_bson_deserializable(inner) {
 //                                 Ok(inner) => inner,
 //                                 Err(e) => {
@@ -962,13 +917,13 @@ pub struct RowFichiersRepCuuidNode {
 //             },
 //             "$currentDate": { CHAMP_MODIFICATION: true }
 //         };
-//         collection.update_one(filtre, ops, None).await?;
+//         collection.update_one_with_session(filtre, ops, None).await?;
 //     }
 //
 //     Ok(())
 // }
 
-async fn transaction_ajouter_fichiers_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_ajouter_fichiers_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -991,7 +946,7 @@ async fn transaction_ajouter_fichiers_collection<M>(middleware: &M, gestionnaire
             debug!("transaction_ajouter_fichiers_collection Verifier que le contact_id est valide (correspond aux tuuids)");
             let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
             let filtre = doc! {CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: &user_id};
-            let contact = match collection.find_one(filtre, None).await {
+            let contact = match collection.find_one_with_session(filtre, None, session).await {
                 Ok(inner) => match inner {
                     Some(inner) => inner,
                     None => {
@@ -1030,7 +985,7 @@ async fn transaction_ajouter_fichiers_collection<M>(middleware: &M, gestionnaire
 
     // Dupliquer la structure de repertoires
     if let Err(e) = dupliquer_structure_repertoires(
-        middleware, uuid_transaction, &transaction_collection.cuuid, &transaction_collection.inclure_tuuids, user_id_origine.as_str(), user_id_destination).await {
+        middleware, uuid_transaction, &transaction_collection.cuuid, &transaction_collection.inclure_tuuids, user_id_origine.as_str(), user_id_destination, session).await {
         Err(format!("grosfichiers.transaction_ajouter_fichiers_collection Erreur dupliquer_structure_repertoires sur transcation : {:?}", e))?
     }
 
@@ -1058,7 +1013,7 @@ struct CopieTuuidVersCuuid {
 
 /// Duplique la structure des repertoires listes dans tuuids.
 /// Les fichiers des sous-repertoires sont linkes (pas copies).
-async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_transaction: U, cuuid: C, tuuids: &Vec<T>, user_id: S, user_id_destination: Option<D>)
+async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_transaction: U, cuuid: C, tuuids: &Vec<T>, user_id: S, user_id_destination: Option<D>, session: &mut ClientSession)
     -> Result<(), CommonError>
     where M: MongoDao, U: AsRef<str>, C: AsRef<str>, T: ToString, S: AsRef<str>, D: AsRef<str>
 {
@@ -1105,7 +1060,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
             fichier_rep.tuuid = nouveau_tuuid.as_str();
 
             // Recuperer le path du cuuid destination, remplacer path_cuuids
-            let path_cuuids_option = match get_path_cuuid(middleware, &fichier_rep_tuuid.cuuid_destination).await {
+            let path_cuuids_option = match get_path_cuuid(middleware, &fichier_rep_tuuid.cuuid_destination, session).await {
                 Ok(inner) => inner,
                 Err(e) => Err(format!("transactions.dupliquer_structure_repertoires get_path_cuuid : {:?}", e))?
             };
@@ -1119,7 +1074,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
                 }
             };
 
-            // collection.insert_one(doc_repertoire, None).await?;
+            // collection.insert_one_with_session(doc_repertoire, None).await?;
             let filtre = doc! {
                 CHAMP_TUUID: &fichier_rep.tuuid, CHAMP_USER_ID: &user_id_destination,
                 // CHAMP_SUPPRIME: false, CHAMP_SUPPRIME_INDIRECT: false,
@@ -1137,7 +1092,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
                 "$currentDate": { CHAMP_MODIFICATION: true }
             };
             let options = UpdateOptions::builder().upsert(true).build();
-            let result = collection.update_one(filtre, ops, options).await?;
+            let result = collection.update_one_with_session(filtre, ops, options, session).await?;
             if result.upserted_id.is_none() {
                 info!("dupliquer_structure_repertoires Erreur, aucune valeur upserted pour tuuid {}", tuuid_src);
             }
@@ -1149,8 +1104,8 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
                         let filtre = doc!{ CHAMP_TUUID: &tuuid_src, CHAMP_USER_ID: &user_id };
                         let collection_versions = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(
                             NOM_COLLECTION_VERSIONS)?;
-                        let mut curseur = collection_versions.find(filtre, None).await?;
-                        if curseur.advance().await? {
+                        let mut curseur = collection_versions.find_with_session(filtre, None, session).await?;
+                        if curseur.advance(session).await? {
                             let mut row = curseur.deserialize_current()?;
                             row.user_id = user_id_destination;
                             row.tuuid = nouveau_tuuid.as_str();
@@ -1168,7 +1123,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
                                 "$currentDate": {CHAMP_MODIFICATION: true}
                             };
                             let options = UpdateOptions::builder().upsert(true).build();
-                            collection_versions.update_one(filtre, ops, options).await?;
+                            collection_versions.update_one_with_session(filtre, ops, options, session).await?;
                         } else {
                             warn!{"dupliquer_structure_repertoires Version fichier src tuuid {} introuvable, skip", tuuid_src};
                         }
@@ -1178,8 +1133,8 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
                     // Trouver les sous-repertoires, traiter individuellement
                     let filtre_ajout_cuuid = doc! { format!("{}.0", CHAMP_PATH_CUUIDS): &tuuid_src };
                     debug!("dupliquer_structure_repertoires filtre_ajout_cuuid : {:?}", filtre_ajout_cuuid);
-                    let mut curseur = collection_nodes.find(filtre_ajout_cuuid, None).await?;
-                    while curseur.advance().await? {
+                    let mut curseur = collection_nodes.find_with_session(filtre_ajout_cuuid, None, session).await?;
+                    while curseur.advance(session).await? {
                         let sous_document = curseur.deserialize_current()?;
                         let copie_tuuid = CopieTuuidVersCuuid {
                             tuuid_original: sous_document.tuuid.to_owned(),
@@ -1197,7 +1152,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
 }
 
 /// Recalcule les path de cuuids de tous les sous-repertoires et fichiers sous un cuuid
-async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
+async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C, session: &mut ClientSession)
     -> Result<(), CommonError>
     where M: MongoDao, C: ToString
 {
@@ -1215,15 +1170,15 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
         };
 
         let path_cuuids = {
-            match get_path_cuuid(middleware, &tuuid).await? {
+            match get_path_cuuid(middleware, &tuuid, session).await? {
                 Some(inner) => Some(inner),
                 None => Some(vec![tuuid.clone()])
             }
         };
 
         let filtre = doc! { format!("{}.0", CHAMP_PATH_CUUIDS): &tuuid };
-        let mut curseur = collection_typed.find(filtre, None).await?;
-        while curseur.advance().await? {
+        let mut curseur = collection_typed.find_with_session(filtre, None, session).await?;
+        while curseur.advance(session).await? {
             let row = curseur.deserialize_current()?;
             let type_node = TypeNode::try_from(row.type_node)?;
 
@@ -1233,7 +1188,7 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
                 "$set": { CHAMP_PATH_CUUIDS: &path_cuuids },
                 "$currentDate": { CHAMP_MODIFICATION: true }
             };
-            collection.update_one(filtre, ops, None).await?;
+            collection.update_one_with_session(filtre, ops, None, session).await?;
 
             match type_node {
                 TypeNode::Fichier => {
@@ -1250,7 +1205,7 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C)
     Ok(())
 }
 
-async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1259,7 +1214,7 @@ async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnair
 
     let transaction_collection: TransactionDeplacerFichiersCollection = serde_json::from_str(transaction.transaction.contenu.as_str())?;
 
-    let path_cuuids_destination = match get_path_cuuid(middleware, transaction_collection.cuuid_destination.as_str()).await {
+    let path_cuuids_destination = match get_path_cuuid(middleware, transaction_collection.cuuid_destination.as_str(), session).await {
         Ok(inner) => match inner {
             Some(inner) => inner,
             None => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Path cuuids None - SKIP"))?
@@ -1280,7 +1235,7 @@ async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnair
             "$set": { CHAMP_PATH_CUUIDS: &path_cuuids_destination },
             "$currentDate": {CHAMP_MODIFICATION: true}
         };
-        let resultat = match collection.update_many(filtre.clone(), ops, None).await {
+        let resultat = match collection.update_many_with_session(filtre.clone(), ops, None, session).await {
             Ok(r) => r,
             Err(e) => Err(format!("grosfichiers.transaction_deplacer_fichiers_collection Erreur update_one sur transaction : {:?}", e))?
         };
@@ -1289,7 +1244,7 @@ async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnair
 
     // Recalculer les paths des sous-repertoires et fichiers
     debug!("transaction_deplacer_fichiers_collection Recalculer path fuuids sous {}", transaction_collection.cuuid_destination);
-    if let Err(e) = recalculer_path_cuuids(middleware, &transaction_collection.cuuid_destination).await {
+    if let Err(e) = recalculer_path_cuuids(middleware, &transaction_collection.cuuid_destination, session).await {
         error!("transaction_deplacer_fichiers_collection Erreur recalculer_cuuids_fichiers : {:?}", e);
     }
 
@@ -1315,7 +1270,7 @@ async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnair
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn find_tuuids_retires<M,U,S>(middleware: &M, user_id: U, tuuids_in: Vec<S>)
+async fn find_tuuids_retires<M,U,S>(middleware: &M, user_id: U, tuuids_in: Vec<S>, session: &mut ClientSession)
     -> Result<HashMap<String, Vec<String>>, CommonError>
     where M: MongoDao, U: AsRef<str>, S: AsRef<str>
 {
@@ -1347,12 +1302,12 @@ async fn find_tuuids_retires<M,U,S>(middleware: &M, user_id: U, tuuids_in: Vec<S
     };
     let options = FindOptions::builder().projection(projection_node_row.clone()).build();
     debug!("grosfichiers.transaction_supprimer_documents Filtre charger collections/repertoires pour traitement arborescence : {:?}", filtre);
-    let mut curseur = match collection_nodes.find(filtre, options).await {
+    let mut curseur = match collection_nodes.find_with_session(filtre, options, session).await {
         Ok(inner) => inner,
         Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur find collections/repertoires changement arborescence : {:?}", e))?
     };
 
-    while curseur.advance().await? {
+    while curseur.advance(session).await? {
         let row = curseur.deserialize_current()?;
         let type_node = TypeNode::try_from(row.type_node)?;
         let cuuid = match row.path_cuuids {
@@ -1376,7 +1331,7 @@ async fn find_tuuids_retires<M,U,S>(middleware: &M, user_id: U, tuuids_in: Vec<S
     Ok(tuuids_retires_par_cuuid)
 }
 
-async fn supprimer_versions_conditionnel<M,T,U>(middleware: &M, user_id: U, fuuids_in: &Vec<T>)
+async fn supprimer_versions_conditionnel<M,T,U>(middleware: &M, user_id: U, fuuids_in: &Vec<T>, session: &mut ClientSession)
     -> Result<(), CommonError>
     where M: MongoDao, U: AsRef<str>, T: AsRef<str>
 {
@@ -1396,8 +1351,8 @@ async fn supprimer_versions_conditionnel<M,T,U>(middleware: &M, user_id: U, fuui
         let options = FindOptions::builder().hint(Hint::Name("fuuids_versions_user_id".to_string())).build();
         let collection = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
             NOM_COLLECTION_FICHIERS_REP)?;
-        let mut curseur = collection.find(filtre, options).await?;
-        if curseur.advance().await? {
+        let mut curseur = collection.find_with_session(filtre, options, session).await?;
+        if curseur.advance(session).await? {
             let row = curseur.deserialize_current()?;
             if let Some(row_fuuids) = &row.fuuids_versions {
                 for row_fuuid in row_fuuids {
@@ -1419,12 +1374,12 @@ async fn supprimer_versions_conditionnel<M,T,U>(middleware: &M, user_id: U, fuui
     };
     let options = UpdateOptions::builder().hint(Hint::Name("fuuid_user_id".to_string())).build();
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    collection.update_many(filtre, ops, options).await?;
+    collection.update_many_with_session(filtre, ops, options, session).await?;
 
     Ok(())
 }
 
-async fn supprimer_tuuids<M,U,T>(middleware: &M, user_id_in: U, tuuids_in: Vec<T>)
+async fn supprimer_tuuids<M,U,T>(middleware: &M, user_id_in: U, tuuids_in: Vec<T>, session: &mut ClientSession)
     -> Result<HashMap<String, Vec<String>>, CommonError>
     where M: MongoDao, U: AsRef<str>, T: AsRef<str>
 {
@@ -1447,8 +1402,8 @@ async fn supprimer_tuuids<M,U,T>(middleware: &M, user_id_in: U, tuuids_in: Vec<T
         };
         let collection_fichierrep = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
             NOM_COLLECTION_FICHIERS_REP)?;
-        let mut curseur = collection_fichierrep.find(filtre, None).await?;
-        while curseur.advance().await? {
+        let mut curseur = collection_fichierrep.find_with_session(filtre, None, session).await?;
+        while curseur.advance(session).await? {
             let row = curseur.deserialize_current()?;
             if let Some(fuuids) = row.fuuids_versions {
                 if let Some(fuuid) = fuuids.first() {
@@ -1472,7 +1427,7 @@ async fn supprimer_tuuids<M,U,T>(middleware: &M, user_id_in: U, tuuids_in: Vec<T
             "$set": { CHAMP_SUPPRIME: true },
             "$currentDate": { CHAMP_MODIFICATION: true },
         };
-        collection.update_many(filtre, ops, None).await?;
+        collection.update_many_with_session(filtre, ops, None, session).await?;
     }
 
     // Marquer les sous-repertoires et fichiers supprimes indirectement (via arborescence)
@@ -1487,19 +1442,19 @@ async fn supprimer_tuuids<M,U,T>(middleware: &M, user_id_in: U, tuuids_in: Vec<T
             "$set": { CHAMP_SUPPRIME: true, CHAMP_SUPPRIME_INDIRECT: true },
             "$currentDate": { CHAMP_MODIFICATION: true },
         };
-        collection.update_many(filtre, ops, None).await?;
+        collection.update_many_with_session(filtre, ops, None, session).await?;
     }
 
     let fuuids_a_supprimer: Vec<String> = fuuids_a_supprimer.into_iter().collect();
-    supprimer_versions_conditionnel(middleware, &user_id, &fuuids_a_supprimer).await?;
+    supprimer_versions_conditionnel(middleware, &user_id, &fuuids_a_supprimer, session).await?;
 
     // Parcourir les elements pour recuperer les tuuids qui viennent d'etre supprimes (indirect)
-    let tuuids_retires_par_cuuid = find_tuuids_retires(middleware, user_id, tuuids).await?;
+    let tuuids_retires_par_cuuid = find_tuuids_retires(middleware, user_id, tuuids, session).await?;
 
     Ok(tuuids_retires_par_cuuid)
 }
 
-async fn transaction_supprimer_documents<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_supprimer_documents<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1513,7 +1468,7 @@ async fn transaction_supprimer_documents<M>(middleware: &M, gestionnaire: &GrosF
 
     // Conserver liste de tuuids par cuuid, utilise pour evenement
     let mut tuuids_retires_par_cuuid: HashMap<String, Vec<String>> = match supprimer_tuuids(
-        middleware, &user_id, transaction_collection.tuuids).await {
+        middleware, &user_id, transaction_collection.tuuids, session).await {
         Ok(inner) => inner,
         Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur supprimer_tuuids : {:?}", e))?
     };
@@ -1531,7 +1486,7 @@ async fn transaction_supprimer_documents<M>(middleware: &M, gestionnaire: &GrosF
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_recuperer_documents<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_recuperer_documents<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1547,7 +1502,7 @@ async fn transaction_recuperer_documents<M>(middleware: &M, gestionnaire: &GrosF
     };
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let resultat = match collection.update_many(filtre, ops, None).await {
+    let resultat = match collection.update_many_with_session(filtre, ops, None, session).await {
         Ok(r) => r,
         Err(e) => Err(format!("grosfichiers.transaction_recuperer_documents Erreur update_one sur transcation : {:?}", e))?
     };
@@ -1570,13 +1525,13 @@ pub struct TransactionRecupererDocumentsV2 {
     pub items: HashMap<String, Option<Vec<String>>>
 }
 
-async fn recuperer_parents<M,C,U>(middleware: &M, user_id: U, tuuid: C) -> Result<(), CommonError>
+async fn recuperer_parents<M,C,U>(middleware: &M, user_id: U, tuuid: C, session: &mut ClientSession) -> Result<(), CommonError>
     where M: MongoDao, C: AsRef<str>, U: AsRef<str>
 {
     let tuuid = tuuid.as_ref();
     let filtre = doc!{ CHAMP_TUUID: tuuid, CHAMP_USER_ID: user_id.as_ref() };
     let collection = middleware.get_collection_typed::<FichierDetail>(NOM_COLLECTION_FICHIERS_REP)?;
-    let repertoire = match collection.find_one(filtre, None).await? {
+    let repertoire = match collection.find_one_with_session(filtre, None, session).await? {
         Some(inner) => inner,
         None => Err(format!("recuperer_parents Tuuid inconnu {}", tuuid))?
     };
@@ -1612,7 +1567,7 @@ async fn recuperer_parents<M,C,U>(middleware: &M, user_id: U, tuuid: C) -> Resul
         "$currentDate": { CHAMP_MODIFICATION: true }
     };
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    collection.update_many(filtre, ops, None).await?;
+    collection.update_many_with_session(filtre, ops, None, session).await?;
 
     Ok(())
 }
@@ -1628,7 +1583,7 @@ pub struct RowRecupererFichierDb {
     supprime_indirect: Option<bool>,
 }
 
-async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_params: Option<Vec<T>>) -> Result<(), CommonError>
+async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_params: Option<Vec<T>>, session: &mut ClientSession) -> Result<(), CommonError>
     where
         M: MongoDao,
         T: AsRef<str>,
@@ -1651,8 +1606,8 @@ async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_
             CHAMP_TUUID: { "$in": tuuids },
             CHAMP_USER_ID: user_id
         };
-        let mut curseur = collection_nodes.find(filtre, None).await?;
-        while curseur.advance().await? {
+        let mut curseur = collection_nodes.find_with_session(filtre, None, session).await?;
+        while curseur.advance(session).await? {
             let row = curseur.deserialize_current()?;
             nodes_restants.push(row);
         }
@@ -1682,8 +1637,8 @@ async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_
                     "path_cuuids.0": &node_courant.tuuid,
                     CHAMP_SUPPRIME_INDIRECT: true
                 };
-                let mut curseur = collection_nodes.find(filtre, None).await?;
-                while curseur.advance().await? {
+                let mut curseur = collection_nodes.find_with_session(filtre, None, session).await?;
+                while curseur.advance(session).await? {
                     let row = curseur.deserialize_current()?;
                     nodes_restants.push(row);
                 }
@@ -1700,7 +1655,7 @@ async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_
             "$set": {CHAMP_SUPPRIME: false, CHAMP_SUPPRIME_INDIRECT: false, CHAMP_ARCHIVE: false },
             "$currentDate": { CHAMP_MODIFICATION: true }
         };
-        collection_nodes.update_many(filtre, ops, None).await?;
+        collection_nodes.update_many_with_session(filtre, ops, None, session).await?;
     }
 
     {
@@ -1711,13 +1666,13 @@ async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_
             "$set": { CHAMP_SUPPRIME: false },
             "$currentDate": { CHAMP_MODIFICATION: true }
         };
-        collection.update_many(filtre, ops, None).await?;
+        collection.update_many_with_session(filtre, ops, None, session).await?;
     }
 
     Ok(())
 }
 
-async fn transaction_recuperer_documents_v2<M>(middleware: &M, transaction: TransactionValide)
+async fn transaction_recuperer_documents_v2<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1733,13 +1688,13 @@ async fn transaction_recuperer_documents_v2<M>(middleware: &M, transaction: Tran
     for (cuuid, paths) in transaction.items {
         // Recuperer le cuuid (parent) jusqu'a la racine au besoin
         debug!("transaction_recuperer_documents_v2 Recuperer cuuid {} et parents", cuuid);
-        if let Err(e) = recuperer_parents(middleware, &user_id, &cuuid).await {
+        if let Err(e) = recuperer_parents(middleware, &user_id, &cuuid, session).await {
             Err(format!("grosfichiers.transaction_recuperer_documents_v2 Erreur recuperer_parents : {:?}", e))?
         }
 
         // Reactiver les fichiers avec le cuuid courant sous cuuids_supprimes.
         debug!("transaction_recuperer_documents_v2 Recuperer tuuids {:?} sous cuuid {}", paths, cuuid);
-        if let Err(e) = recuperer_tuuids(middleware, &user_id, cuuid, paths).await {
+        if let Err(e) = recuperer_tuuids(middleware, &user_id, cuuid, paths, session).await {
             Err(format!("grosfichiers.transaction_recuperer_documents_v2 Erreur recuperer_tuuids : {:?}", e))?
         }
     }
@@ -1753,7 +1708,7 @@ fn obsolete() -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError> {
 }
 
 /// Fait un touch sur les fichiers_rep identifies. User_id optionnel (e.g. pour ops systeme comme visites)
-pub async fn touch_fichiers_rep<M,U,S,V>(middleware: &M, user_id: Option<U>, fuuids_in: V) -> Result<(), CommonError>
+pub async fn touch_fichiers_rep<M,U,S,V>(middleware: &M, user_id: Option<U>, fuuids_in: V, session: &mut ClientSession) -> Result<(), CommonError>
     where
         M: GenerateurMessages + MongoDao,
         U: AsRef<str>,
@@ -1779,12 +1734,12 @@ pub async fn touch_fichiers_rep<M,U,S,V>(middleware: &M, user_id: Option<U>, fuu
         "$currentDate": { CHAMP_MODIFICATION: true }
     };
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    collection.update_many(filtre, ops, None).await?;
+    collection.update_many_with_session(filtre, ops, None, session).await?;
 
     Ok(())
 }
 
-async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1881,7 +1836,7 @@ async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &Gros
         };
         debug!("transactions.transaction_associer_conversions set ops versions : {:?}", ops);
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-        match collection.update_one(filtre, ops, None).await {
+        match collection.update_one_with_session(filtre, ops, None, session).await {
             Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
             Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
         }
@@ -1907,7 +1862,7 @@ async fn transaction_associer_conversions<M>(middleware: &M, gestionnaire: &Gros
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1977,7 +1932,7 @@ async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichie
     //     // Verifier si le video existe deja - retirer le fuuid_video si c'est le cas
     //     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     //     {
-    //         let doc_existant: Option<FichierDetail> = match collection.find_one(filtre.clone(), None).await {
+    //         let doc_existant: Option<FichierDetail> = match collection.find_one_with_session(filtre.clone(), None).await {
     //             Ok(d) => match d {
     //                 Some(d) => match convertir_bson_deserializable(d) {
     //                     Ok(d) => d,
@@ -2006,7 +1961,7 @@ async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichie
     //             },
     //             // "$unset": {format!("version_courante.fuuidMimetypes.{}", fuuid_video): true},
     //         };
-    //         match collection.update_many(filtre.clone(), ops, None).await {
+    //         match collection.update_many_with_session(filtre.clone(), ops, None).await {
     //             Ok(inner) => debug!("transaction_associer_video Suppression video : {:?}", inner),
     //             Err(e) => Err(format!("transactions.transaction_associer_video Erreur suppression video existant : {:?}", e))?
     //         }
@@ -2031,7 +1986,7 @@ async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichie
     //         "$currentDate": { CHAMP_MODIFICATION: true }
     //     };
     //
-    //     match collection.update_many(filtre, ops, None).await {
+    //     match collection.update_many_with_session(filtre, ops, None).await {
     //         Ok(inner) => debug!("transaction_associer_video Update versions : {:?}", inner),
     //         Err(e) => Err(format!("transactions.transaction_associer_video Erreur maj versions : {:?}", e))?
     //     }
@@ -2060,7 +2015,7 @@ async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichie
         //         },
         //         // "$unset": {format!("fuuidMimetypes.{}", fuuid_video): true},
         //     };
-        //     match collection.update_many(filtre.clone(), ops, None).await {
+        //     match collection.update_many_with_session(filtre.clone(), ops, None).await {
         //         Ok(inner) => debug!("transaction_associer_video Suppression video : {:?}", inner),
         //         Err(e) => Err(format!("transactions.transaction_associer_video Erreur suppression video existant : {:?}", e))?
         //     }
@@ -2079,7 +2034,7 @@ async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichie
             "$addToSet": add_to_set,
             "$currentDate": { CHAMP_MODIFICATION: true }
         };
-        match collection_versions.find_one_and_update(filtre, ops, None).await {
+        match collection_versions.find_one_and_update_with_session(filtre, ops, None, session).await {
             Ok(Some(old_existing)) => {
                 debug!("transaction_associer_video Update versions : {:?}", old_existing);
                 // TODO Check if the new video replaces an existing one
@@ -2092,7 +2047,7 @@ async fn transaction_associer_video<M>(middleware: &M, gestionnaire: &GrosFichie
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2131,7 +2086,7 @@ async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &GrosFichi
         "$currentDate": { CHAMP_MODIFICATION: true }
     };
     let collection = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
-    match collection.find_one_and_update(filtre, ops, None).await {
+    match collection.find_one_and_update_with_session(filtre, ops, None, session).await {
         Ok(inner) => {
             debug!("transaction_decire_fichier Update description : {:?}", inner);
             if let Some(doc_fichier) = inner {
@@ -2150,7 +2105,7 @@ async fn transaction_decrire_fichier<M>(middleware: &M, gestionnaire: &GrosFichi
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_decrire_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_decrire_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2178,8 +2133,8 @@ async fn transaction_decrire_collection<M>(middleware: &M, gestionnaire: &GrosFi
         "$currentDate": { CHAMP_MODIFICATION: true }
     };
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    collection.update_one(filtre, ops, None).await?;
-    // match collection.find_one_and_update(filtre, ops, None).await {
+    collection.update_one_with_session(filtre, ops, None, session).await?;
+    // match collection.find_one_and_update_with_session(filtre, ops, None).await {
     //     Ok(inner) => {
     //         debug!("transactions.transaction_decrire_collection Update description : {:?}", inner);
     //         if let Some(d) = inner {
@@ -2218,7 +2173,7 @@ async fn transaction_decrire_collection<M>(middleware: &M, gestionnaire: &GrosFi
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: TransactionValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
     debug!("transaction_favoris_creerpath Consommer transaction : {}", transaction.transaction.id);
@@ -2260,8 +2215,8 @@ async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: Transacti
             .upsert(true)
             .return_document(ReturnDocument::After)
             .build();
-        let doc_favoris_opt = match collection.find_one_and_update(
-            filtre_favoris, ops_favoris, Some(options_favoris)).await {
+        let doc_favoris_opt = match collection.find_one_and_update_with_session(
+            filtre_favoris, ops_favoris, Some(options_favoris), session).await {
             Ok(f) => Ok(f),
             Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur find_one_and_update doc favoris : {:?}", e))
         }?;
@@ -2283,7 +2238,7 @@ async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: Transacti
                     CHAMP_USER_ID: &user_id,
                     CHAMP_NOM: &path_col,
                 };
-                let doc_path = match collection.find_one(filtre, None).await {
+                let doc_path = match collection.find_one_with_session(filtre, None, session).await {
                     Ok(d) => Ok(d),
                     Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur creation doc collection path {} : {:?}", path_col, e))
                 }?;
@@ -2308,7 +2263,7 @@ async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: Transacti
                                 "$set": {CHAMP_SUPPRIME: false},
                                 "$currentDate": {CHAMP_MODIFICATION: true}
                             };
-                            match collection.update_one(filtre, ops, None).await {
+                            match collection.update_one_with_session(filtre, ops, None, session).await {
                                 Ok(_) => (),
                                 Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur flip flag supprime de tuuid={} : {:?}", &collection_info.tuuid, e))?
                             }
@@ -2328,7 +2283,7 @@ async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: Transacti
                             CHAMP_FAVORIS: false,
                             CHAMP_CUUIDS: vec![cuuid_courant]
                         };
-                        match collection.insert_one(collection_info, None).await {
+                        match collection.insert_one_with_session(collection_info, None, session).await {
                             Ok(_) => Ok(()),
                             Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur insertion collection path {} : {:?}", path_col, e))
                         }?;
@@ -2343,7 +2298,7 @@ async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: Transacti
         None => tuuid_favoris.clone()
     };
 
-    if let Err(e) = recalculer_path_cuuids(middleware, tuuid_favoris).await {
+    if let Err(e) = recalculer_path_cuuids(middleware, tuuid_favoris, session).await {
         Err(format!("grosfichiers.transaction_favoris_creerpath Erreur recalculer_path_cuuids : {:?}", e))?
     }
 
@@ -2361,7 +2316,7 @@ pub struct InformationCollection {
     pub favoris: Option<bool>,
 }
 
-async fn transaction_supprimer_video<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_supprimer_video<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2375,7 +2330,7 @@ async fn transaction_supprimer_video<M>(middleware: &M, gestionnaire: &GrosFichi
     let mut labels_videos = Vec::new();
     let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
     let collection_fichier_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
-    let doc_video = match collection_fichier_versions.find_one(filtre.clone(), None).await {
+    let doc_video = match collection_fichier_versions.find_one_with_session(filtre.clone(), None, session).await {
         Ok(d) => match d {
             Some(d) => d,
             None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
@@ -2411,13 +2366,13 @@ async fn transaction_supprimer_video<M>(middleware: &M, gestionnaire: &GrosFichi
 
         debug!("transaction_supprimer_video Supprimer video {:?} ops {:?}", filtre, ops);
 
-        match collection_version_fichier.update_one(filtre, ops, None).await {
+        match collection_version_fichier.update_one_with_session(filtre, ops, None, session).await {
             Ok(_r) => (),
             Err(e) => Err(format!("transaction_supprimer_video Erreur update_one collection fichiers rep : {:?}", e))?
         }
     }
 
-    if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), vec![fuuid]).await {
+    if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), vec![fuuid], session).await {
         error!("transaction_favoris_creerpath Erreur touch_fichiers_rep {:?}/{:?} : {:?}", user_id, fuuid, e);
     }
 
@@ -2456,7 +2411,7 @@ async fn transaction_supprimer_video<M>(middleware: &M, gestionnaire: &GrosFichi
 //     }
 // }
 
-async fn transaction_supprimer_job_image_v2<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_supprimer_job_image_v2<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
                                             -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao
 {
@@ -2466,7 +2421,7 @@ where M: GenerateurMessages + MongoDao
     let tuuid = &transaction_supprimer_job.tuuid;
 
     // Indiquer que la job a ete completee et ne doit pas etre redemarree.
-    if let Err(e) = set_flag_image_traitee(middleware, Some(tuuid), fuuid).await {
+    if let Err(e) = set_flag_image_traitee(middleware, Some(tuuid), fuuid, session).await {
         Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag image : {:?}", e))?
     }
 
@@ -2511,7 +2466,7 @@ pub struct TransactionSupprimerJobVideoV2 {
     pub job_id: String,
 }
 
-async fn transaction_supprimer_job_video_v2<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_supprimer_job_video_v2<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
                                             -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao
 {
@@ -2522,7 +2477,7 @@ where M: GenerateurMessages + MongoDao
     let tuuid = &transaction_supprimer.tuuid;
 
     // Indiquer que la job a ete completee et ne doit pas etre redemarree.
-    if let Err(e) = set_flag_video_traite(middleware, Some(tuuid), fuuid, Some(job_id.as_str())).await {
+    if let Err(e) = set_flag_video_traite(middleware, Some(tuuid), fuuid, Some(job_id.as_str()), session).await {
         Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag video : {:?}", e))?
     }
 
@@ -2541,7 +2496,7 @@ pub struct TransactionAjouterContactLocal {
     pub contact_user_id: String,
 }
 
-async fn transaction_ajouter_contact_local<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_ajouter_contact_local<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2565,7 +2520,7 @@ async fn transaction_ajouter_contact_local<M>(middleware: &M, gestionnaire: &Gro
     };
     let options = UpdateOptions::builder().upsert(true).build();
     let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_CONTACT)?;
-    if let Err(e) = collection.update_one(filtre, ops, options).await {
+    if let Err(e) = collection.update_one_with_session(filtre, ops, options, session).await {
         Err(format!("grosfichiers.transaction_ajouter_contact_local Erreur sauvegarde contact : {:?}", e))?
     }
 
@@ -2581,7 +2536,7 @@ pub struct TransactionSupprimerContacts {
     pub contact_ids: Vec<String>,
 }
 
-async fn transaction_supprimer_contacts<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_supprimer_contacts<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2598,7 +2553,7 @@ async fn transaction_supprimer_contacts<M>(middleware: &M, gestionnaire: &GrosFi
         CHAMP_CONTACT_ID: {"$in": transaction_mappee.contact_ids},
     };
     let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_CONTACT)?;
-    if let Err(e) = collection.delete_many(filtre, None).await {
+    if let Err(e) = collection.delete_many_with_session(filtre, None, session).await {
         Err(format!("grosfichiers.transaction_supprimer_contacts Erreur suppression contacts : {:?}", e))?
     }
 
@@ -2615,7 +2570,7 @@ pub struct TransactionPartagerCollections {
     pub contact_ids: Vec<String>,
 }
 
-async fn transaction_partager_collections<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_partager_collections<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2645,7 +2600,7 @@ async fn transaction_partager_collections<M>(middleware: &M, gestionnaire: &Gros
                 },
                 "$currentDate": { CHAMP_MODIFICATION: true }
             };
-            if let Err(e) = collection.update_one(filtre, ops, options).await {
+            if let Err(e) = collection.update_one_with_session(filtre, ops, options, session).await {
                 Err(format!("grosfichiers.transaction_partager_collections Erreur sauvegarde partage : {:?}", e))?
             }
         }
@@ -2660,7 +2615,7 @@ pub struct TransactionSupprimerPartageUsager {
     pub tuuid: String,
 }
 
-async fn transaction_supprimer_partage_usager<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_supprimer_partage_usager<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2678,7 +2633,7 @@ async fn transaction_supprimer_partage_usager<M>(middleware: &M, gestionnaire: &
         CHAMP_TUUID: transaction_mappee.tuuid,
     };
     let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
-    if let Err(e) = collection.delete_one(filtre, None).await {
+    if let Err(e) = collection.delete_one_with_session(filtre, None, session).await {
         Err(format!("transactions.transaction_supprimer_partage_usager Erreur delete_one : {:?}", e))?
     }
 
@@ -2702,7 +2657,7 @@ pub struct ResultatVerifierOrphelins {
     pub fuuids_a_conserver: Vec<String>
 }
 
-pub async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &TransactionSupprimerOrphelins)
+pub async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &TransactionSupprimerOrphelins, session: &mut ClientSession)
     -> Result<ResultatVerifierOrphelins, CommonError>
     where M: MongoDao
 {
@@ -2723,8 +2678,8 @@ pub async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &Transacti
     let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(
         NOM_COLLECTION_VERSIONS)?;
     debug!("trouver_orphelins_supprimer Filtre requete orphelins : {:?}", filtre);
-    let mut curseur = collection.find(filtre, None).await?;
-    while curseur.advance().await? {
+    let mut curseur = collection.find_with_session(filtre, None, session).await?;
+    while curseur.advance(session).await? {
         let doc_mappe = curseur.deserialize_current()?;
         let fuuids_version = &doc_mappe.fuuids;
         let fuuid_fichier = doc_mappe.fuuid;
@@ -2758,24 +2713,24 @@ pub async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &Transacti
     Ok(resultat)
 }
 
-async fn transaction_supprimer_orphelins<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide)
+async fn transaction_supprimer_orphelins<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
     debug!("transaction_supprimer_partage_usager Consommer transaction : {}", transaction.transaction.id);
     let transaction_mappee: TransactionSupprimerOrphelins = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    match traiter_transaction_supprimer_orphelins(middleware, transaction_mappee).await {
+    match traiter_transaction_supprimer_orphelins(middleware, transaction_mappee, session).await {
         Ok(inner) => Ok(inner),
         Err(e) => Err(format!("transaction_supprimer_orphelins Erreur traitement {:?}", e))?
     }
 }
 
-async fn traiter_transaction_supprimer_orphelins<M>(middleware: &M, transaction: TransactionSupprimerOrphelins)
+async fn traiter_transaction_supprimer_orphelins<M>(middleware: &M, transaction: TransactionSupprimerOrphelins, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where
         M: GenerateurMessages + MongoDao
 {
-    let resultat = trouver_orphelins_supprimer(middleware, &transaction).await?;
+    let resultat = trouver_orphelins_supprimer(middleware, &transaction, session).await?;
 
     let collection_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
@@ -2787,17 +2742,17 @@ async fn traiter_transaction_supprimer_orphelins<M>(middleware: &M, transaction:
                 "$pull": { CHAMP_FUUIDS_VERSIONS: &fuuid },
                 "$currentDate": { CHAMP_MODIFICATION: true }
             };
-            collection_rep.update_many(filtre_rep, ops, None).await?;
+            collection_rep.update_many_with_session(filtre_rep, ops, None, session).await?;
 
             let filtre_version = doc! { CHAMP_FUUID: &fuuid, CHAMP_SUPPRIME: true };
-            collection_versions.delete_many(filtre_version, None).await?;
+            collection_versions.delete_many_with_session(filtre_version, None, session).await?;
 
             // Nettoyage fichiers sans versions
             let filtre_rep_vide = doc! {
                 CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
                 format!("{}.0", CHAMP_FUUIDS_VERSIONS): {"$exists": false}
             };
-            collection_rep.delete_many(filtre_rep_vide, None).await?;
+            collection_rep.delete_many_with_session(filtre_rep_vide, None, session).await?;
         }
     }
 
