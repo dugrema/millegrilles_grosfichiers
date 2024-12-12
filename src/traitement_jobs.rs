@@ -1602,7 +1602,7 @@ pub async fn sauvegarder_job<'a, M>(middleware: &M, job: &BackgroundJob, trigger
         },
         None => "defaults".to_string()
     };
-    let filtre = doc!{"tuuid": &job.tuuid, "fuuid": &job.fuuid, "cle_conversion": &cle_conversion};
+    let filtre = doc!{"tuuid": &job.tuuid, "cle_conversion": &cle_conversion};
     let ops = doc! {
         "$addToSet": {"filehost_ids": {"$each": &job.filehost_ids}},  // Merge the filehost_ids if appropriate
         "$currentDate": {CHAMP_MODIFICATION: true},
