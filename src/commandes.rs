@@ -831,6 +831,7 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
     let result = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
 
     let routage = RoutageMessageAction::builder("solrrelai", "supprimerTuuids", vec![Securite::L3Protege])
+        .timeout_blocking(1_500)
         .build();
     let commande_index = CommandeSupprimerTuuidsIndex { tuuids: commande.tuuids.clone() };
     match middleware.transmettre_commande(routage.clone(), commande_index).await? {
