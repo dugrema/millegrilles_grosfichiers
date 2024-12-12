@@ -59,7 +59,7 @@ pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GrosFichiersD
     let result = match action.as_str() {
         EVENEMENT_TRANSCODAGE_PROGRES => evenement_transcodage_progres(middleware, m).await,
         EVENEMENT_FICHIERS_SYNCPRET => evenement_fichiers_syncpret(middleware, m, &mut session).await,
-        EVENEMENT_FICHIERS_VISITER_FUUIDS => evenement_visiter_fuuids(middleware, m).await,
+        EVENEMENT_FICHIERS_VISITER_FUUIDS => evenement_visiter_fuuids(middleware, m, &mut session).await,
         EVENEMENT_FILEHOST_NEWFUUID => evenement_filehost_newfuuid(middleware, gestionnaire, m, &mut session).await,
         EVENEMENT_FICHIERS_SYNC_PRIMAIRE => evenement_fichier_sync_primaire(middleware, gestionnaire, m).await,
         EVENEMENT_CEDULE => Ok(None),  // Obsolete
@@ -265,7 +265,7 @@ struct ConfirmationEtatFuuid {
 #[derive(Clone, Deserialize)]
 struct EvenementVisiterFuuids { fuuids: Vec<String> }
 
-async fn evenement_visiter_fuuids<M>(middleware: &M, m: MessageValide)
+async fn evenement_visiter_fuuids<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -290,7 +290,7 @@ async fn evenement_visiter_fuuids<M>(middleware: &M, m: MessageValide)
     };
 
     debug!("evenement_visiter_fuuids  Visiter {} fuuids de l'instance {}", evenement.fuuids.len(), instance_id);
-    marquer_visites_fuuids(middleware, &evenement.fuuids, date_visite, instance_id).await?;
+    marquer_visites_fuuids(middleware, &evenement.fuuids, date_visite, instance_id, session).await?;
 
     Ok(None)
 }
@@ -367,7 +367,11 @@ async fn evenement_filehost_newfuuid<M>(middleware: &M, gestionnaire: &GrosFichi
     let filehost_id = evenement.filehost_id;
 
     // Marquer la visite courante
-    marquer_visites_fuuids(middleware, &vec![evenement.fuuid.clone()], date_visite, filehost_id.clone()).await?;
+    marquer_visites_fuuids(middleware, &vec![evenement.fuuid.clone()], date_visite, filehost_id.clone(), session).await?;
+
+    // Commit before starting new jobs/emitting events
+    session.commit_transaction().await?;
+    start_transaction_regular(session).await?;
 
     let fuuid = &evenement.fuuid;
     declencher_traitement_nouveau_fuuid(middleware, gestionnaire, fuuid, vec![filehost_id.as_str()], session).await?;
@@ -473,7 +477,7 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
 }
 
 async fn marquer_visites_fuuids<M>(
-    middleware: &M, fuuids: &Vec<String>, date_visite: &DateTime<Utc>, filehost_id: String)
+    middleware: &M, fuuids: &Vec<String>, date_visite: &DateTime<Utc>, filehost_id: String, session: &mut ClientSession)
     -> Result<(), CommonError>
     where M: MongoDao
 {
@@ -493,7 +497,7 @@ async fn marquer_visites_fuuids<M>(
         };
 
         let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-        collection_versions.update_many(filtre_versions, ops, None).await?;
+        collection_versions.update_many_with_session(filtre_versions, ops, None, session).await?;
     }
 
     // Marquer fichiersrep (date modification, requis pour pour sync)
@@ -508,7 +512,7 @@ async fn marquer_visites_fuuids<M>(
             "$currentDate": { CHAMP_MODIFICATION: true },
         };
 
-        collection_rep.update_many(filtre_rep, ops, None).await?;
+        collection_rep.update_many_with_session(filtre_rep, ops, None, session).await?;
     }
 
     Ok(())
@@ -742,7 +746,7 @@ async fn evenement_fichier_sync_primaire<M>(middleware: &M, gestionnaire: &GrosF
 pub async fn emettre_evenement_contenu_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, evenement: EvenementContenuCollection)
                                                      -> Result<(), CommonError>
 where
-    M: GenerateurMessages + MongoDao
+    M: GenerateurMessages
 {
     debug!("grosfichiers.emettre_evenement_contenu_collection Emettre evenement maj pour collection {:?}", evenement);
 

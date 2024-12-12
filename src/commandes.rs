@@ -196,6 +196,10 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gest
     // Traiter la transaction
     let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
 
+    // Transaction processed OK, commit session and then emit messagse
+    session.commit_transaction().await?;
+    start_transaction_regular(session).await?;  // New session
+
     // Emettre fichier pour que tous les clients recoivent la mise a jour
     if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION, session).await {
         warn!("transaction_nouvelle_version Erreur emettre_evenement_maj_fichier : {:?}", e);

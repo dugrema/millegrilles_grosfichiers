@@ -1619,6 +1619,10 @@ pub async fn sauvegarder_job<'a, M>(middleware: &M, job: &BackgroundJob, trigger
         }
     };
 
+    // Commit to ensure job is available before emitting trigger
+    session.commit_transaction().await?;
+    start_transaction_regular(session).await?;
+
     // Emettre job pour traitement.
     match trigger {
         Some(inner) => emettre_processing_trigger(middleware, inner, domain, action_trigger).await,
