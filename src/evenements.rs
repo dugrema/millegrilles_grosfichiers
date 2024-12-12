@@ -57,13 +57,13 @@ pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GrosFichiersD
     start_transaction_regular(&mut session).await?;
 
     let result = match action.as_str() {
-        EVENEMENT_TRANSCODAGE_PROGRES => evenement_transcodage_progres(middleware, m).await,
+        EVENEMENT_TRANSCODAGE_PROGRES => evenement_transcodage_progres(middleware, m, &mut session).await,
         EVENEMENT_FICHIERS_SYNCPRET => evenement_fichiers_syncpret(middleware, m, &mut session).await,
         EVENEMENT_FICHIERS_VISITER_FUUIDS => evenement_visiter_fuuids(middleware, m, &mut session).await,
         EVENEMENT_FILEHOST_NEWFUUID => evenement_filehost_newfuuid(middleware, gestionnaire, m, &mut session).await,
         EVENEMENT_FICHIERS_SYNC_PRIMAIRE => evenement_fichier_sync_primaire(middleware, gestionnaire, m).await,
         EVENEMENT_CEDULE => Ok(None),  // Obsolete
-        EVENEMENT_RESET_VISITS_CLAIMS => evenement_reset_claims(middleware, gestionnaire, m).await,
+        EVENEMENT_RESET_VISITS_CLAIMS => evenement_reset_claims(middleware, gestionnaire, m, &mut session).await,
         _ => Err(format!("grosfichiers.consommer_evenement: Mauvais type d'action pour un evenement : {}", action))?,
     };
 
@@ -79,7 +79,7 @@ pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GrosFichiersD
     }
 }
 
-async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValide)
+async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao,
 {
@@ -112,7 +112,7 @@ async fn evenement_transcodage_progres<M>(middleware: &M, m: MessageValide)
         None => ()
     }
     let collection = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
-    collection.update_one(filtre, ops, None).await?;
+    collection.update_one_with_session(filtre, ops, None, session).await?;
 
     Ok(None)
 }
@@ -519,7 +519,7 @@ async fn marquer_visites_fuuids<M>(
 }
 
 async fn marquer_visites_fuuids_filecontroler<M>(
-    middleware: &M, fuuids: &Vec<String>, date_visite: &DateTime<Utc>, instance_id: String)
+    middleware: &M, fuuids: &Vec<String>, date_visite: &DateTime<Utc>, instance_id: String, session: &mut ClientSession)
     -> Result<(), CommonError>
 where M: MongoDao
 {
@@ -540,7 +540,7 @@ where M: MongoDao
         };
 
         let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-        collection_versions.update_many(filtre_versions, ops, None).await?;
+        collection_versions.update_many_with_session(filtre_versions, ops, None, session).await?;
     }
 
     // Marquer fichiersrep (date modification, requis pour pour sync)
@@ -555,7 +555,7 @@ where M: MongoDao
             "$currentDate": { CHAMP_MODIFICATION: true },
         };
 
-        collection_rep.update_many(filtre_rep, ops, None).await?;
+        collection_rep.update_many_with_session(filtre_rep, ops, None, session).await?;
     }
 
     Ok(())
@@ -938,7 +938,7 @@ where
     Ok(())
 }
 
-async fn evenement_reset_claims<M>(middleware: &M, _gestionnaire: &GrosFichiersDomainManager, m: MessageValide)
+async fn evenement_reset_claims<M>(middleware: &M, _gestionnaire: &GrosFichiersDomainManager, m: MessageValide, session: &mut ClientSession)
                                    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -957,7 +957,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         "$set": {CONST_FIELD_LAST_VISIT_VERIFICATION: date_initial_verification},
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
-    collection_versions.update_many(doc!{}, ops, None).await?;
+    collection_versions.update_many_with_session(doc!{}, ops, None, session).await?;
 
     info!("Visits/claims reset done");
 

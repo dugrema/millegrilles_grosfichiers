@@ -217,9 +217,9 @@ where M: GenerateurMessages + MongoDao
 
     for batch_no in 1..101 {  // Max of 100 batches at once
         let visits = {
-            let mut curseur = collection_versions.find(filtre.clone(), options.clone()).await?;
+            let mut curseur = collection_versions.find_with_session(filtre.clone(), options.clone(), session).await?;
             let mut visits = Vec::with_capacity(VISIT_BATCH_SIZE);
-            while let Some(row) = curseur.next().await {
+            while let Some(row) = curseur.next(session).await {
                 let fuuids = row?.fuuids_reclames;
                 visits.extend(fuuids);
                 if visits.len() >= VISIT_BATCH_SIZE {
