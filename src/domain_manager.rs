@@ -32,7 +32,7 @@ use crate::traitement_jobs::{creer_jobs_manquantes, entretien_jobs_expirees, mai
 // use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
 use crate::transactions::aiguillage_transaction;
 
-const INTERVALLE_THREAD_EVENEMENTS_SECS: u64 = 2;
+const INTERVALLE_THREAD_EVENEMENTS_SECS: u64 = 1;
 
 #[derive(Clone)]
 pub struct GrosFichiersDomainManager {
@@ -136,7 +136,9 @@ impl GestionnaireDomaineSimple for GrosFichiersDomainManager {
     where
         M: MiddlewareMessages + BackupStarter + MongoDao
     {
-        traiter_cedule(self, middleware, trigger).await?;
+        if ! middleware.get_mode_regeneration() {  // Only when not rebuilding
+            traiter_cedule(self, middleware, trigger).await?;
+        }
         Ok(())
     }
 
