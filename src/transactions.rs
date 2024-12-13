@@ -817,6 +817,34 @@ async fn get_path_cuuid<M,S>(middleware: &M, cuuid: S, session: &mut ClientSessi
     Ok(Some(path_cuuids))
 }
 
+async fn get_path_cuuid_no_session<M,S>(middleware: &M, cuuid: S)
+    -> Result<Option<Vec<String>>, CommonError>
+    where M: MongoDao, S: AsRef<str>
+{
+    let cuuid = cuuid.as_ref();
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let filtre = doc! { CHAMP_TUUID: cuuid };
+    let options = FindOneOptions::builder().projection(doc!{CHAMP_TUUID: 1, CHAMP_CUUID: 1, CHAMP_PATH_CUUIDS: 1}).build();
+    let doc_parent: RowRepertoirePaths = match collection.find_one(filtre, options).await? {
+        Some(inner) => convertir_bson_deserializable(inner)?,
+        None => {
+            return Ok(None)
+        }
+    };
+
+    let path_cuuids = match doc_parent.path_cuuids {
+        Some(mut inner) => {
+            inner.insert(0, cuuid.to_owned());
+            inner
+        },
+        None => vec![cuuid.to_owned()]
+    };
+
+    Ok(Some(path_cuuids))
+}
+
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RowFichiersRepCuuidNode {
     tuuid: String,
@@ -1205,6 +1233,59 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C, session: &mut Cli
     Ok(())
 }
 
+async fn recalculer_path_cuuids_no_session<M,C>(middleware: &M, cuuid: C,)
+    -> Result<(), CommonError>
+    where M: MongoDao, C: ToString
+{
+    let cuuid = cuuid.to_string();
+    let mut tuuids_remaining: Vec<String> = vec![cuuid.to_owned()];
+
+    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_typed = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
+        NOM_COLLECTION_FICHIERS_REP)?;
+
+    loop {
+        let tuuid = match tuuids_remaining.pop() {
+            Some(inner) => inner,
+            None => { break; }  // Termine
+        };
+
+        let path_cuuids = {
+            match get_path_cuuid_no_session(middleware, &tuuid).await? {
+                Some(inner) => Some(inner),
+                None => Some(vec![tuuid.clone()])
+            }
+        };
+
+        let filtre = doc! { format!("{}.0", CHAMP_PATH_CUUIDS): &tuuid };
+        let mut curseur = collection_typed.find(filtre, None).await?;
+        while curseur.advance().await? {
+            let row = curseur.deserialize_current()?;
+            let type_node = TypeNode::try_from(row.type_node)?;
+
+            // Mettre a jour path_cuuids
+            let filtre = doc! { CHAMP_TUUID: row.tuuid };
+            let ops = doc! {
+                "$set": { CHAMP_PATH_CUUIDS: &path_cuuids },
+                "$currentDate": { CHAMP_MODIFICATION: true }
+            };
+            collection_typed.update_one(filtre, ops, None).await?;
+
+            match type_node {
+                TypeNode::Fichier => {
+                    // Rien a faire
+                },
+                TypeNode::Collection | TypeNode::Repertoire => {
+                    // Ajouter aux tuuids remaining pour sous-reps/fichiers
+                    tuuids_remaining.push(row.tuuid.to_owned());
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
@@ -1246,11 +1327,16 @@ async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, transaction
     if middleware.get_mode_regeneration() {
         // Troubleshooting rebuilding
         session.commit_transaction().await?;
+        if let Err(e) = recalculer_path_cuuids_no_session(middleware, &transaction_collection.cuuid_destination).await {
+            error!("transaction_deplacer_fichiers_collection Erreur recalculer_cuuids_fichiers : {:?}", e);
+        }
+        // Restart transaction after to get access to all data just modified
         start_transaction_regeneration(session).await?;
-    }
-    debug!("transaction_deplacer_fichiers_collection Recalculer path fuuids sous {}", transaction_collection.cuuid_destination);
-    if let Err(e) = recalculer_path_cuuids(middleware, &transaction_collection.cuuid_destination, session).await {
-        error!("transaction_deplacer_fichiers_collection Erreur recalculer_cuuids_fichiers : {:?}", e);
+    } else {
+        debug!("transaction_deplacer_fichiers_collection Recalculer path fuuids sous {}", transaction_collection.cuuid_destination);
+        if let Err(e) = recalculer_path_cuuids(middleware, &transaction_collection.cuuid_destination, session).await {
+            error!("transaction_deplacer_fichiers_collection Erreur recalculer_cuuids_fichiers : {:?}", e);
+        }
     }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
