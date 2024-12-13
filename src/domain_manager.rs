@@ -76,6 +76,8 @@ impl GestionnaireDomaineV2 for GrosFichiersDomainManager {
     fn reclame_fuuids(&self) -> bool {
         true
     }
+
+    fn get_rebuild_transaction_batch_size(&self) -> u64 { 50 }
 }
 
 impl GestionnaireBusMillegrilles for GrosFichiersDomainManager {
