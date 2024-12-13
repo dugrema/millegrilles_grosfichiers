@@ -17,7 +17,7 @@ use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_v2};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao, verifier_erreur_duplication_mongo, convertir_to_bson_array, start_transaction_regular};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao, verifier_erreur_duplication_mongo, convertir_to_bson_array, start_transaction_regular, start_transaction_regeneration};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::multihash::Code;
@@ -71,7 +71,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GrosFichiersDomainManag
         TRANSACTION_DECRIRE_COLLECTION => transaction_decrire_collection(middleware, gestionnaire, transaction, session).await,
 
         //
-        TRANSACTION_DEPLACER_FICHIERS_COLLECTION => transaction_deplacer_fichiers_collection(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_DEPLACER_FICHIERS_COLLECTION => transaction_deplacer_fichiers_collection(middleware, transaction, session).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, gestionnaire, transaction, session).await,
         TRANSACTION_RECUPERER_DOCUMENTS_V2 => transaction_recuperer_documents_v2(middleware, transaction, session).await,
         TRANSACTION_SUPPRIMER_ORPHELINS => transaction_supprimer_orphelins(middleware, gestionnaire, transaction, session).await,
@@ -1028,7 +1028,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
         CopieTuuidVersCuuid { tuuid_original: t.to_string(), cuuid_destination: cuuid.to_owned() }
     }).collect();
 
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let collection_nodes = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
         NOM_COLLECTION_FICHIERS_REP)?;
 
@@ -1092,7 +1092,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
                 "$currentDate": { CHAMP_MODIFICATION: true }
             };
             let options = UpdateOptions::builder().upsert(true).build();
-            let result = collection.update_one_with_session(filtre, ops, options, session).await?;
+            let result = collection_nodes.update_one_with_session(filtre, ops, options, session).await?;
             if result.upserted_id.is_none() {
                 info!("dupliquer_structure_repertoires Erreur, aucune valeur upserted pour tuuid {}", tuuid_src);
             }
@@ -1159,7 +1159,7 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C, session: &mut Cli
     let cuuid = cuuid.to_string();
     let mut tuuids_remaining: Vec<String> = vec![cuuid.to_owned()];
 
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let collection_typed = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
         NOM_COLLECTION_FICHIERS_REP)?;
 
@@ -1188,7 +1188,7 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C, session: &mut Cli
                 "$set": { CHAMP_PATH_CUUIDS: &path_cuuids },
                 "$currentDate": { CHAMP_MODIFICATION: true }
             };
-            collection.update_one_with_session(filtre, ops, None, session).await?;
+            collection_typed.update_one_with_session(filtre, ops, None, session).await?;
 
             match type_node {
                 TypeNode::Fichier => {
@@ -1205,7 +1205,7 @@ async fn recalculer_path_cuuids<M,C>(middleware: &M, cuuid: C, session: &mut Cli
     Ok(())
 }
 
-async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
+async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1243,29 +1243,15 @@ async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, gestionnair
     }
 
     // Recalculer les paths des sous-repertoires et fichiers
+    if middleware.get_mode_regeneration() {
+        // Troubleshooting rebuilding
+        session.commit_transaction().await?;
+        start_transaction_regeneration(session).await?;
+    }
     debug!("transaction_deplacer_fichiers_collection Recalculer path fuuids sous {}", transaction_collection.cuuid_destination);
     if let Err(e) = recalculer_path_cuuids(middleware, &transaction_collection.cuuid_destination, session).await {
         error!("transaction_deplacer_fichiers_collection Erreur recalculer_cuuids_fichiers : {:?}", e);
     }
-
-    // for tuuid in &transaction_collection.inclure_tuuids {
-    //     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    //     if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_DEPLACER_FICHIER_COLLECTION).await {
-    //         warn!("transaction_deplacer_fichiers_collection Erreur emettre_evenement_maj_fichier : {:?}", e);
-    //     }
-    // }
-
-    // {
-    //     let mut evenement_source = EvenementContenuCollection::new(transaction_collection.cuuid_origine.clone());
-    //     // evenement_source.cuuid = Some(transaction_collection.cuuid_origine.clone());
-    //     evenement_source.retires = Some(transaction_collection.inclure_tuuids.clone());
-    //     emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_source).await?;
-    //
-    //     let mut evenement_destination = EvenementContenuCollection::new(transaction_collection.cuuid_destination.clone());
-    //     // evenement_destination.cuuid = Some(transaction_collection.cuuid_destination.clone());
-    //     evenement_destination.fichiers_ajoutes = Some(transaction_collection.inclure_tuuids.clone());
-    //     emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_destination).await?;
-    // }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -2173,138 +2159,138 @@ async fn transaction_decrire_collection<M>(middleware: &M, gestionnaire: &GrosFi
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao
-{
-    debug!("transaction_favoris_creerpath Consommer transaction : {}", transaction.transaction.id);
-    let transaction_collection: TransactionFavorisCreerpath = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    let uuid_transaction = &transaction.transaction.id;
-
-    let user_id = match &transaction_collection.user_id {
-        Some(u) => u.to_owned(),
-        None => {
-            match transaction.certificat.get_user_id()? {
-                Some(inner) => inner,
-                None => Err(CommonError::Str("grosfichiers.transaction_favoris_creerpath Erreur user_id absent du certificat"))?
-            }
-        }
-    };
-
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-
-    let date_courante = Utc::now();
-    let tuuid_favoris = format!("{}_{}", &user_id, &transaction_collection.favoris_id);
-
-    {
-        let ops_favoris = doc! {
-            "$setOnInsert": {
-                CHAMP_TUUID: &tuuid_favoris,
-                CHAMP_NOM: &transaction_collection.favoris_id,
-                CHAMP_CREATION: &date_courante,
-                CHAMP_MODIFICATION: &date_courante,
-                CHAMP_SECURITE: SECURITE_3_PROTEGE,
-                CHAMP_USER_ID: &user_id,
-            },
-            "$set": {
-                CHAMP_SUPPRIME: false,
-                CHAMP_FAVORIS: true,
-            }
-        };
-        let filtre_favoris = doc! {CHAMP_TUUID: &tuuid_favoris};
-        let options_favoris = FindOneAndUpdateOptions::builder()
-            .upsert(true)
-            .return_document(ReturnDocument::After)
-            .build();
-        let doc_favoris_opt = match collection.find_one_and_update_with_session(
-            filtre_favoris, ops_favoris, Some(options_favoris), session).await {
-            Ok(f) => Ok(f),
-            Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur find_one_and_update doc favoris : {:?}", e))
-        }?;
-
-        if doc_favoris_opt.is_none() {
-            Err(format!("grosfichiers.transaction_favoris_creerpath Erreur creation document favoris"))?;
-        }
-    }
-
-    let mut cuuid_courant = tuuid_favoris.clone();
-    let mut idx = 0;
-    let tuuid_leaf = match transaction_collection.path_collections {
-        Some(path_collections) => {
-            for path_col in path_collections {
-                idx = idx+1;
-                // Trouver ou creer favoris
-                let filtre = doc!{
-                    CHAMP_CUUIDS: &cuuid_courant,
-                    CHAMP_USER_ID: &user_id,
-                    CHAMP_NOM: &path_col,
-                };
-                let doc_path = match collection.find_one_with_session(filtre, None, session).await {
-                    Ok(d) => Ok(d),
-                    Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur creation doc collection path {} : {:?}", path_col, e))
-                }?;
-                match doc_path {
-                    Some(d) => {
-                        debug!("grosfichiers.transaction_favoris_creerpath Mapper info collection : {:?}", d);
-                        let collection_info: InformationCollection = match convertir_bson_deserializable(d) {
-                            Ok(inner_collection) => Ok(inner_collection),
-                            Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur conversion bson path {} : {:?}", path_col, e))
-                        }?;
-                        cuuid_courant = collection_info.tuuid.clone();
-
-                        let flag_supprime = match collection_info.supprime {
-                            Some(f) => f,
-                            None => true
-                        };
-
-                        if flag_supprime {
-                            // MAj collection, flip flags
-                            let filtre = doc!{CHAMP_TUUID: &collection_info.tuuid};
-                            let ops = doc!{
-                                "$set": {CHAMP_SUPPRIME: false},
-                                "$currentDate": {CHAMP_MODIFICATION: true}
-                            };
-                            match collection.update_one_with_session(filtre, ops, None, session).await {
-                                Ok(_) => (),
-                                Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur flip flag supprime de tuuid={} : {:?}", &collection_info.tuuid, e))?
-                            }
-                        }
-                    },
-                    None => {
-                        // Creer la nouvelle collection
-                        let tuuid = format!("{}_{}", uuid_transaction, idx);
-                        let collection_info = doc!{
-                            CHAMP_TUUID: &tuuid,
-                            CHAMP_NOM: &path_col,
-                            CHAMP_CREATION: &date_courante,
-                            CHAMP_MODIFICATION: &date_courante,
-                            CHAMP_SECURITE: SECURITE_3_PROTEGE,
-                            CHAMP_USER_ID: &user_id,
-                            CHAMP_SUPPRIME: false,
-                            CHAMP_FAVORIS: false,
-                            CHAMP_CUUIDS: vec![cuuid_courant]
-                        };
-                        match collection.insert_one_with_session(collection_info, None, session).await {
-                            Ok(_) => Ok(()),
-                            Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur insertion collection path {} : {:?}", path_col, e))
-                        }?;
-                        cuuid_courant = tuuid.clone();
-                    }
-                }
-            }
-
-            // Retourner le dernier identifcateur de collection (c'est le tuuid)
-            cuuid_courant
-        },
-        None => tuuid_favoris.clone()
-    };
-
-    if let Err(e) = recalculer_path_cuuids(middleware, tuuid_favoris, session).await {
-        Err(format!("grosfichiers.transaction_favoris_creerpath Erreur recalculer_path_cuuids : {:?}", e))?
-    }
-
-    // Retourner le tuuid comme reponse, aucune transaction necessaire
-    Ok(Some(middleware.build_reponse(json!({CHAMP_TUUID: &tuuid_leaf}))?.0))
-}
+// async fn transaction_favoris_creerpath<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+//     where M: GenerateurMessages + MongoDao
+// {
+//     debug!("transaction_favoris_creerpath Consommer transaction : {}", transaction.transaction.id);
+//     let transaction_collection: TransactionFavorisCreerpath = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+//     let uuid_transaction = &transaction.transaction.id;
+//
+//     let user_id = match &transaction_collection.user_id {
+//         Some(u) => u.to_owned(),
+//         None => {
+//             match transaction.certificat.get_user_id()? {
+//                 Some(inner) => inner,
+//                 None => Err(CommonError::Str("grosfichiers.transaction_favoris_creerpath Erreur user_id absent du certificat"))?
+//             }
+//         }
+//     };
+//
+//     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+//
+//     let date_courante = Utc::now();
+//     let tuuid_favoris = format!("{}_{}", &user_id, &transaction_collection.favoris_id);
+//
+//     {
+//         let ops_favoris = doc! {
+//             "$setOnInsert": {
+//                 CHAMP_TUUID: &tuuid_favoris,
+//                 CHAMP_NOM: &transaction_collection.favoris_id,
+//                 CHAMP_CREATION: &date_courante,
+//                 CHAMP_MODIFICATION: &date_courante,
+//                 CHAMP_SECURITE: SECURITE_3_PROTEGE,
+//                 CHAMP_USER_ID: &user_id,
+//             },
+//             "$set": {
+//                 CHAMP_SUPPRIME: false,
+//                 CHAMP_FAVORIS: true,
+//             }
+//         };
+//         let filtre_favoris = doc! {CHAMP_TUUID: &tuuid_favoris};
+//         let options_favoris = FindOneAndUpdateOptions::builder()
+//             .upsert(true)
+//             .return_document(ReturnDocument::After)
+//             .build();
+//         let doc_favoris_opt = match collection.find_one_and_update_with_session(
+//             filtre_favoris, ops_favoris, Some(options_favoris), session).await {
+//             Ok(f) => Ok(f),
+//             Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur find_one_and_update doc favoris : {:?}", e))
+//         }?;
+//
+//         if doc_favoris_opt.is_none() {
+//             Err(format!("grosfichiers.transaction_favoris_creerpath Erreur creation document favoris"))?;
+//         }
+//     }
+//
+//     let mut cuuid_courant = tuuid_favoris.clone();
+//     let mut idx = 0;
+//     let tuuid_leaf = match transaction_collection.path_collections {
+//         Some(path_collections) => {
+//             for path_col in path_collections {
+//                 idx = idx+1;
+//                 // Trouver ou creer favoris
+//                 let filtre = doc!{
+//                     CHAMP_CUUIDS: &cuuid_courant,
+//                     CHAMP_USER_ID: &user_id,
+//                     CHAMP_NOM: &path_col,
+//                 };
+//                 let doc_path = match collection.find_one_with_session(filtre, None, session).await {
+//                     Ok(d) => Ok(d),
+//                     Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur creation doc collection path {} : {:?}", path_col, e))
+//                 }?;
+//                 match doc_path {
+//                     Some(d) => {
+//                         debug!("grosfichiers.transaction_favoris_creerpath Mapper info collection : {:?}", d);
+//                         let collection_info: InformationCollection = match convertir_bson_deserializable(d) {
+//                             Ok(inner_collection) => Ok(inner_collection),
+//                             Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur conversion bson path {} : {:?}", path_col, e))
+//                         }?;
+//                         cuuid_courant = collection_info.tuuid.clone();
+//
+//                         let flag_supprime = match collection_info.supprime {
+//                             Some(f) => f,
+//                             None => true
+//                         };
+//
+//                         if flag_supprime {
+//                             // MAj collection, flip flags
+//                             let filtre = doc!{CHAMP_TUUID: &collection_info.tuuid};
+//                             let ops = doc!{
+//                                 "$set": {CHAMP_SUPPRIME: false},
+//                                 "$currentDate": {CHAMP_MODIFICATION: true}
+//                             };
+//                             match collection.update_one_with_session(filtre, ops, None, session).await {
+//                                 Ok(_) => (),
+//                                 Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur flip flag supprime de tuuid={} : {:?}", &collection_info.tuuid, e))?
+//                             }
+//                         }
+//                     },
+//                     None => {
+//                         // Creer la nouvelle collection
+//                         let tuuid = format!("{}_{}", uuid_transaction, idx);
+//                         let collection_info = doc!{
+//                             CHAMP_TUUID: &tuuid,
+//                             CHAMP_NOM: &path_col,
+//                             CHAMP_CREATION: &date_courante,
+//                             CHAMP_MODIFICATION: &date_courante,
+//                             CHAMP_SECURITE: SECURITE_3_PROTEGE,
+//                             CHAMP_USER_ID: &user_id,
+//                             CHAMP_SUPPRIME: false,
+//                             CHAMP_FAVORIS: false,
+//                             CHAMP_CUUIDS: vec![cuuid_courant]
+//                         };
+//                         match collection.insert_one_with_session(collection_info, None, session).await {
+//                             Ok(_) => Ok(()),
+//                             Err(e) => Err(format!("grosfichiers.transaction_favoris_creerpath Erreur insertion collection path {} : {:?}", path_col, e))
+//                         }?;
+//                         cuuid_courant = tuuid.clone();
+//                     }
+//                 }
+//             }
+//
+//             // Retourner le dernier identifcateur de collection (c'est le tuuid)
+//             cuuid_courant
+//         },
+//         None => tuuid_favoris.clone()
+//     };
+//
+//     if let Err(e) = recalculer_path_cuuids(middleware, tuuid_favoris, session).await {
+//         Err(format!("grosfichiers.transaction_favoris_creerpath Erreur recalculer_path_cuuids : {:?}", e))?
+//     }
+//
+//     // Retourner le tuuid comme reponse, aucune transaction necessaire
+//     Ok(Some(middleware.build_reponse(json!({CHAMP_TUUID: &tuuid_leaf}))?.0))
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InformationCollection {
@@ -2746,15 +2732,20 @@ async fn traiter_transaction_supprimer_orphelins<M>(middleware: &M, transaction:
 
             let filtre_version = doc! { CHAMP_FUUID: &fuuid, CHAMP_SUPPRIME: true };
             collection_versions.delete_many_with_session(filtre_version, None, session).await?;
-
-            // Nettoyage fichiers sans versions
-            let filtre_rep_vide = doc! {
-                CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
-                format!("{}.0", CHAMP_FUUIDS_VERSIONS): {"$exists": false}
-            };
-            collection_rep.delete_many_with_session(filtre_rep_vide, None, session).await?;
         }
     }
+
+    if middleware.get_mode_regeneration() {
+        session.commit_transaction().await?;
+        start_transaction_regeneration(session).await?;
+    }
+
+    // Nettoyage fichiers sans versions
+    let filtre_rep_vide = doc! {
+        CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
+        format!("{}.0", CHAMP_FUUIDS_VERSIONS): {"$exists": false}
+    };
+    collection_rep.delete_many_with_session(filtre_rep_vide, None, session).await?;
 
     let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };
     Ok(Some(middleware.build_reponse(reponse)?.0))
