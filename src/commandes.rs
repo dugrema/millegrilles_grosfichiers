@@ -45,6 +45,10 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
 {
     debug!("consommer_commande : {:?}", &m.type_message);
 
+    if middleware.get_mode_regeneration() {
+        return Ok(Some(middleware.reponse_err(Some(503), None, Some("System rebuild in progress"))?))
+    }
+
     let user_id = m.certificat.get_user_id()?;
     let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
 

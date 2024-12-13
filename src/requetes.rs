@@ -50,6 +50,10 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
 {
     debug!("Consommer requete : {:?}", &message.type_message);
 
+    if middleware.get_mode_regeneration() {
+        return Ok(Some(middleware.reponse_err(Some(503), None, Some("System rebuild in progress"))?))
+    }
+
     let user_id = message.certificat.get_user_id()?;
     let role_prive = message.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
 

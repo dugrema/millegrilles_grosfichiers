@@ -40,6 +40,11 @@ pub async fn consommer_evenement<M>(middleware: &M, gestionnaire: &GrosFichiersD
 {
     debug!("consommer_evenement Consommer evenement : {:?}", &m.type_message);
 
+    if middleware.get_mode_regeneration() {
+        // Ignore event
+        return Ok(None)
+    }
+
     // Autorisation : doit etre de niveau 3.protege ou 4.secure
     match m.certificat.verifier_exchanges(vec![Securite::L1Public, Securite::L2Prive])? {
         true => Ok(()),
