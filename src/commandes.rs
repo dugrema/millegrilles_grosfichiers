@@ -504,6 +504,10 @@ async fn commande_associer_video<M>(middleware: &M, m: MessageValide, gestionnai
     // Traiter la transaction
     let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
 
+    // Remove video job
+    let job_id = match commande.job_id.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None};
+    set_flag_video_traite(middleware, commande.tuuid.as_ref(), fuuid, job_id, session).await?;
+
     // Touch - s'assure que le client va voir que le fichier a ete modifie (sync)
     if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), vec![fuuid], session).await {
         error!("commande_associer_video Erreur touch_fichiers_rep {:?}/{:?} : {:?}", user_id, fuuid, e);
