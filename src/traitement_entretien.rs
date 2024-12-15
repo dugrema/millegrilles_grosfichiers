@@ -264,6 +264,10 @@ where M: GenerateurMessages + MongoDao
             sauvegarder_fuuid_inconnu(middleware, &remaining, session).await?;
         }
 
+        // Commit batch
+        session.commit_transaction().await?;
+        start_transaction_regular(session).await?;
+
         if visits.len() < VISIT_BATCH_SIZE {
             break  // All current files covered
         }
