@@ -1453,7 +1453,7 @@ async fn supprimer_versions_conditionnel<M,T,U>(middleware: &M, user_id: U, fuui
 }
 
 async fn supprimer_tuuids<M,U,T>(middleware: &M, user_id_in: U, tuuids_in: Vec<T>, session: &mut ClientSession)
-    -> Result<HashMap<String, Vec<String>>, CommonError>
+    -> Result<(), CommonError>
     where M: MongoDao, U: AsRef<str>, T: AsRef<str>
 {
     let user_id = user_id_in.as_ref();
@@ -1521,10 +1521,11 @@ async fn supprimer_tuuids<M,U,T>(middleware: &M, user_id_in: U, tuuids_in: Vec<T
     let fuuids_a_supprimer: Vec<String> = fuuids_a_supprimer.into_iter().collect();
     supprimer_versions_conditionnel(middleware, &user_id, &fuuids_a_supprimer, session).await?;
 
+    // Obsolete as of 2024.9
     // Parcourir les elements pour recuperer les tuuids qui viennent d'etre supprimes (indirect)
-    let tuuids_retires_par_cuuid = find_tuuids_retires(middleware, user_id, tuuids, session).await?;
+    // let tuuids_retires_par_cuuid = find_tuuids_retires(middleware, user_id, tuuids, session).await?;
 
-    Ok(tuuids_retires_par_cuuid)
+    Ok(())
 }
 
 async fn transaction_supprimer_documents<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
@@ -1539,22 +1540,20 @@ async fn transaction_supprimer_documents<M>(middleware: &M, gestionnaire: &GrosF
         None => Err(CommonError::Str("grosfichiers.transaction_supprimer_documents Erreur user_id absent du certificat"))?
     };
 
-    // Conserver liste de tuuids par cuuid, utilise pour evenement
-    let mut tuuids_retires_par_cuuid: HashMap<String, Vec<String>> = match supprimer_tuuids(
+    match supprimer_tuuids(
         middleware, &user_id, transaction_collection.tuuids, session).await {
-        Ok(inner) => inner,
+        Ok(_) => (),
         Err(e) => Err(format!("grosfichiers.transaction_supprimer_documents Erreur supprimer_tuuids : {:?}", e))?
-    };
-
-    debug!("transaction_supprimer_documents Emettre messages pour tuuids retires : {:?}", tuuids_retires_par_cuuid);
-
-    // TODO: Mettre dans commandes
-    // Emettre evenements supprime par cuuid
-    for (cuuid, liste) in tuuids_retires_par_cuuid {
-        let mut evenement = EvenementContenuCollection::new(cuuid);
-        evenement.retires = Some(liste);
-        emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
     }
+
+    // Obsolete - this transaction is no longer used directly by a command (replaced by deleteV2 as of 2024.9)
+    // debug!("transaction_supprimer_documents Emettre messages pour tuuids retires : {:?}", tuuids_retires_par_cuuid);
+    // // Emettre evenements supprime par cuuid
+    // for (cuuid, liste) in tuuids_retires_par_cuuid {
+    //     let mut evenement = EvenementContenuCollection::new(cuuid);
+    //     evenement.retires = Some(liste);
+    //     emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
+    // }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
