@@ -16,7 +16,7 @@ use millegrilles_common_rust::fichiers::is_mimetype_video;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
 use millegrilles_common_rust::hachages::hacher_bytes;
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_v2};
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{MessageMilleGrillesBufferDefault, MessageMilleGrillesOwned};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao, verifier_erreur_duplication_mongo, convertir_to_bson_array, start_transaction_regular, start_transaction_regeneration};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::multibase::Base;
@@ -32,7 +32,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epo
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::mapstringepochseconds;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
-use millegrilles_common_rust::mongodb::ClientSession;
+use millegrilles_common_rust::mongodb::{ClientSession, Collection};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::{emettre_evenement_contenu_collection, EvenementContenuCollection};
 
@@ -75,6 +75,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GrosFichiersDomainManag
         TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, gestionnaire, transaction, session).await,
         TRANSACTION_RECUPERER_DOCUMENTS_V2 => transaction_recuperer_documents_v2(middleware, transaction, session).await,
         TRANSACTION_SUPPRIMER_ORPHELINS => transaction_supprimer_orphelins(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_DELETE_V2 => transaction_delete_v2(middleware, gestionnaire, transaction, session).await,
 
         // Media
         TRANSACTION_SUPPRIMER_VIDEO => transaction_supprimer_video(middleware, gestionnaire, transaction, session).await,
@@ -2835,4 +2836,104 @@ async fn traiter_transaction_supprimer_orphelins<M>(middleware: &M, transaction:
 
     let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };
     Ok(Some(middleware.build_reponse(reponse)?.0))
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TransactionDeleteV2 {
+    pub command: MessageMilleGrillesOwned,
+    pub directories: Option<Vec<String>>,
+    pub subdirectories: Option<Vec<String>>,
+    pub files: Option<Vec<String>>,
+    pub user_id: Option<String>,
+}
+
+async fn transaction_delete_v2<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao
+{
+    debug!("transaction_supprimer_documents Consommer transaction : {}", transaction.transaction.id);
+    let transaction_content: TransactionDeleteV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+
+    let collection_fichiersrep =
+        middleware.get_collection_typed::<NodeFichierRepBorrowed>(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_fichiersversion =
+        middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
+
+    // Handle subdirectories first
+    if let Some(subdirectories) = transaction_content.subdirectories {
+        delete_file_versions_from_directories(middleware, session, &subdirectories).await?;
+
+        // Mark all the files as indirectly deleted in the rep collection
+        let filtre_rep = doc! { "path_cuuids.0": {"$in": &subdirectories}, "supprime": false, "type_node": TypeNode::Fichier.to_str() };
+        let ops = doc!{"$set": {"supprime": true, "supprime_indirect": true}, "$currentDate": {CHAMP_MODIFICATION: true}};
+        collection_fichiersrep.update_many_with_session(filtre_rep, ops, None, session).await?;
+
+        // Mark all listed subdirectories as deleted indirectly.
+        let directory_filtre = doc!{ "tuuid": {"$in": subdirectories} };
+        let directory_ops = doc!{"$set": {"supprime": true, "supprime_indirect": true}, "$currentDate": {CHAMP_MODIFICATION: true} };
+        collection_fichiersrep.update_many_with_session(directory_filtre, directory_ops, None, session).await?;
+    }
+
+    // Directories being directly targeted by the delete command
+    if let Some(directories) = transaction_content.directories {
+        delete_file_versions_from_directories(middleware, session, &directories).await?;
+
+        // Mark all the files as indirectly deleted in the rep collection
+        let filtre_rep = doc! { "path_cuuids.0": {"$in": &directories}, "supprime": false, "type_node": TypeNode::Fichier.to_str() };
+        let ops = doc!{"$set": {"supprime": true, "supprime_indirect": true}, "$currentDate": {CHAMP_MODIFICATION: true}};
+        collection_fichiersrep.update_many_with_session(filtre_rep, ops, None, session).await?;
+
+        // Mark all listed directories as deleted directly.
+        let directory_filtre = doc!{ "tuuid": {"$in": directories} };
+        let directory_ops = doc!{"$set": {"supprime": true, "supprime_indirect": false}, "$currentDate": {CHAMP_MODIFICATION: true} };
+        collection_fichiersrep.update_many_with_session(directory_filtre, directory_ops, None, session).await?;
+    }
+
+    if let Some(files) = transaction_content.files {
+        // Mark all listed files as deleted.
+        let file_filtre = doc!{ "tuuid": {"$in": &files} };
+
+        let version_ops = doc!{"$set": {"supprime": true}, "$currentDate": {CHAMP_MODIFICATION: true} };
+        collection_fichiersversion.update_many_with_session(file_filtre.clone(), version_ops, None, session).await?;
+
+        let rep_ops = doc!{"$set": {"supprime": true, "supprime_indirect": false}, "$currentDate": {CHAMP_MODIFICATION: true} };
+        collection_fichiersrep.update_many_with_session(file_filtre, rep_ops, None, session).await?;
+    }
+
+    Ok(Some(middleware.reponse_ok(None, None)?))
+}
+
+async fn delete_file_versions_from_directories<M>(middleware: &M, session: &mut ClientSession, subdirectories: &Vec<String>)
+    -> Result<(), CommonError>
+    where M: MongoDao
+{
+    // Iterate through all directories in fichiers rep to find matching files. The recursive
+    // work of finding subdirectories has already been done in the command.
+
+    let collection_fichiersrep =
+        middleware.get_collection_typed::<NodeFichierRepBorrowed>(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_fichiersversion =
+        middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
+
+    for cuuid in subdirectories {
+        // List all files directly under the cuuid (and not already deleted)
+        let filtre_files = doc! {
+            "path_cuuids.0": cuuid,
+            "supprime": false,
+            "type_node": TypeNode::Fichier.to_str()
+        };
+        let mut cursor = collection_fichiersrep.find_with_session(filtre_files.clone(), None, session).await?;
+        let mut file_tuuids = Vec::new();
+        while cursor.advance(session).await? {
+            let row = cursor.deserialize_current()?;
+            file_tuuids.push(row.tuuid.to_owned());
+        }
+
+        // Mark all files in the version collection as deleted
+        let filtre_tuuids = doc! {"tuuid": {"$in": file_tuuids}};
+        let ops_versions = doc! {"$set": {"supprime": true}, "$currentDate": {CHAMP_MODIFICATION: true}};
+        collection_fichiersversion.update_many_with_session(filtre_tuuids.clone(), ops_versions, None, session).await?;
+    }
+
+    Ok(())
 }

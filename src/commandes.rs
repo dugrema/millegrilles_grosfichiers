@@ -121,6 +121,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
             Ok(result)
         },
         Err(e) => {
+            warn!("consommer_commande Command DB session aborted");
             session.abort_transaction().await?;
             Err(e)
         }
@@ -800,9 +801,19 @@ async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageVali
     // Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
 }
 
+#[derive(Deserialize)]
+struct CommandeSupprimerV2 {
+    tuuids: Vec<String>,
+}
+
 #[derive(Serialize)]
 struct CommandeSupprimerTuuidsIndex {
     tuuids: Vec<String>
+}
+
+struct DirectoryInformation {
+    tuuid: String,
+    path_cuuids: Vec<String>,
 }
 
 async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
@@ -810,25 +821,17 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
     debug!("commande_supprimer_documents Consommer commande : {:?}", & m.type_message);
-    let commande: TransactionSupprimerDocuments = {
+    let commande: CommandeSupprimerV2 = {
         let message_ref = m.message.parse()?;
         message_ref.contenu()?.deserialize()?
     };
-
-    // let commande: TransactionSupprimerDocuments = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_supprimer_documents versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
     let user_id = m.certificat.get_user_id()?;
     let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive && user_id.is_some() {
         let user_id_str = user_id.as_ref().expect("user_id");
-        let mut tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
-        if let Some(t) = commande.cuuid.as_ref() {
-            if t != "" {
-                tuuids.push(t.as_str());
-            }
-        }
+        let tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
         let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
         if let Some(erreur) = resultat.erreur {
             return Ok(Some(erreur.try_into()?))
@@ -836,34 +839,169 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
     } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
+        Err(format!("commande_supprimer_documents: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
-    // Traiter la transaction
-    let result = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
-
-    let routage = RoutageMessageAction::builder("solrrelai", "supprimerTuuids", vec![Securite::L3Protege])
-        .timeout_blocking(1_500)
-        .build();
-    let commande_index = CommandeSupprimerTuuidsIndex { tuuids: commande.tuuids.clone() };
-    match middleware.transmettre_commande(routage.clone(), commande_index).await? {
-        Some(result) => {
-            if ! verifier_reponse_ok(&result) {
-                warn!("Erreur suppression tuuids:{:?} de l'index (err solr) : {:?}", commande.tuuids, result);
+    // Separate the directories from the files.
+    let collection_fichierrep =
+        middleware.get_collection_typed::<NodeFichierRepBorrowed>(NOM_COLLECTION_FICHIERS_REP)?;
+    let filtre = doc!{"tuuid": {"$in": &commande.tuuids}};
+    let mut cursor = collection_fichierrep.find_with_session(filtre, None, session).await?;
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+    let mut tuuids_by_cuuid: HashMap<String, Vec<String>> = HashMap::new();
+    while cursor.advance(session).await? {
+        let row = cursor.deserialize_current()?;
+        if let Some(user_id) = user_id.as_ref() {
+            if row.user_id != user_id.as_str() {
+                warn!("commande_supprimer_documents Deleting file with wrong user_id, SKIPPING");
+                continue
             }
-        },
-        None => warn!("Erreur suppression tuuids:{:?} de l'index - aucune reponse", commande.tuuids)
+        }
+        if row.type_node == TypeNode::Fichier.to_str() {
+            files.push(row.tuuid.to_owned());
+        } else {
+            directories.push(row.tuuid.to_owned());
+        }
+
+        // Map all tuuids for post-transaction cleanup (search index, events)
+        let cuuid = match row.path_cuuids {
+            Some(path_cuuids) => match path_cuuids.get(0) {
+                Some(cuuid) => *cuuid,
+                None => "root",
+            },
+            None => "root"
+        };
+        match tuuids_by_cuuid.get_mut(cuuid) {
+            Some(tuuids) => tuuids.push(row.tuuid.to_owned()),
+            None => {
+                tuuids_by_cuuid.insert(cuuid.to_owned(), vec![row.tuuid.to_owned()]);
+            }
+        }
     }
 
-    // TODO - mettre evenements ici (liste generee dans transaction)
-    // debug!("transaction_supprimer_documents Emettre messages pour tuuids retires : {:?}", tuuids_retires_par_cuuid);
-    //
-    // // Emettre evenements supprime par cuuid
-    // for (cuuid, liste) in tuuids_retires_par_cuuid {
-    //     let mut evenement = EvenementContenuCollection::new(cuuid);
-    //     evenement.retires = Some(liste);
-    //     emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
-    // }
+    // Make a list of all subdirectories to delete.
+    // Only include subdirectories that are not already deleted.
+    let mut subdirectories = Vec::new();
+    let filtre = doc!{
+        "path_cuuids": {"$in": &directories},
+        "type_node": TypeNode::Repertoire.to_str(),
+        "supprime": false
+    };
+    let mut cursor = collection_fichierrep.find_with_session(filtre, None, session).await?;
+    while cursor.advance(session).await? {
+        let row = cursor.deserialize_current()?;
+        if let Some(user_id) = user_id.as_ref() {
+            if row.user_id != user_id.as_str() {
+                warn!("commande_supprimer_documents Deleting directory with wrong user_id, SKIPPING");
+                continue
+            }
+        }
+        subdirectories.push(row.tuuid.to_owned());
+
+        // Add all directory tuuids for post-transaction cleanup (search index, events)
+        let cuuid = match row.path_cuuids {
+            Some(path_cuuids) => match path_cuuids.get(0) {
+                Some(cuuid) => *cuuid,
+                None => "root",
+            },
+            None => "root"
+        };
+        match tuuids_by_cuuid.get_mut(cuuid) {
+            Some(tuuids) => tuuids.push(row.tuuid.to_owned()),
+            None => {
+                tuuids_by_cuuid.insert(cuuid.to_owned(), vec![row.tuuid.to_owned()]);
+            }
+        }
+    }
+
+    // Make a list of all files that will be affected. This is for post-transaction cleanup (search index, events).
+    let filtre = doc!{
+        "path_cuuids": {"$in": &directories},
+        "type_node": TypeNode::Fichier.to_str(),
+        "supprime": false
+    };
+    let mut cursor = collection_fichierrep.find_with_session(filtre, None, session).await?;
+    while cursor.advance(session).await? {
+        let row = cursor.deserialize_current()?;
+        if let Some(user_id) = user_id.as_ref() {
+            if row.user_id != user_id.as_str() {
+                warn!("commande_supprimer_documents Deleting directory with wrong user_id, SKIPPING");
+                continue
+            }
+        }
+        let cuuid = match row.path_cuuids {
+            Some(path_cuuids) => match path_cuuids.get(0) {
+                Some(cuuid) => *cuuid,
+                None => "root",
+            },
+            None => "root"
+        };
+        match tuuids_by_cuuid.get_mut(cuuid) {
+            Some(tuuids) => tuuids.push(row.tuuid.to_owned()),
+            None => {
+                tuuids_by_cuuid.insert(cuuid.to_owned(), vec![row.tuuid.to_owned()]);
+            }
+        }
+    }
+
+    // Create a new transaction with information to process
+    let result = {
+        let mut command_owned = m.message.parse_to_owned()?;
+        command_owned.certificat = None;
+        let transaction = TransactionDeleteV2 {
+            command: command_owned,
+            directories: match directories.len() {
+                0 => None,
+                _ => Some(directories)
+            },
+            subdirectories: match subdirectories.len() {
+                0 => None,
+                _ => Some(subdirectories)
+            },
+            files: match files.len() {
+                0 => None,
+                _ => Some(files)
+            },
+            user_id,
+        };
+
+        sauvegarder_traiter_transaction_serializable_v2(
+            middleware, &transaction, gestionnaire, session, DOMAINE_NOM, TRANSACTION_DELETE_V2).await?.0
+    };
+
+    // Commit, DB work is done. Only external events left to do (not a big deal if they fail).
+    session.commit_transaction().await?;
+    start_transaction_regular(session).await?;
+
+    debug!("commande_supprimer_documents Post transaction cleanup for : {:?}", tuuids_by_cuuid);
+
+    // Emettre evenements supprime par cuuid
+    for (cuuid, liste) in tuuids_by_cuuid.into_iter() {
+        let mut evenement = EvenementContenuCollection::new(cuuid);
+        evenement.retires = Some(liste.clone());
+        emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
+
+        // Cleanup of the search index. The list may be large and take a while to process.
+        // Just let it go after a short wait, not a big deal if it fails. It can be cleaned-up by reindexing the DB.
+        let routage = RoutageMessageAction::builder("solrrelai", "supprimerTuuids", vec![Securite::L3Protege])
+            .timeout_blocking(300)
+            .build();
+        let commande_index = CommandeSupprimerTuuidsIndex { tuuids: liste };
+        match middleware.transmettre_commande(routage.clone(), commande_index).await {
+            Ok(inner) => match inner {
+                Some(result) => {
+                    if !verifier_reponse_ok(&result) {
+                        warn!("commande_supprimer_documents Error remove tuuids from index (solr error) : {:?}", result);
+                    }
+                },
+                None => info!("commande_supprimer_documents No response from search index (short wait), moving on to next batch")
+            },
+            Err(_) => {
+                info!("commande_supprimer_documents No response from search index (short wait), moving on to next batch")
+            }
+        }
+    }
 
     Ok(result)
 }
