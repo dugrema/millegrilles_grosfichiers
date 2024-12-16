@@ -76,6 +76,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GrosFichiersDomainManag
         TRANSACTION_RECUPERER_DOCUMENTS_V2 => transaction_recuperer_documents_v2(middleware, transaction, session).await,
         TRANSACTION_SUPPRIMER_ORPHELINS => transaction_supprimer_orphelins(middleware, gestionnaire, transaction, session).await,
         TRANSACTION_DELETE_V2 => transaction_delete_v2(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_MOVE_V2 => transaction_move_v2(middleware, gestionnaire, transaction, session).await,
 
         // Media
         TRANSACTION_SUPPRIMER_VIDEO => transaction_supprimer_video(middleware, gestionnaire, transaction, session).await,
@@ -2935,4 +2936,64 @@ async fn delete_file_versions_from_directories<M>(middleware: &M, session: &mut 
     }
 
     Ok(())
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TransactionMoveV2Directory {
+    pub path: Vec<String>,
+    pub directories: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TransactionMoveV2 {
+    pub command: MessageMilleGrillesOwned,
+    pub destination: Vec<String>,
+    pub directories: Option<Vec<TransactionMoveV2Directory>>,
+    pub files: Option<Vec<String>>,
+    pub user_id: Option<String>,
+}
+
+async fn transaction_move_v2<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, transaction: TransactionValide, session: &mut ClientSession)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
+{
+    let transaction_content: TransactionMoveV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+
+    let collection_reps = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+    if let Some(files) = transaction_content.files {
+        let filtre = doc!{ "tuuid": {"$in": files}, "type_node": TypeNode::Fichier.to_str() };
+        let ops = doc! {
+            "$set": {"path_cuuids": &transaction_content.destination},
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        collection_reps.update_many_with_session(filtre, ops, None, session).await?;
+    }
+
+    if let Some(directories) = transaction_content.directories {
+        for move_command in directories {
+            // Move everything directly under the directories (including deleted files/subdirectory)
+            for directory in move_command.directories {
+                // Move the directory itself
+                let filtre = doc! { "tuuid": &directory };
+                let ops = doc! {
+                    "$set": {"path_cuuids": &move_command.path},
+                    "$currentDate": {CHAMP_MODIFICATION: true}
+                };
+                collection_reps.update_one_with_session(filtre, ops, None, session).await?;
+
+                // Move files under directory
+                let mut new_path = vec![&directory];
+                new_path.extend(&move_command.path);
+                let filtre = doc! { "path_cuuids.0": &directory, "type_node": TypeNode::Fichier.to_str() };
+                let ops = doc! {
+                    "$set": {"path_cuuids": new_path},
+                    "$currentDate": {CHAMP_MODIFICATION: true}
+                };
+                collection_reps.update_many_with_session(filtre, ops, None, session).await?;
+            }
+        }
+    }
+
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
