@@ -2962,6 +2962,7 @@ async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, 
             row.flag_index = false;  // Need to index new path
 
             // Insert the row with the updated identifiers
+            #[cfg(debug_assertions)]
             debug!("transaction_copy_v2 Copy (files-1) tuuid {} to {}", old_tuuid, row.tuuid);
             collection_reps.insert_one_with_session(row, None, session).await?;
         }
@@ -3029,6 +3030,7 @@ async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, 
                     row.path_cuuids = Some(destination.clone());
                     row.flag_index = false;  // Need to index new path
                     // Insert the directory with the updated identifiers
+                    #[cfg(debug_assertions)]
                     debug!("transaction_copy_v2 Copy (files-sub) tuuid {} to {}", old_tuuid, row.tuuid);
                     collection_reps.insert_one_with_session(row, None, session).await?;
                 }
