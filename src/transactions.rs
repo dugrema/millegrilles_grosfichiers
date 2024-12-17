@@ -655,7 +655,7 @@ async fn transaction_nouvelle_version<M>(middleware: &M, transaction: Transactio
     };
 
     let fuuid = transaction_fichier.fuuid;
-    let cuuid = transaction_fichier.cuuid;
+    // let cuuid = transaction_fichier.cuuid;
 
     // let mut flag_media = false;
     let mut flag_duplication = false;
@@ -726,10 +726,9 @@ async fn transaction_nouvelle_version<M>(middleware: &M, transaction: Transactio
         let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
         let filtre = doc! { CHAMP_TUUID: &tuuid, CHAMP_USER_ID: &user_id };
         let options = UpdateOptions::builder().upsert(true).build();
-        match collection.update_one_with_session(filtre, ops, options, session).await {
-            Ok(inner) => (),
-            Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur update_one fichier_version : {:?}", e))?
-        };
+        if let Err(e) = collection.update_one_with_session(filtre, ops, options, session).await {
+            Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur update_one fichier_version : {:?}", e))?
+        }
     }
 
     if flag_duplication == false {
@@ -761,11 +760,11 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, transaction: Transac
     debug!("transaction_nouvelle_collection Consommer transaction : {}", transaction.transaction.id);
     let transaction_collection: TransactionNouvelleCollection = serde_json::from_str(transaction.transaction.contenu.as_str())?;
 
-    // Conserver champs transaction uniquement (filtrer champs meta)
-    let doc_bson_transaction = match convertir_to_bson(&transaction_collection) {
-        Ok(d) => d,
-        Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion transaction en bson : {:?}", e))?
-    };
+    // // Conserver champs transaction uniquement (filtrer champs meta)
+    // let doc_bson_transaction = match convertir_to_bson(&transaction_collection) {
+    //     Ok(d) => d,
+    //     Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion transaction en bson : {:?}", e))?
+    // };
 
     let user_id = transaction.certificat.get_user_id()?;
 
@@ -831,8 +830,8 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, transaction: Transac
 
 #[derive(Deserialize)]
 struct RowRepertoirePaths {
-    tuuid: String,
-    cuuid: Option<String>,
+    // tuuid: String,
+    // cuuid: Option<String>,
     path_cuuids: Option<Vec<String>>,
 }
 
@@ -844,7 +843,7 @@ async fn get_path_cuuid<M,S>(middleware: &M, cuuid: S, session: &mut ClientSessi
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let filtre = doc! { CHAMP_TUUID: cuuid };
-    let options = FindOneOptions::builder().projection(doc!{CHAMP_TUUID: 1, CHAMP_CUUID: 1, CHAMP_PATH_CUUIDS: 1}).build();
+    let options = FindOneOptions::builder().projection(doc!{CHAMP_PATH_CUUIDS: 1}).build();
     let doc_parent: RowRepertoirePaths = match collection.find_one_with_session(filtre, options, session).await? {
         Some(inner) => convertir_bson_deserializable(inner)?,
         None => {
@@ -1078,7 +1077,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
                             let options = UpdateOptions::builder().upsert(true).build();
                             collection_versions.update_one_with_session(filtre, ops, options, session).await?;
                         } else {
-                            warn!{"dupliquer_structure_repertoires Version fichier src tuuid {} introuvable, skip", tuuid_src};
+                            warn!{"dupliquer_structure_repertoires Version fichier src tuuid {} introuvable, skip", tuuid_src}
                         }
                     }
                 },
@@ -1748,7 +1747,7 @@ async fn transaction_associer_conversions<M>(middleware: &M, transaction: Transa
         Some(inner) => Some(inner.as_str()),
         None => None
     };
-    let fuuid = transaction_mappee.fuuid.as_str();
+    // let fuuid = transaction_mappee.fuuid.as_str();
 
     let doc_images = match convertir_to_bson(transaction_mappee.images.clone()) {
         Ok(inner) => inner,
@@ -1871,22 +1870,23 @@ async fn transaction_associer_video<M>(middleware: &M, transaction: TransactionV
     // };
 
     let tuuid = transaction_mappee.tuuid.clone();
-    let job_id = match transaction_mappee.job_id.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None};
+    // let job_id = match transaction_mappee.job_id.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None};
 
     let doc_video = match convertir_to_bson(transaction_mappee.clone()) {
         Ok(inner) => inner,
         Err(e) => Err(format!("transactions.transaction_associer_video Erreur conversion images en bson : {:?}", e))?
     };
 
-    // Mapper tous les fuuids avec leur mimetype
-    let (fuuids, fuuid_mimetypes) = {
-        let mut fuuids = Vec::new();
-        let mut fuuid_mimetypes = HashMap::new();
-        fuuids.push(transaction_mappee.fuuid_video.clone());
-        fuuid_mimetypes.insert(transaction_mappee.fuuid_video.clone(), transaction_mappee.mimetype.clone());
-
-        (fuuids, fuuid_mimetypes)
-    };
+    // // Mapper tous les fuuids avec leur mimetype
+    // let (fuuids, fuuid_mimetypes) = {
+    //     let mut fuuids = Vec::new();
+    //     let mut fuuid_mimetypes = HashMap::new();
+    //     fuuids.push(transaction_mappee.fuuid_video.clone());
+    //     fuuid_mimetypes.insert(transaction_mappee.fuuid_video.clone(), transaction_mappee.mimetype.clone());
+    //
+    //     (fuuids, fuuid_mimetypes)
+    // };
+    let fuuids = vec![transaction_mappee.fuuid_video.clone()];
 
     let cle_video = match transaction_mappee.cle_conversion {
         Some(inner) => inner,  // Nouveau avec 2023.7.4
@@ -2083,15 +2083,8 @@ async fn transaction_decrire_fichier<M>(middleware: &M, transaction: Transaction
         "$currentDate": { CHAMP_MODIFICATION: true }
     };
     let collection = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
-    match collection.find_one_and_update_with_session(filtre, ops, None, session).await {
-        Ok(inner) => {
-            debug!("transaction_decire_fichier Update description : {:?}", inner);
-            if let Some(doc_fichier) = inner {
-                // Index traite via commmande - 2024.9
-                // Pour restore, trigger a la fin du rebuild.
-            }
-        },
-        Err(e) => Err(format!("transaction_decire_fichier Erreur update description : {:?}", e))?
+    if let Err(e) = collection.find_one_and_update_with_session(filtre, ops, None, session).await {
+        Err(format!("transaction_decire_fichier Erreur update description : {:?}", e))?
     }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
