@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 
 use log::{debug, info, error, warn};
-use millegrilles_common_rust::{serde_json, serde_json::json};
+use millegrilles_common_rust::{hex, serde_json, serde_json::json};
 use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::{bson, bson::{doc, Document}};
 use millegrilles_common_rust::bson::{Bson, bson};
@@ -14,7 +14,7 @@ use millegrilles_common_rust::db_structs::TransactionValide;
 use millegrilles_common_rust::dechiffrage::{DataChiffre, DataChiffreBorrow};
 use millegrilles_common_rust::fichiers::is_mimetype_video;
 use millegrilles_common_rust::generateur_messages::GenerateurMessages;
-use millegrilles_common_rust::hachages::hacher_bytes;
+use millegrilles_common_rust::hachages::{hacher_bytes, hacher_bytes_vu8};
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_v2};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{MessageMilleGrillesBufferDefault, MessageMilleGrillesOwned};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, MongoDao, verifier_erreur_duplication_mongo, convertir_to_bson_array, start_transaction_regular, start_transaction_regeneration};
@@ -30,9 +30,12 @@ use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epochseconds, optionepochseconds};
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
+use millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::mapstringepochseconds;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
+use millegrilles_common_rust::millegrilles_cryptographie::hachages::HachageCode;
 use millegrilles_common_rust::mongodb::{ClientSession, Collection};
+
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::{emettre_evenement_contenu_collection, EvenementContenuCollection};
 
@@ -295,6 +298,32 @@ pub struct NodeFichierRepBorrowed<'a> {
     pub path_cuuids: Option<Vec<&'a str>>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct NodeFichierRepRow<'a> {
+    /// Identificateur unique d'un node pour l'usager
+    pub tuuid: String,
+    pub user_id: String,
+    pub type_node: &'a str,
+    #[serde(default, rename(deserialize="_mg-derniere-modification"), with="chrono_datetime_as_bson_datetime")]
+    pub derniere_modification: DateTime<Utc>,
+    #[serde(default, rename(deserialize="_mg-creation"), with="chrono_datetime_as_bson_datetime")]
+    pub date_creation: DateTime<Utc>,
+    pub flag_index: bool,
+    pub supprime: bool,
+    pub supprime_indirect: bool,
+    pub metadata: DataChiffreBorrow<'a>,
+
+    // Champs pour type_node Fichier
+    pub mimetype: Option<&'a str>,
+    /// Fuuids des versions en ordre (plus recent en dernier)
+    pub fuuids_versions: Option<Vec<&'a str>>,
+
+    // Champs pour type_node Fichiers/Repertoires
+    /// Path des cuuids parents (inverse, parent immediat est index 0)
+    pub path_cuuids: Option<Vec<&'a str>>,
+}
+
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeFichierRepOwned {
     /// Identificateur unique d'un node pour l'usager
@@ -413,6 +442,71 @@ pub struct NodeFichierVersionSubtitlesOwned {
     title: Option<String>,
     codec_name: Option<String>,
 }
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct NodeFichierVersionRow<'a> {
+    pub fuuid: String,
+    pub tuuid: String,
+    pub user_id: String,
+    pub mimetype: &'a str,
+    pub metadata: DataChiffreBorrow<'a>,
+    pub taille: u64,
+
+    pub fuuids: Vec<&'a str>,
+    pub fuuids_reclames: Vec<&'a str>,
+
+    pub supprime: bool,
+    #[serde(with="mapstringepochseconds")]
+    pub visites: HashMap<String, DateTime<Utc>>,
+
+    // Mapping date
+    #[serde(rename(deserialize = "_mg-creation"), with = "chrono_datetime_as_bson_datetime")]
+    creation: DateTime<Utc>,
+    #[serde(rename(deserialize = "_mg-derniere-modification"), with = "chrono_datetime_as_bson_datetime")]
+    derniere_modification: DateTime<Utc>,
+
+    // Champs optionnels media
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub duration: Option<f32>,
+    #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
+    pub video_codec: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub anime: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub images: Option<HashMap<String, ImageConversion>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub video: Option<HashMap<String, TransactionAssocierVideoVersionDetail>>,
+
+    #[serde(skip_serializing_if="Option::is_none")]
+    flag_media: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_media_retry: Option<i32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_media_traite: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_video_traite: Option<bool>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub flag_index: Option<bool>,
+
+    // Information de chiffrage symmetrique (depuis 2024.3.0)
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub cle_id: Option<String>,
+    #[serde(default, with="optionformatchiffragestr", skip_serializing_if="Option::is_none")]
+    pub format: Option<FormatChiffrage>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub nonce: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub verification: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub audio: Option<Vec<NodeFichierVersionAudioOwned>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub subtitles: Option<Vec<NodeFichierVersionSubtitlesOwned>>,
+}
+
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeFichierVersionOwned {
@@ -3008,13 +3102,120 @@ pub struct TransactionCopyV2 {
     pub user_id: Option<String>,
 }
 
+fn digest_new_tuuid(transaction_id_bytes: &Vec<u8>, old_tuuid: &str) -> String {
+    let mut bytes_to_hash = old_tuuid.as_bytes().to_vec();
+    bytes_to_hash.extend(transaction_id_bytes);
+    let digest_value = hacher_bytes_vu8(&bytes_to_hash[..], Some(Code::Blake2s256));
+    hex::encode(digest_value)
+}
+
 async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
     let transaction_content: TransactionCopyV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    let user_id = &transaction_content.user_id;
 
-    let collection_reps = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_reps =
+        middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
 
-    todo!()
+    let transaction_id = &transaction.transaction.id;
+    let transaction_id_bytes = hex::decode(transaction_id)?;
+
+    if let Some(files) = transaction_content.files {
+        let destination: Vec<&str> = transaction_content.destination.iter().map(|s| s.as_str()).collect();
+        let filtre = doc!{"tuuid": {"$in": &files}};
+        let mut cursor_reps = collection_reps.find_with_session(filtre.clone(), None, session).await?;
+        while cursor_reps.advance(session).await? {
+            let mut row = cursor_reps.deserialize_current()?;
+
+            #[cfg(debug_assertions)]
+            let old_tuuid = row.tuuid.clone();
+
+            // Update path_cuuids and identifier. Then re-insert.
+            // Hash the old tuuid and the current transaction id with blake2s to get a new unique tuuid.
+            let new_tuuid = digest_new_tuuid(&transaction_id_bytes, row.tuuid.as_str());
+            row.tuuid = new_tuuid;
+            if let Some(user_id) = user_id {
+                // In case this is a copy from shared resource
+                row.user_id = user_id.to_owned();
+            }
+            row.path_cuuids = Some(destination.clone());
+            row.flag_index = false;  // Need to index new path
+
+            // Insert the row with the updated identifiers
+            debug!("transaction_copy_v2 Copy (files-1) tuuid {} to {}", old_tuuid, row.tuuid);
+            collection_reps.insert_one_with_session(row, None, session).await?;
+        }
+    }
+
+    if let Some(directories) = transaction_content.directories {
+        // Prepare a mapping for all the new directory tuuids - will be used to adjust the new path_cuuids.
+        let mut new_cuuid_map = HashMap::new();
+        for copy_directories in &directories {
+            for directory in &copy_directories.directories {
+                let new_directory_tuuid = digest_new_tuuid(&transaction_id_bytes, directory.as_str());
+                new_cuuid_map.insert(directory, new_directory_tuuid);
+            }
+        }
+
+        // Copy files and directories
+        for copy_directories in &directories {
+            for directory in &copy_directories.directories {
+                let mut destination: Vec<&str> = copy_directories.path.iter()
+                    .map(|s| {
+                        match new_cuuid_map.get(s) {
+                            Some(inner) => inner.as_str(),  // New cuuid
+                            None => s.as_str()  // Keep old cuuid (part of destination parent hierarchy)
+                        }
+                    })
+                    .collect();
+                // Copy the directory entry
+                let filtre = doc!{"tuuid": &directory};
+                let mut cursor_reps = collection_reps.find_with_session(filtre.clone(), None, session).await?;
+                let new_directory_tuuid = new_cuuid_map.get(&directory).expect("get new cuuid");
+                if cursor_reps.advance(session).await? {
+                    let mut row = cursor_reps.deserialize_current()?;
+                    row.tuuid = new_directory_tuuid.clone();
+                    if let Some(user_id) = user_id {
+                        // In case this is a copy from shared resource
+                        row.user_id = user_id.to_owned();
+                    }
+                    row.path_cuuids = Some(destination.clone());
+                    row.flag_index = false;  // Need to index new path
+                    // Insert the directory with the updated identifiers
+                    debug!("transaction_copy_v2 Copy (directories) tuuid {} to {}", directory, row.tuuid);
+                    collection_reps.insert_one_with_session(row, None, session).await?;
+                } else {
+                    error!("transaction_copy_v2 Directory {} not found during copy, skipping", directory);
+                    continue
+                }
+
+                // Copy all files
+                destination.insert(0, new_directory_tuuid.as_str());  // Prepend parent directory for files
+                let filtre = doc!{"path_cuuids.0": &directory, "type_node": TypeNode::Fichier.to_str(), "supprime": false};
+                let mut cursor_reps = collection_reps.find_with_session(filtre.clone(), None, session).await?;
+                while cursor_reps.advance(session).await? {
+                    let mut row = cursor_reps.deserialize_current()?;
+
+                    #[cfg(debug_assertions)]
+                    let old_tuuid = row.tuuid.clone();
+
+                    let new_tuuid = digest_new_tuuid(&transaction_id_bytes, row.tuuid.as_str());
+                    row.tuuid = new_tuuid;
+                    if let Some(user_id) = user_id {
+                        // In case this is a copy from shared resource
+                        row.user_id = user_id.to_owned();
+                    }
+                    row.path_cuuids = Some(destination.clone());
+                    row.flag_index = false;  // Need to index new path
+                    // Insert the directory with the updated identifiers
+                    debug!("transaction_copy_v2 Copy (files-sub) tuuid {} to {}", old_tuuid, row.tuuid);
+                    collection_reps.insert_one_with_session(row, None, session).await?;
+                }
+            }
+        }
+    }
+
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }

@@ -884,7 +884,10 @@ async fn parse_selection_directories<M>(
                     }
                 }
             }
-            Some(directories_move)
+            match directories_move.len() {
+                0 => None,
+                _ => Some(directories_move)
+            }
         }
     };
 
