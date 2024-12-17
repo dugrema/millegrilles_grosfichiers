@@ -956,6 +956,18 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
     let result = parse_selection_directories(
         middleware, user_id.clone(), &commande.cuuid, &commande.inclure_tuuids, session, false).await?;
 
+    // Check that the destination is not under the source (moving under itself breask the graph)
+    if let Some(directory_moves) = result.directories.as_ref() {
+        for directory_move in directory_moves {
+            for directory in &directory_move.directories {
+                if result.destination_path.contains(directory) {
+                    debug!("commande_deplacer_fichiers_collection Rejecting copy directory, the destination is under the source (this breaks the graph)");
+                    return Ok(Some(middleware.reponse_err(Some(3), None, Some("Cannot copy a directory under itself"))?))
+                }
+            }
+        }
+    }
+
     // Build the transaction
     let mut original_command = m.message.parse_to_owned()?;
     original_command.certificat = None;
@@ -1033,11 +1045,23 @@ async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageVali
     } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
+        Err(format!("grosfichiers.commande_deplacer_fichiers_collection: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
     let result = parse_selection_directories(
         middleware, user_id.clone(), &commande.cuuid_destination, &commande.inclure_tuuids, session, true).await?;
+
+    // Check that the destination is not under the source (moving under itself breask the graph)
+    if let Some(directory_moves) = result.directories.as_ref() {
+        for directory_move in directory_moves {
+            for directory in &directory_move.directories {
+                if result.destination_path.contains(directory) {
+                    debug!("commande_deplacer_fichiers_collection Rejecting move directory, the destination is under the source (this breaks the graph)");
+                    return Ok(Some(middleware.reponse_err(Some(3), None, Some("Cannot move a directory under itself"))?))
+                }
+            }
+        }
+    }
 
     // Build the transaction
     let mut original_command = m.message.parse_to_owned()?;

@@ -2888,8 +2888,9 @@ async fn transaction_move_v2<M>(middleware: &M, transaction: TransactionValide, 
             for directory in move_command.directories {
                 // Move the directory itself
                 let filtre = doc! { "tuuid": &directory };
+                // Change type_node to Repertoire if it is Collection. It is possible to move a top-level Collection under another.
                 let ops = doc! {
-                    "$set": {"path_cuuids": &move_command.path},
+                    "$set": {"path_cuuids": &move_command.path, "type_node": TypeNode::Repertoire.to_str()},
                     "$currentDate": {CHAMP_MODIFICATION: true}
                 };
                 collection_reps.update_one_with_session(filtre, ops, None, session).await?;
@@ -2999,6 +3000,7 @@ async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, 
                         row.user_id = user_id.to_owned();
                     }
                     row.path_cuuids = Some(destination.clone());
+                    row.type_node = TypeNode::Repertoire.to_str();  // It is possible to copy a Collection to another one
                     row.flag_index = false;  // Need to index new path
                     // Insert the directory with the updated identifiers
                     debug!("transaction_copy_v2 Copy (directories) tuuid {} to {}", directory, row.tuuid);
