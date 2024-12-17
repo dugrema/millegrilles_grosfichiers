@@ -108,7 +108,7 @@ impl DocumentIndexation {
         self.titre = fichier.titre.clone();
         self.description = fichier.description.clone();
         self.userid = fichier.user_id.clone();
-        self.cuuids = fichier.cuuids.clone();
+        self.cuuids = fichier.path_cuuids.clone();
     }
 }
 
@@ -128,7 +128,7 @@ impl TryFrom<FichierDetail> for DocumentIndexation {
             date_v_courante: version_courante.date_fichier.clone(),
             titre: value.titre,
             description: value.description,
-            cuuids: value.cuuids,
+            cuuids: value.path_cuuids,
             userid: value.user_id,
         })
     }

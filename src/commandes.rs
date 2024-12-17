@@ -1597,10 +1597,9 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestio
                                 }
                             }
                         }
-                        if let Some(cuuids) = fichier.cuuids {
-                            for cuuid in cuuids {
+                        if let Some(path_cuuids) = fichier.path_cuuids {
+                            if let Some(cuuid) = path_cuuids.first() {
                                 let mut evenement = EvenementContenuCollection::new(cuuid);
-                                // evenement.cuuid = Some(cuuid);
                                 evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
                                 emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
                             }

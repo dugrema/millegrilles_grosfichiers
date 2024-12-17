@@ -924,17 +924,14 @@ where
                 .build();
             middleware.emettre_evenement(routage, &fichier_mappe).await?;
 
-            if let Some(cuuid) = fichier_mappe.cuuid {
-                // Emettre evenement de mise a jour de la collection parent.
-                let mut evenement_modif = EvenementContenuCollection::new(cuuid.clone());
-                // evenement_modif.cuuid = Some(cuuid.clone());
-                evenement_modif.collections_modifiees = Some(vec![tuuid_str.to_string()]);
-                emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_modif).await?;
-                // let routage = RoutageMessageAction::builder(DOMAINE_NOM, EVENEMENT_MAJ_CONTENU_COLLECTION)
-                //     .exchanges(vec![Securite::L2Prive])
-                //     .partition(cuuid)
-                //     .build();
-                // middleware.emettre_evenement(routage, &evenement_modif).await?;
+            if let Some(path_cuuids) = fichier_mappe.path_cuuids {
+                if let Some(cuuid) = path_cuuids.first() {
+                    // Emettre evenement de mise a jour de la collection parent.
+                    let mut evenement_modif = EvenementContenuCollection::new(cuuid.clone());
+                    // evenement_modif.cuuid = Some(cuuid.clone());
+                    evenement_modif.collections_modifiees = Some(vec![tuuid_str.to_string()]);
+                    emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_modif).await?;
+                }
             }
         },
         None => Err(format!("grosfichiers.emettre_evenement_maj_collection Collection {} introuvable", tuuid_str))?
