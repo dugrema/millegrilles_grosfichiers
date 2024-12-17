@@ -645,6 +645,258 @@ async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuid
     Ok(reponse)
 }
 
+struct ParseSelectionDirectoriesResult {
+    destination_path: Vec<String>,
+    files: Option<Vec<String>>,
+    directories: Option<Vec<TransactionMoveV2Directory>>,
+}
+
+async fn parse_selection_directories<M>(
+    middleware: &M, user_id: Option<String>, destination_cuuid: &String, tuuids: &Vec<String>, session: &mut ClientSession,
+    keep_deleted: bool
+)
+    -> Result<ParseSelectionDirectoriesResult, CommonError>
+    where M: MongoDao
+{
+
+    let collection_fichierrep =
+        middleware.get_collection_typed::<NodeFichierRepBorrowed>(NOM_COLLECTION_FICHIERS_REP)?;
+
+    // Get the destination path. This will replace the path of all files/directories being moved.
+    // It will be used to update the path of subdirectories and their files.
+    let destination_path = {
+        let collection = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+        let filtre = doc!{"tuuid": destination_cuuid};
+        let destination_directory = match collection.find_one_with_session(filtre, None, session).await? {
+            Some(inner) => inner,
+            None => Err("Unknown destination directory")?
+        };
+        let mut destination_path = vec![destination_cuuid.to_owned()];
+        if let Some(path_cuuids) = destination_directory.path_cuuids {
+            destination_path.extend(path_cuuids.iter().map(|s| s.to_string()))
+        }
+        destination_path
+    };
+
+    debug!("commande_ajouter_fichiers_collection Destination path: {:?}", destination_path);
+
+    let filtre = doc!{"tuuid": {"$in": tuuids}};
+    let mut cursor = collection_fichierrep.find_with_session(filtre, None, session).await?;
+    let mut files = Vec::new();
+    let mut tuuids_by_cuuid: HashMap<String, Vec<String>> = HashMap::new();
+
+    let mut directories: Vec<NodeInformation> = Vec::new();
+
+    while cursor.advance(session).await? {
+        let row = cursor.deserialize_current()?;
+        let parent = match row.path_cuuids.as_ref() {
+            Some(inner) => match inner.get(0) {
+                Some(inner) => Some(inner.to_string()),
+                None => None
+            },
+            None => None
+        };
+        let node_info = NodeInformation { tuuid: row.tuuid.to_owned(), parent, destination_path: Some(destination_path.clone()) };
+        if let Some(user_id) = user_id.as_ref() {
+            if row.user_id != user_id.as_str() {
+                warn!("commande_ajouter_fichiers_collection File with wrong user_id, SKIPPING");
+                continue
+            }
+        }
+        if row.type_node == TypeNode::Fichier.to_str() {
+            files.push(node_info);
+        } else {
+            directories.push(node_info);
+        }
+
+        // Map all tuuids for post-transaction cleanup (search index, events)
+        let cuuid = match row.path_cuuids {
+            Some(path_cuuids) => match path_cuuids.get(0) {
+                Some(cuuid) => *cuuid,
+                None => "root",
+            },
+            None => "root"
+        };
+        match tuuids_by_cuuid.get_mut(cuuid) {
+            Some(tuuids) => tuuids.push(row.tuuid.to_owned()),
+            None => {
+                tuuids_by_cuuid.insert(cuuid.to_owned(), vec![row.tuuid.to_owned()]);
+            }
+        }
+    }
+
+    // Make a list of all subdirectories to move. Include all subdirectories (deleted or not).
+    let cuuids: Vec<&String> = directories.iter().map(|d| &d.tuuid).collect();
+    let mut filtre = doc!{
+        "path_cuuids": {"$in": &cuuids},
+        "type_node": TypeNode::Repertoire.to_str()
+    };
+    if ! keep_deleted {
+        filtre.insert("supprime", false);
+    }
+    let mut cursor = collection_fichierrep.find_with_session(filtre, None, session).await?;
+    while cursor.advance(session).await? {
+        let row = cursor.deserialize_current()?;
+        if let Some(user_id) = user_id.as_ref() {
+            if row.user_id != user_id.as_str() {
+                warn!("commande_ajouter_fichiers_collection Directory with wrong user_id, SKIPPING");
+                continue
+            }
+        }
+        // subdirectories.push(row.tuuid.to_owned());
+        let parent = match row.path_cuuids.as_ref() {
+            Some(inner) => match inner.get(0) {
+                Some(inner) => Some(inner.to_string()),
+                None => None
+            },
+            None => None
+        };
+        let node_info = NodeInformation { tuuid: row.tuuid.to_owned(), parent, destination_path: None };
+        directories.push(node_info);
+
+        // Add all directory tuuids for post-transaction cleanup (search index, events)
+        let cuuid = match row.path_cuuids {
+            Some(path_cuuids) => match path_cuuids.get(0) {
+                Some(cuuid) => *cuuid,
+                None => "root",
+            },
+            None => "root"
+        };
+        match tuuids_by_cuuid.get_mut(cuuid) {
+            Some(tuuids) => tuuids.push(row.tuuid.to_owned()),
+            None => {
+                tuuids_by_cuuid.insert(cuuid.to_owned(), vec![row.tuuid.to_owned()]);
+            }
+        }
+    }
+
+    debug!("commande_ajouter_fichiers_collection Directories list: {:?}", directories);
+
+    let directories_by_tuuid = {
+        let mut directories_by_tuuid = HashMap::new();
+
+        // Create destination node
+        directories_by_tuuid.insert(
+            destination_cuuid.to_owned(),
+            NodeInformation { tuuid: destination_cuuid.to_owned(), parent: None, destination_path: None }
+        );
+
+        for directory in &directories {
+            directories_by_tuuid.insert(directory.tuuid.to_owned(), directory.clone());
+        }
+        directories_by_tuuid
+    };
+
+    debug!("commande_ajouter_fichiers_collection Directories by tuuid: {:?}", directories_by_tuuid);
+
+    // Fill in the destination path for each node
+    for current_node in directories.iter_mut() {
+        let mut node_destination_path = vec![];
+        let mut depth = 0;
+
+        // Start parent at current node
+        let mut parent_node = directories_by_tuuid.get(&current_node.tuuid).expect("get node");
+        loop {
+            if depth > 100 {
+                warn!("commande_ajouter_fichiers_collection Ininite loop detected on path, skipping tuuid: {}", current_node.tuuid);
+                break;
+            }
+            depth += 1;
+
+            match parent_node.destination_path.as_ref() {
+                Some(path) => {
+                    node_destination_path.extend(path.iter().map(|p| p.to_string()));
+                    current_node.destination_path = Some(node_destination_path);
+                    break  // Done
+                },
+                None => {
+                    match parent_node.parent.as_ref() {
+                        Some(parent) => {
+                            node_destination_path.push(parent.to_string());
+                            match directories_by_tuuid.get(parent) {
+                                Some(ancestor) => {
+                                    // Keep looping
+                                    parent_node = ancestor;
+                                },
+                                None => {
+                                    warn!("commande_ajouter_fichiers_collection No matching parent node, ignoring tuuid: {}", current_node.tuuid);
+                                    break  // Error, no matching parent node. Ignore this node.
+                                }
+                            }
+                        },
+                        None => {
+                            node_destination_path.extend(destination_path.clone());
+                            current_node.destination_path = Some(node_destination_path);
+                            break  // Done, no more parents this is the destination
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Build list of moves
+    let mut directories_by_tuuid = HashMap::new();
+    directories_by_tuuid.insert(destination_cuuid.to_owned(), SubdirectoryList { node_information: NodeInformation {
+        tuuid: destination_cuuid.to_owned(),
+        parent: None,
+        destination_path: Some((&destination_path[1..]).to_owned()),
+    }, children: vec![]} );
+    for directory in &directories {
+        directories_by_tuuid.insert(directory.tuuid.to_owned(), SubdirectoryList { node_information: directory.clone(), children: vec![]} );
+    }
+
+    for directory in &directories {
+        if let Some(parent) = directory.parent.as_ref() {
+            match directories_by_tuuid.get_mut(parent) {
+                Some(parent) => {
+                    parent.children.push(directory.tuuid.clone());
+                },
+                None => {
+                    // Unkonwn parent, add to destination
+                    let destination = directories_by_tuuid.get_mut(destination_cuuid).expect("get_mut destination");
+                    destination.children.push(directory.tuuid.clone());
+                }
+            }
+        }
+    }
+
+    let directories = match directories_by_tuuid.len() {
+        0 => None,
+        _ => {
+            let mut directories_move = Vec::new();
+            for directory in directories_by_tuuid.into_values() {
+                match directory.node_information.destination_path {
+                    Some(mut destination) => {
+                        if directory.children.len() == 0 {
+                            continue  // No subdirectory, Skip
+                        }
+                        destination.insert(0, directory.node_information.tuuid);  // Push cuuid in front as parent for subfolders
+                        directories_move.push(
+                            TransactionMoveV2Directory {
+                                path: destination,
+                                directories: directory.children
+                            }
+                        );
+                    }
+                    None => {
+                        warn!("Unable to move tuuid {}, no parent path", directory.node_information.tuuid);
+                    }
+                }
+            }
+            Some(directories_move)
+        }
+    };
+
+    let files = match files.len() {
+        0 => None,
+        _ => Some(files.into_iter().map(|s| s.tuuid).collect())
+    };
+
+    Ok(ParseSelectionDirectoriesResult {destination_path, files, directories})
+}
+
+
 async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
@@ -663,7 +915,7 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
     let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
 
     if let Some(contact_id) = commande.contact_id.as_ref() {
-        debug!("Verifier que le contact_id est valide (correspond aux tuuids)");
+        debug!("commande_ajouter_fichiers_collection Verifier que le contact_id est valide (correspond aux tuuids)");
         let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
         let filtre = doc!{CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: user_id.as_ref()};
         let contact = match collection.find_one_with_session(filtre, None, session).await? {
@@ -695,11 +947,33 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
     } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
+        Err(format!("grosfichiers.commande_ajouter_fichiers_collection: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
+    let result = parse_selection_directories(
+        middleware, user_id.clone(), &commande.cuuid, &commande.inclure_tuuids, session, false).await?;
+
+    // Build the transaction
+    let mut original_command = m.message.parse_to_owned()?;
+    original_command.certificat = None;
+
+    let transaction = TransactionCopyV2 {
+        command: original_command,
+        destination: result.destination_path,
+        directories: result.directories,
+        files: result.files,
+        user_id,
+    };
+
+    debug!("commande_ajouter_fichiers_collection Transaction\n{}", serde_json::to_string(&transaction)?);
+
     // Traiter la transaction
-    let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
+    let response = sauvegarder_traiter_transaction_serializable_v2(
+        middleware, &transaction, gestionnaire, session, DOMAINE_NOM, TRANSACTION_COPY_V2).await?.0;
+
+    // Job done, commit then emit events
+    session.commit_transaction().await?;
+    start_transaction_regular(session).await?;
 
     for tuuid in &commande.inclure_tuuids {
         // Emettre fichier pour que tous les clients recoivent la mise a jour
@@ -759,282 +1033,18 @@ async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageVali
         Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
-    let collection_fichierrep =
-        middleware.get_collection_typed::<NodeFichierRepBorrowed>(NOM_COLLECTION_FICHIERS_REP)?;
-
-    // // Get source path. This will be the full (reverse) path of the source directory.
-    // let filtre = doc!{"tuuid": &commande.cuuid_origine};
-    // let source_directory = match collection_fichierrep.find_one_with_session(filtre, None, session).await? {
-    //     Some(inner) => inner,
-    //     None => return middleware.reponse_err(Some(404), None, Some("Unknown source directory")).await?
-    // };
-    // let source_path = {
-    //     let mut source_path = vec![commande.cuuid_origine.clone()];
-    //     if let Some(path_cuuids) = source_directory.path_cuuids {
-    //         source_path.extend(path_cuuids.map(|s| s.to_string()))
-    //     }
-    //     source_path
-    // };
-
-    // Get the destination path. This will replace the path of all files/directories being moved.
-    // It will be used to update the path of subdirectories and their files.
-    let destination_path = {
-        let collection = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
-        let filtre = doc!{"tuuid": &commande.cuuid_destination};
-        let destination_directory = match collection.find_one_with_session(filtre, None, session).await? {
-            Some(inner) => inner,
-            None => return Ok(Some(middleware.reponse_err(Some(404), None, Some("Unknown destination directory"))?))
-        };
-        let mut destination_path = vec![commande.cuuid_destination.clone()];
-        if let Some(path_cuuids) = destination_directory.path_cuuids {
-            destination_path.extend(path_cuuids.iter().map(|s| s.to_string()))
-        }
-        destination_path
-    };
-
-    debug!("commande_deplacer_fichiers_collection Destination path: {:?}", destination_path);
-
-    let filtre = doc!{"tuuid": {"$in": &commande.inclure_tuuids}};
-    let mut cursor = collection_fichierrep.find_with_session(filtre, None, session).await?;
-    let mut files = Vec::new();
-    // let mut directories = Vec::new();
-    let mut tuuids_by_cuuid: HashMap<String, Vec<String>> = HashMap::new();
-
-    let mut directories: Vec<NodeInformation> = Vec::new();
-
-    while cursor.advance(session).await? {
-        let row = cursor.deserialize_current()?;
-        let parent = match row.path_cuuids.as_ref() {
-            Some(inner) => match inner.get(0) {
-                Some(inner) => Some(inner.to_string()),
-                None => None
-            },
-            None => None
-        };
-        let node_info = NodeInformation { tuuid: row.tuuid.to_owned(), parent, destination_path: Some(destination_path.clone()) };
-        if let Some(user_id) = user_id.as_ref() {
-            if row.user_id != user_id.as_str() {
-                warn!("commande_deplacer_fichiers_collection File with wrong user_id, SKIPPING");
-                continue
-            }
-        }
-        if row.type_node == TypeNode::Fichier.to_str() {
-            files.push(node_info);
-        } else {
-            // directories.push(node_info);
-            directories.push(node_info);
-        }
-
-        // Map all tuuids for post-transaction cleanup (search index, events)
-        let cuuid = match row.path_cuuids {
-            Some(path_cuuids) => match path_cuuids.get(0) {
-                Some(cuuid) => *cuuid,
-                None => "root",
-            },
-            None => "root"
-        };
-        match tuuids_by_cuuid.get_mut(cuuid) {
-            Some(tuuids) => tuuids.push(row.tuuid.to_owned()),
-            None => {
-                tuuids_by_cuuid.insert(cuuid.to_owned(), vec![row.tuuid.to_owned()]);
-            }
-        }
-    }
-
-    // Make a list of all subdirectories to move. Include all subdirectories (deleted or not).
-    let cuuids: Vec<&String> = directories.iter().map(|d| &d.tuuid).collect();
-    let filtre = doc!{
-        "path_cuuids": {"$in": &cuuids},
-        "type_node": TypeNode::Repertoire.to_str()
-    };
-    let mut cursor = collection_fichierrep.find_with_session(filtre, None, session).await?;
-    while cursor.advance(session).await? {
-        let row = cursor.deserialize_current()?;
-        if let Some(user_id) = user_id.as_ref() {
-            if row.user_id != user_id.as_str() {
-                warn!("commande_deplacer_fichiers_collection Directory with wrong user_id, SKIPPING");
-                continue
-            }
-        }
-        // subdirectories.push(row.tuuid.to_owned());
-        let parent = match row.path_cuuids.as_ref() {
-            Some(inner) => match inner.get(0) {
-                Some(inner) => Some(inner.to_string()),
-                None => None
-            },
-            None => None
-        };
-        let node_info = NodeInformation { tuuid: row.tuuid.to_owned(), parent, destination_path: None };
-        directories.push(node_info);
-
-        // Add all directory tuuids for post-transaction cleanup (search index, events)
-        let cuuid = match row.path_cuuids {
-            Some(path_cuuids) => match path_cuuids.get(0) {
-                Some(cuuid) => *cuuid,
-                None => "root",
-            },
-            None => "root"
-        };
-        match tuuids_by_cuuid.get_mut(cuuid) {
-            Some(tuuids) => tuuids.push(row.tuuid.to_owned()),
-            None => {
-                tuuids_by_cuuid.insert(cuuid.to_owned(), vec![row.tuuid.to_owned()]);
-            }
-        }
-    }
-
-    // // Make temporary map from directory to its direct parent
-    // let mut directory_to_parent: HashMap<String, Option<String>> = HashMap::new();
-    // for dir_info in directories.values() {
-    //     let source_path = match dir_info.node_information.source_path.as_ref() {
-    //         Some(inner) => match inner.get(0) {
-    //             Some(inner) => Some(inner.clone()),
-    //             None => None
-    //         },
-    //         None => None
-    //     };
-    //     directory_to_parent.insert(dir_info.node_information.tuuid.clone(), source_path);
-    // }
-    //
-    // // Connect the directory hierarchy (parents -> children)
-    // for (tuuid, parent) in directory_to_parent {
-    //     if let Some(parent_tuuid) = parent {
-    //         if let Some(parent) = directories.get_mut(&parent_tuuid) {
-    //             parent.children.push(tuuid);
-    //         }
-    //     }
-    // }
-
-    debug!("commande_deplacer_fichiers_collection Directories list: {:?}", directories);
-
-    let directories_by_tuuid = {
-        let mut directories_by_tuuid = HashMap::new();
-
-        // Create destination node
-        directories_by_tuuid.insert(
-            commande.cuuid_destination.clone(),
-            NodeInformation { tuuid: commande.cuuid_destination.clone(), parent: None, destination_path: None }
-        );
-
-        for directory in &directories {
-            directories_by_tuuid.insert(directory.tuuid.to_owned(), directory.clone());
-        }
-        directories_by_tuuid
-    };
-
-    debug!("commande_deplacer_fichiers_collection Directories by tuuid: {:?}", directories_by_tuuid);
-
-    // Fill in the destination path for each node
-    for current_node in directories.iter_mut() {
-        let mut node_destination_path = vec![];
-        let mut depth = 0;
-
-        // Start parent at current node
-        let mut parent_node = directories_by_tuuid.get(&current_node.tuuid).expect("get node");
-        loop {
-            if depth > 100 {
-                warn!("commande_deplacer_fichiers_collection Ininite loop detected on path, skipping tuuid: {}", current_node.tuuid);
-                break;
-            }
-            depth += 1;
-
-            match parent_node.destination_path.as_ref() {
-                Some(path) => {
-                    node_destination_path.extend(path.iter().map(|p| p.to_string()));
-                    current_node.destination_path = Some(node_destination_path);
-                    break  // Done
-                },
-                None => {
-                    match parent_node.parent.as_ref() {
-                        Some(parent) => {
-                            node_destination_path.push(parent.to_string());
-                            match directories_by_tuuid.get(parent) {
-                                Some(ancestor) => {
-                                    // Keep looping
-                                    parent_node = ancestor;
-                                },
-                                None => {
-                                    warn!("commande_deplacer_fichiers_collection No matching parent node, ignoring tuuid: {}", current_node.tuuid);
-                                    break  // Error, no matching parent node. Ignore this node.
-                                }
-                            }
-                        },
-                        None => {
-                            node_destination_path.extend(destination_path.clone());
-                            current_node.destination_path = Some(node_destination_path);
-                            break  // Done, no more parents this is the destination
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Build list of moves
-    let mut directories_by_tuuid = HashMap::new();
-    directories_by_tuuid.insert(commande.cuuid_destination.clone(), SubdirectoryList { node_information: NodeInformation {
-        tuuid: commande.cuuid_destination.clone(),
-        parent: None,
-        destination_path: Some((&destination_path[1..]).to_owned()),
-    }, children: vec![]} );
-    for directory in &directories {
-        directories_by_tuuid.insert(directory.tuuid.to_owned(), SubdirectoryList { node_information: directory.clone(), children: vec![]} );
-    }
-
-    for directory in &directories {
-        if let Some(parent) = directory.parent.as_ref() {
-            match directories_by_tuuid.get_mut(parent) {
-                Some(parent) => {
-                    parent.children.push(directory.tuuid.clone());
-                },
-                None => {
-                    // Unkonwn parent, add to destination
-                    let destination = directories_by_tuuid.get_mut(&commande.cuuid_destination).expect("get_mut destination");
-                    destination.children.push(directory.tuuid.clone());
-                }
-            }
-        }
-    }
+    let result = parse_selection_directories(
+        middleware, user_id.clone(), &commande.cuuid_destination, &commande.inclure_tuuids, session, true).await?;
 
     // Build the transaction
     let mut original_command = m.message.parse_to_owned()?;
     original_command.certificat = None;
 
-    let directories = match directories_by_tuuid.len() {
-        0 => None,
-        _ => {
-            let mut directories_move = Vec::new();
-            for directory in directories_by_tuuid.into_values() {
-                match directory.node_information.destination_path {
-                    Some(mut destination) => {
-                        if directory.children.len() == 0 {
-                            continue  // No subdirectory, Skip
-                        }
-                        destination.insert(0, directory.node_information.tuuid);  // Push cuuid in front as parent for subfolders
-                        directories_move.push(
-                            TransactionMoveV2Directory {
-                                path: destination,
-                                directories: directory.children
-                            }
-                        );
-                    }
-                    None => {
-                        warn!("Unable to move tuuid {}, no parent path", directory.node_information.tuuid);
-                    }
-                }
-            }
-            Some(directories_move)
-        }
-    };
-
     let transaction = TransactionMoveV2 {
         command: original_command,
-        destination: destination_path,
-        directories,
-        files: match files.len() {
-            0 => None,
-            _ => Some(files.into_iter().map(|f| f.tuuid).collect())
-        },
+        destination: result.destination_path,
+        directories: result.directories,
+        files: result.files,
         user_id,
     };
 

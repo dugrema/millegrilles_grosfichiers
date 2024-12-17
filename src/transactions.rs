@@ -77,6 +77,7 @@ pub async fn aiguillage_transaction<M, T>(gestionnaire: &GrosFichiersDomainManag
         TRANSACTION_SUPPRIMER_ORPHELINS => transaction_supprimer_orphelins(middleware, gestionnaire, transaction, session).await,
         TRANSACTION_DELETE_V2 => transaction_delete_v2(middleware, gestionnaire, transaction, session).await,
         TRANSACTION_MOVE_V2 => transaction_move_v2(middleware, gestionnaire, transaction, session).await,
+        TRANSACTION_COPY_V2 => transaction_copy_v2(middleware, transaction, session).await,
 
         // Media
         TRANSACTION_SUPPRIMER_VIDEO => transaction_supprimer_video(middleware, gestionnaire, transaction, session).await,
@@ -2996,4 +2997,24 @@ async fn transaction_move_v2<M>(middleware: &M, gestionnaire: &GrosFichiersDomai
     }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct TransactionCopyV2 {
+    pub command: MessageMilleGrillesOwned,
+    pub destination: Vec<String>,
+    pub directories: Option<Vec<TransactionMoveV2Directory>>,
+    pub files: Option<Vec<String>>,
+    pub user_id: Option<String>,
+}
+
+async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
+{
+    let transaction_content: TransactionCopyV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+
+    let collection_reps = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+    todo!()
 }
