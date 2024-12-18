@@ -1913,7 +1913,7 @@ async fn transaction_associer_conversions<M>(middleware: &M, transaction: Transa
             "height": media_row.height,
             "width": media_row.width,
             "duration": media_row.duration,
-            "video_codec": media_row.video_codec,
+            "videoCodec": media_row.video_codec,
             "anime": media_row.anime,
             "images": convertir_to_bson(transaction_mappee.images)?,
         };

@@ -27,6 +27,7 @@ use millegrilles_common_rust::messages_generiques::ReponseCommande;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
+use crate::data_structs::MediaOwnedRow;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, evenement_fichiers_syncpret, EvenementContenuCollection};
 
@@ -1974,7 +1975,17 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, session: 
         cle_video = format!("{};s{}", cle_video, inner);
     }
 
-    let filtre_fichier = doc! { CHAMP_TUUID: &tuuid, CHAMP_FUUID: fuuid, CHAMP_USER_ID: &user_id };
+    {   // Verify access rights
+        let filtre_rep = doc! { "fuuids_versions": fuuid, "user_id": &user_id };
+        let collection_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+        let count = collection_rep.count_documents_with_session(filtre_rep, None, session).await?;
+        if count == 0 {
+            info!("commande_video_convertir User_id {} does not have access to fuuid {}", user_id, fuuid);
+            return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access denied"))?))
+        }
+    }
+
+    let filtre_fichier = doc! { CHAMP_FUUID: fuuid };
     let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
     let version_courante = match collection.find_one_with_session(filtre_fichier, None, session).await {
         Ok(inner) => match inner {
@@ -1990,116 +2001,52 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, session: 
         }
     };
 
-    todo!()
+    // Ensure no video exists with those parameters
+    let filtre_media = doc!{ CHAMP_FUUID: fuuid, "user_id": &user_id };
+    let collection_media = middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
+    if let Some(media) = collection_media.find_one(filtre_media, None).await? {
+        if let Some(video) = media.video {
+            if let Some(_) = video.get(cle_video.as_str()) {
+                info!("commande_video_convertir Video file already exists with parameters {} for file {}", cle_video, fuuid);
+                return Ok(Some(middleware.reponse_err(Some(409), None, Some("A video with the same parameters already exists"))?))
+            }
+        }
+    }
 
-    // match version_courante.video {
-    //     Some(v) => {
-    //         match v.get(cle_video.as_str()) { // Verifier si le video existe deja
-    //             Some(v) => {
-    //                 info!("commande_video_convertir Fichier video existe deja {} pour {}", cle_video, fuuid);
-    //                 return Ok(Some(middleware.reponse_err(Some(409), None, Some("Video dans ce format existe deja"))?))
-    //             },
-    //             None => ()  // Ok, le video n'existe pas
-    //         }
-    //     },
-    //     None => ()  // Ok, aucuns videos existant
-    // };
-    //
-    // // Conserver l'information de conversion, emettre nouveau message de job
-    // if version_courante.cle_id.is_some() && version_courante.format.is_some() && version_courante.nonce.is_some() {
-    //     let cle_id = version_courante.cle_id.expect("cle_id");
-    //     let format: &str = version_courante.format.expect("format").into();
-    //     let nonce = version_courante.nonce.expect("nonce");
-    //     let mimetype = version_courante.mimetype;
-    //     let filehost_ids: Vec<&String> = version_courante.visites.keys().collect();
-    //
-    //     let mut job = BackgroundJob::new(tuuid, fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
-    //     let reponse = CommandeVideoConvertirReponse {ok: true, job_id: Some(job.job_id.clone())};
-    //
-    //     job.user_id = Some(user_id.clone());
-    //     let params = BackgroundJobParams {
-    //         defaults: None,
-    //         thumbnails: None,
-    //         mimetype: Some(commande.mimetype),
-    //         codec_video: Some(commande.codec_video),
-    //         codec_audio: Some(commande.codec_audio),
-    //         resolution_video: Some(commande.resolution_video),
-    //         quality_video: commande.quality_video,
-    //         bitrate_video: commande.bitrate_video,
-    //         bitrate_audio: Some(commande.bitrate_audio),
-    //         preset: commande.preset,
-    //         audio_stream_idx: commande.audio_stream_idx,
-    //         subtitle_stream_idx: commande.subtitle_stream_idx,
-    //     };
-    //     job.params = Some(params);
-    //     sauvegarder_job_video(middleware, &job, session).await?;
-    //
-    //     Ok(Some(middleware.build_reponse(reponse)?.0))
-    // } else {
-    //     Ok(Some(middleware.reponse_err(Some(2), None, Some("Information de chiffrage manquante"))?))
-    // }
-    //
-    // // let insert_ops = doc! {
-    // //     "tuuid": &commande.tuuid,
-    // //     CHAMP_FUUID: fuuid,
-    // //     CHAMP_USER_ID: &user_id,
-    // //     CHAMP_MIMETYPE: commande.mimetype,
-    // //     "codecVideo": commande.codec_video,
-    // //     "codecAudio": commande.codec_audio,
-    // //     "qualityVideo": commande.quality_video,
-    // //     "resolutionVideo": commande.resolution_video,
-    // //     "bitrateVideo": commande.bitrate_video,
-    // //     "bitrateAudio": commande.bitrate_audio,
-    // //     "preset": commande.preset,
-    // //     "etat": 1,  // Pending
-    // // };
-    // // let set_ops = doc! {
-    // //     CHAMP_FLAG_DB_RETRY: 0,  // Reset le retry count automatique
-    // // };
-    // // let ops = doc! {
-    // //     "$set": set_ops,
-    // //     "$setOnInsert": insert_ops,
-    // //     "$currentDate": {CHAMP_MODIFICATION: true},
-    // // };
-    // // let filtre_video = doc! {CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video};
-    // // let collection_video = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
-    // // let options = FindOneAndUpdateOptions::builder().upsert(true).build();
-    // // let emettre_job = match collection_video.find_one_and_update(filtre_video, ops, options).await? {
-    // //     Some(d) => {
-    // //         debug!("commande_video_convertir Etat precedent : {:?}", d);
-    // //         // Verifier l'etat du document precedent (e.g. pending, erreur, en cours, etc)
-    // //
-    // //         true  // Emettre la job
-    // //     },
-    // //     None => true  // Nouvelle entree, emettre la nouvelle job.
-    // // };
-    //
-    // // if emettre_job {
-    // //     // Faire la liste des consignations avec le fichier disponible
-    // //     let consignation_disponible: Vec<&String> = version_courante.visites.keys().into_iter().collect();
-    // //
-    // //     for consignation in consignation_disponible {
-    // //         let routage = RoutageMessageAction::builder(DOMAINE_MEDIA_NOM, COMMANDE_VIDEO_DISPONIBLE, vec![Securite::L2Prive])
-    // //             .partition(consignation)
-    // //             .blocking(false)
-    // //             .build();
-    // //         let commande_fichiers = json!({CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video});
-    // //         middleware.transmettre_commande(routage, &commande_fichiers).await?;
-    // //     }
-    // //
-    // //     // Emettre evenement pour clients
-    // //     let evenement = json!({
-    // //         CHAMP_CLE_CONVERSION: &cle_video,
-    // //         CHAMP_FUUID: fuuid,
-    // //         "tuuid": &commande.tuuid,
-    // //     });
-    // //     let routage = RoutageMessageAction::builder(DOMAINE_NOM, "jobAjoutee", vec![Securite::L2Prive])
-    // //         .partition(&user_id)
-    // //         .build();
-    // //     middleware.emettre_evenement(routage, &evenement).await?;
-    // // }
-    // //
-    // // Ok(Some(middleware.reponse_ok(None, None)?))
+    // Conserver l'information de conversion, emettre nouveau message de job
+    if version_courante.cle_id.is_some() && version_courante.format.is_some() && version_courante.nonce.is_some() {
+        let cle_id = version_courante.cle_id.expect("cle_id");
+        let format: &str = version_courante.format.expect("format").into();
+        let nonce = version_courante.nonce.expect("nonce");
+        let mimetype = version_courante.mimetype;
+        let filehost_ids: Vec<&String> = version_courante.visites.keys().collect();
+
+        let mut job = BackgroundJob::new(tuuid, fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
+        let reponse = CommandeVideoConvertirReponse {ok: true, job_id: Some(job.job_id.clone())};
+
+        job.user_id = Some(user_id.clone());
+        let params = BackgroundJobParams {
+            defaults: None,
+            thumbnails: None,
+            mimetype: Some(commande.mimetype),
+            codec_video: Some(commande.codec_video),
+            codec_audio: Some(commande.codec_audio),
+            resolution_video: Some(commande.resolution_video),
+            quality_video: commande.quality_video,
+            bitrate_video: commande.bitrate_video,
+            bitrate_audio: Some(commande.bitrate_audio),
+            preset: commande.preset,
+            audio_stream_idx: commande.audio_stream_idx,
+            subtitle_stream_idx: commande.subtitle_stream_idx,
+        };
+        job.params = Some(params);
+        sauvegarder_job_video(middleware, &job, session).await?;
+
+        Ok(Some(middleware.build_reponse(reponse)?.0))
+    } else {
+        Ok(Some(middleware.reponse_err(Some(2), None, Some("Information de chiffrage manquante"))?))
+    }
+
 }
 
 // async fn commande_image_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
@@ -2178,58 +2125,56 @@ async fn commande_supprimer_video<M>(middleware: &M, m: MessageValide, gestionna
         message_ref.contenu()?.deserialize()?
     };
 
-    let fuuid = &commande.fuuid_video;
-    let user_id = m.certificat.get_user_id()?;
+    let fuuid_video = &commande.fuuid_video;
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err("User_id missing from certificate")?
+    };
 
     {   // Verifier acces
         let delegation_globale = m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)?;
         if delegation_globale || m.certificat.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])? {
             // Ok
-        } else if user_id.is_some() {
-            let u = user_id.as_ref().expect("commande_video_convertir user_id");
-            let resultat = verifier_acces_usager_media(middleware, &u, vec![fuuid]).await?;
-            if ! resultat.contains(fuuid) {
-                debug!("commande_video_convertir verifier_exchanges : Usager n'a pas acces a fuuid {}", fuuid);;
+        } else {
+            let resultat = verifier_acces_usager_media(middleware, &user_id, vec![fuuid_video]).await?;
+            if ! resultat.contains(fuuid_video) {
+                debug!("commande_video_convertir verifier_exchanges : Usager n'a pas acces a fuuid {}", fuuid_video);;
                 // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
                 return Ok(Some(middleware.reponse_err(None, None, Some("Access denied"))?))
             }
-        } else {
-            debug!("commande_video_convertir verifier_exchanges : Certificat n'a pas l'acces requis (securite 2,3,4 ou user_id avec acces fuuid)");
-            // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
-            return Ok(Some(middleware.reponse_err(None, None, Some("Access denied"))?))
         }
     }
 
-    let filtre_fichier = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    let result = collection.count_documents_with_session(filtre_fichier, None, session).await?;
+    let filtre_fichier = doc!{"fuuids_reclames": fuuid_video};
+    let collection_fichier_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    let file_version = match collection_fichier_versions.find_one_with_session(filtre_fichier, None, session).await? {
+        Some(inner) => inner,
+        None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
+    };
+    let fuuid_original = file_version.fuuid.as_str();
 
-    if result > 0 {
-        // Recuperer information - utilisee pour emettre evenement apres transactions
-        let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
-        let collection_fichier_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
-        let doc_video = match collection_fichier_versions.find_one(filtre.clone(), None).await {
-            Ok(d) => match d {
-                Some(d) => d,
-                None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
-            },
-            Err(e) => Err(format!("transaction_supprimer_video Erreur chargement info document : {:?}", e))?
-        };
+    // Recuperer information - utilisee pour emettre evenement apres transactions
+    // let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
+    // let collection_fichier_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    // let doc_video = match collection_fichier_versions.find_one(filtre.clone(), None).await {
+    //     Ok(d) => match d {
+    //         Some(d) => d,
+    //         None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
+    //     },
+    //     Err(e) => Err(format!("transaction_supprimer_video Erreur chargement info document : {:?}", e))?
+    // };
 
-        // Traiter la transaction
-        let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
+    // Traiter la transaction
+    let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
 
-        todo!()
-        // // Emettre fichier pour que tous les clients recoivent la mise a jour
-        // let tuuid = doc_video.tuuid;
-        // if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO, session).await {
-        //     warn!("transaction_favoris_creerpath Erreur emettre_evenement_maj_fichier : {:?}", e);
-        // }
-        //
-        // Ok(response)
-    } else {
-        Ok(Some(middleware.reponse_ok(None, None)?))
-    }
+    todo!()
+    // // Emettre fichier pour que tous les clients recoivent la mise a jour
+    // let tuuid = doc_video.tuuid;
+    // if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO, session).await {
+    //     warn!("transaction_favoris_creerpath Erreur emettre_evenement_maj_fichier : {:?}", e);
+    // }
+    //
+    // Ok(response)
 }
 
 #[derive(Clone, Debug, Deserialize)]

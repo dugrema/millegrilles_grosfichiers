@@ -35,7 +35,7 @@ use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
-use crate::data_structs::{MediaOwnedRow, ResponseVersionCourante, VideoDetail};
+use crate::data_structs::{AudioDetail, MediaOwnedRow, ResponseVersionCourante, SubtitleDetail, VideoDetail};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::traitement_index::{ParametresGetClesStream, ParametresGetPermission, ParametresRecherche, ResultatHits, ResultatHitsDetail};
@@ -97,7 +97,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
             REQUETE_JWT_STREAMING => requete_creer_jwt_streaming(middleware, message, gestionnaire).await,
             REQUETE_SOUS_REPERTOIRES => requete_sous_repertoires(middleware, message, gestionnaire).await,
             REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
-            REQUETE_INFO_VIDEO => requete_info_video(middleware, message, gestionnaire).await,
+            REQUETE_INFO_VIDEO => requete_info_video(middleware, message).await,
             _ => {
                 error!("Message requete/action inconnue (1): '{}'. Message dropped.", action);
                 Ok(None)
@@ -154,7 +154,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
             REQUETE_JWT_STREAMING => requete_creer_jwt_streaming(middleware, message, gestionnaire).await,
             REQUETE_SOUS_REPERTOIRES => requete_sous_repertoires(middleware, message, gestionnaire).await,
             REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
-            REQUETE_INFO_VIDEO => requete_info_video(middleware, message, gestionnaire).await,
+            REQUETE_INFO_VIDEO => requete_info_video(middleware, message).await,
             _ => {
                 error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", action);
                 Ok(None)
@@ -480,7 +480,7 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
     let mut media_map = HashMap::new();
     let filtre = doc! { CHAMP_FUUID: {"$in": &fuuids_fichiers}, CHAMP_USER_ID: &user_id};
     let options = FindOptions::builder()
-        .hint(Hint::Name(String::from("fuuid")))
+        .hint(Hint::Name(String::from("fuuid_userid")))
         .build();
     let collection_versions =
         middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
@@ -2959,12 +2959,12 @@ struct RequeteInfoVideo {fuuid: String}
 #[derive(Serialize)]
 struct RequeteInfoVideoResponse {
     fuuid: String,
-    tuuid: String,
-    audio: Option<Vec<NodeFichierVersionAudioOwned>>,
-    subtitles: Option<Vec<NodeFichierVersionSubtitlesOwned>>,
+    // tuuid: String,
+    audio: Option<Vec<AudioDetail>>,
+    subtitles: Option<Vec<SubtitleDetail>>,
 }
 
-async fn requete_info_video<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_info_video<M>(middleware: &M, m: MessageValide)
                                -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2978,21 +2978,20 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
 
     let requete: RequeteInfoVideo = deser_message_buffer!(m.message);
 
-    todo!()
-    // let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
-    // let filtre = doc!{"user_id": &user_id, "fuuid": &requete.fuuid};
-    // match collection.find_one(filtre, None).await? {
-    //     Some(fichier) => {
-    //         let response = RequeteInfoVideoResponse {
-    //             fuuid: fichier.fuuid,
-    //             tuuid: fichier.tuuid,
-    //             audio: fichier.audio,
-    //             subtitles: fichier.subtitles,
-    //         };
-    //         Ok(Some(middleware.build_reponse(response)?.0))
-    //     },
-    //     None => Ok(Some(middleware.reponse_err(Some(404), None, Some("File not found"))?))
-    // }
+    let collection = middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
+    let filtre = doc!{"user_id": &user_id, "fuuid": &requete.fuuid};
+    match collection.find_one(filtre, None).await? {
+        Some(fichier) => {
+            let response = RequeteInfoVideoResponse {
+                fuuid: fichier.fuuid,
+                // tuuid: fichier.tuuid,
+                audio: fichier.audio,
+                subtitles: fichier.subtitles,
+            };
+            Ok(Some(middleware.build_reponse(response)?.0))
+        },
+        None => Ok(Some(middleware.reponse_err(Some(404), None, Some("File not found"))?))
+    }
 }
 
 pub async fn get_decrypted_keys<M>(middleware: &M, cle_ids: Vec<String>) -> Result<Vec<ResponseRequestDechiffrageV2Cle>, CommonError>
