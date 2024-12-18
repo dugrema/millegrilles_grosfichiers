@@ -31,7 +31,7 @@ use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, evenement_fichiers_syncpret, EvenementContenuCollection};
 
 use crate::grosfichiers_constantes::*;
-use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids};
+use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids, verifier_acces_usager_media};
 use crate::traitement_index::{reset_flag_indexe, sauvegarder_job_index, set_flag_index_traite};
 use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
 use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_images, sauvegarder_job_video, set_flag_image_traitee, set_flag_video_traite};
@@ -155,19 +155,24 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gest
 
     // Valider la nouvelle version
     let tuuid = {
-        let fichier_rep = match NodeFichierRepOwned::from_nouvelle_version(
-            middleware, &commande, uuid_transaction, &user_id, session).await {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("grosfichiers.NodeFichierRepOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
-        };
-        let tuuid = fichier_rep.tuuid.clone();
-        let fichier_version = match NodeFichierVersionOwned::from_nouvelle_version(
-            &commande, &tuuid, &user_id).await {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
+        let tuuid = match &commande.tuuid {
+            Some(t) => t.to_owned(),
+            None => uuid_transaction.to_string(),
         };
 
-        let fuuid = fichier_version.fuuid.as_str();
+        // let fichier_rep = match NodeFichierRepOwned::from_nouvelle_version(
+        //     middleware, &commande, uuid_transaction, &user_id, session).await {
+        //     Ok(inner) => inner,
+        //     Err(e) => Err(format!("grosfichiers.NodeFichierRepOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
+        // };
+        // let tuuid = fichier_rep.tuuid.clone();
+        // let fichier_version = match NodeFichierVersionOwned::from_nouvelle_version(
+        //     &commande, &tuuid, &user_id).await {
+        //     Ok(inner) => inner,
+        //     Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
+        // };
+
+        let fuuid = commande.fuuid.as_str();
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
         let filtre = doc!{"fuuid": fuuid};
         let count = collection.count_documents_with_session(filtre, None, session).await?;
@@ -281,7 +286,7 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
         if let Some(mimetype) = commande.mimetype.as_ref() {
             if fuuid.is_some() {
                 // Ajouter flags media au fichier si approprie
-                let (flag_media_traite, flag_video_traite, flag_media) = NodeFichierVersionOwned::get_flags_media(
+                let (flag_media_traite, flag_video_traite, flag_media) = get_flags_media(
                     mimetype.as_str());
                 let filtre = doc! {CHAMP_TUUID: &commande.tuuid, CHAMP_USER_ID: &user_id};
                 let ops = doc! {
@@ -445,7 +450,6 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gest
         let message_ref = m.message.parse()?;
         message_ref.contenu()?.deserialize()?
     };
-    debug!("Commande commande_associer_conversions versions parsed : {:?}", commande);
 
     if ! m.certificat.verifier_exchanges(vec![L4Secure])? {
         Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas L4Secure) pour message {:?}", m.type_message))?
@@ -614,24 +618,9 @@ async fn verifier_autorisation_usager<M,S,T,U>(middleware: &M, user_id: S, tuuid
                 }
             }
         }
-        // while let Some(row) = curseur_docs.next().await {
-        //     let row = row?;
-        //     // let tuuid_doc = d_result.get_str("tuuid")?;
-        //     tuuids_set.remove(row.tuuid);
-        //     let type_node = TypeNode::try_from(row.type_node)?;
-        //     match type_node {
-        //         TypeNode::Fichier => {
-        //             reponse.tuuids_fichiers.push(row.tuuid.to_owned());
-        //         },
-        //         TypeNode::Collection | TypeNode::Repertoire => {
-        //             reponse.tuuids_repertoires.push(row.tuuid.to_owned());
-        //         }
-        //     }
-        // }
 
         if tuuids_set.len() > 0 {
             // Certains tuuids n'appartiennent pas a l'usager
-            // let cuuids: Vec<String> = tuuids_set.into_iter().map(|c| c.to_owned()).collect();
             warn!("verifier_autorisation_usager Les tuuids {:?} n'appartiennent pas a l'usager {:?}", tuuids_set, user_id_str);
             reponse.tuuids_repertoires.extend(tuuids_set.into_iter().map(|c| c.to_owned()));
             return {
@@ -652,7 +641,7 @@ struct ParseSelectionDirectoriesResult {
 }
 
 async fn parse_selection_directories<M>(
-    middleware: &M, user_id: Option<String>, destination_cuuid: &String, tuuids: &Vec<String>, session: &mut ClientSession,
+    middleware: &M, user_id: &str, destination_cuuid: &String, tuuids: &Vec<String>, session: &mut ClientSession,
     keep_deleted: bool
 )
     -> Result<ParseSelectionDirectoriesResult, CommonError>
@@ -697,11 +686,9 @@ async fn parse_selection_directories<M>(
             None => None
         };
         let node_info = NodeInformation { tuuid: row.tuuid.to_owned(), parent, destination_path: Some(destination_path.clone()) };
-        if let Some(user_id) = user_id.as_ref() {
-            if row.user_id != user_id.as_str() {
-                warn!("commande_ajouter_fichiers_collection File with wrong user_id, SKIPPING");
-                continue
-            }
+        if row.user_id != user_id {
+            warn!("commande_ajouter_fichiers_collection File with wrong user_id, SKIPPING");
+            continue
         }
         if row.type_node == TypeNode::Fichier.to_str() {
             files.push(node_info);
@@ -737,11 +724,9 @@ async fn parse_selection_directories<M>(
     let mut cursor = collection_fichierrep.find_with_session(filtre, None, session).await?;
     while cursor.advance(session).await? {
         let row = cursor.deserialize_current()?;
-        if let Some(user_id) = user_id.as_ref() {
-            if row.user_id != user_id.as_str() {
-                warn!("commande_ajouter_fichiers_collection Directory with wrong user_id, SKIPPING");
-                continue
-            }
+        if row.user_id != user_id {
+            warn!("commande_ajouter_fichiers_collection Directory with wrong user_id, SKIPPING");
+            continue
         }
         // subdirectories.push(row.tuuid.to_owned());
         let parent = match row.path_cuuids.as_ref() {
@@ -914,13 +899,44 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
     debug!("Commande commande_ajouter_fichiers_collection versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.certificat.get_user_id()?;
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err("Certificate with no user_id")?
+    };
     let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
+
+    let user_id_source = match commande.contact_id.as_ref() {
+        Some(contact_id) => {
+            debug!("commande_ajouter_fichiers_collection Verifier que le contact_id est valide (correspond aux tuuids)");
+            let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
+            let filtre = doc!{CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: &user_id};
+            let contact = match collection.find_one_with_session(filtre, None, session).await? {
+                Some(inner) => inner,
+                None => {
+                    // let reponse = json!({"ok": false, "err": "Contact_id invalide"});
+                    // return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
+                    return Ok(Some(middleware.reponse_err(None, None, Some("Contact_id invalide"))?))
+                }
+            };
+
+            let resultat = verifier_acces_usager_tuuids(
+                middleware, &contact.user_id, &commande.inclure_tuuids).await?;
+
+            if resultat.len() != commande.inclure_tuuids.len() {
+                // let reponse = json!({"ok": false, "err": "Acces refuse"});
+                // return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
+                return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse"))?))
+
+            }
+            contact.user_id
+        },
+        None => user_id.clone()
+    };
 
     if let Some(contact_id) = commande.contact_id.as_ref() {
         debug!("commande_ajouter_fichiers_collection Verifier que le contact_id est valide (correspond aux tuuids)");
         let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
-        let filtre = doc!{CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: user_id.as_ref()};
+        let filtre = doc!{CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: &user_id};
         let contact = match collection.find_one_with_session(filtre, None, session).await? {
             Some(inner) => inner,
             None => {
@@ -939,8 +955,8 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
             return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse"))?))
 
         }
-    } else if role_prive && user_id.is_some() {
-        let user_id_str = user_id.as_ref().expect("user_id");
+    } else if role_prive {
+        let user_id_str = user_id.as_str();
         let cuuid = commande.cuuid.as_str();
         let tuuids: Vec<&str> = commande.inclure_tuuids.iter().map(|t| t.as_str()).collect();
         let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
@@ -954,7 +970,7 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
     }
 
     let result = parse_selection_directories(
-        middleware, user_id.clone(), &commande.cuuid, &commande.inclure_tuuids, session, false).await?;
+        middleware, user_id_source.as_str(), &commande.cuuid, &commande.inclure_tuuids, session, false).await?;
 
     // Check that the destination is not under the source (moving under itself breask the graph)
     if let Some(directory_moves) = result.directories.as_ref() {
@@ -972,12 +988,19 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
     let mut original_command = m.message.parse_to_owned()?;
     original_command.certificat = None;
 
+    let source_user_id = if user_id_source == user_id {
+        None
+    } else {
+        Some(user_id_source)
+    };
+
     let transaction = TransactionCopyV2 {
         command: original_command,
         destination: result.destination_path,
         directories: result.directories,
         files: result.files,
         user_id,
+        source_user_id,
     };
 
     debug!("commande_ajouter_fichiers_collection Transaction\n{}", serde_json::to_string(&transaction)?);
@@ -1030,10 +1053,14 @@ async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageVali
     debug!("Commande commande_deplacer_fichiers_collection versions parsed : {:?}", commande);
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.certificat.get_user_id()?;
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err("commande_deplacer_fichiers_collection Certificate with no user_id")?
+    };
+
     let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
-    if role_prive && user_id.is_some() {
-        let user_id_str = user_id.as_ref().expect("user_id");
+    if role_prive {
+        let user_id_str = user_id.as_str();
         let cuuid = commande.cuuid_origine.as_str();
         let cuuid_destination = commande.cuuid_destination.as_str();
         let mut tuuids: Vec<&str> = commande.inclure_tuuids.iter().map(|t| t.as_str()).collect();
@@ -1049,7 +1076,7 @@ async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageVali
     }
 
     let result = parse_selection_directories(
-        middleware, user_id.clone(), &commande.cuuid_destination, &commande.inclure_tuuids, session, true).await?;
+        middleware, user_id.as_str(), &commande.cuuid_destination, &commande.inclure_tuuids, session, true).await?;
 
     // Check that the destination is not under the source (moving under itself breask the graph)
     if let Some(directory_moves) = result.directories.as_ref() {
@@ -1072,7 +1099,7 @@ async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageVali
         destination: result.destination_path,
         directories: result.directories,
         files: result.files,
-        user_id,
+        user_id: Some(user_id),
     };
 
     debug!("commande_deplacer_fichiers_collection Transaction\n{}", serde_json::to_string(&transaction)?);
@@ -1963,114 +1990,116 @@ async fn commande_video_convertir<M>(middleware: &M, m: MessageValide, session: 
         }
     };
 
-    match version_courante.video {
-        Some(v) => {
-            match v.get(cle_video.as_str()) { // Verifier si le video existe deja
-                Some(v) => {
-                    info!("commande_video_convertir Fichier video existe deja {} pour {}", cle_video, fuuid);
-                    return Ok(Some(middleware.reponse_err(Some(409), None, Some("Video dans ce format existe deja"))?))
-                },
-                None => ()  // Ok, le video n'existe pas
-            }
-        },
-        None => ()  // Ok, aucuns videos existant
-    };
+    todo!()
 
-    // Conserver l'information de conversion, emettre nouveau message de job
-    if version_courante.cle_id.is_some() && version_courante.format.is_some() && version_courante.nonce.is_some() {
-        let cle_id = version_courante.cle_id.expect("cle_id");
-        let format: &str = version_courante.format.expect("format").into();
-        let nonce = version_courante.nonce.expect("nonce");
-        let mimetype = version_courante.mimetype;
-        let filehost_ids: Vec<&String> = version_courante.visites.keys().collect();
-
-        let mut job = BackgroundJob::new(tuuid, fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
-        let reponse = CommandeVideoConvertirReponse {ok: true, job_id: Some(job.job_id.clone())};
-
-        job.user_id = Some(user_id.clone());
-        let params = BackgroundJobParams {
-            defaults: None,
-            thumbnails: None,
-            mimetype: Some(commande.mimetype),
-            codec_video: Some(commande.codec_video),
-            codec_audio: Some(commande.codec_audio),
-            resolution_video: Some(commande.resolution_video),
-            quality_video: commande.quality_video,
-            bitrate_video: commande.bitrate_video,
-            bitrate_audio: Some(commande.bitrate_audio),
-            preset: commande.preset,
-            audio_stream_idx: commande.audio_stream_idx,
-            subtitle_stream_idx: commande.subtitle_stream_idx,
-        };
-        job.params = Some(params);
-        sauvegarder_job_video(middleware, &job, session).await?;
-
-        Ok(Some(middleware.build_reponse(reponse)?.0))
-    } else {
-        Ok(Some(middleware.reponse_err(Some(2), None, Some("Information de chiffrage manquante"))?))
-    }
-
-    // let insert_ops = doc! {
-    //     "tuuid": &commande.tuuid,
-    //     CHAMP_FUUID: fuuid,
-    //     CHAMP_USER_ID: &user_id,
-    //     CHAMP_MIMETYPE: commande.mimetype,
-    //     "codecVideo": commande.codec_video,
-    //     "codecAudio": commande.codec_audio,
-    //     "qualityVideo": commande.quality_video,
-    //     "resolutionVideo": commande.resolution_video,
-    //     "bitrateVideo": commande.bitrate_video,
-    //     "bitrateAudio": commande.bitrate_audio,
-    //     "preset": commande.preset,
-    //     "etat": 1,  // Pending
-    // };
-    // let set_ops = doc! {
-    //     CHAMP_FLAG_DB_RETRY: 0,  // Reset le retry count automatique
-    // };
-    // let ops = doc! {
-    //     "$set": set_ops,
-    //     "$setOnInsert": insert_ops,
-    //     "$currentDate": {CHAMP_MODIFICATION: true},
-    // };
-    // let filtre_video = doc! {CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video};
-    // let collection_video = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
-    // let options = FindOneAndUpdateOptions::builder().upsert(true).build();
-    // let emettre_job = match collection_video.find_one_and_update(filtre_video, ops, options).await? {
-    //     Some(d) => {
-    //         debug!("commande_video_convertir Etat precedent : {:?}", d);
-    //         // Verifier l'etat du document precedent (e.g. pending, erreur, en cours, etc)
-    //
-    //         true  // Emettre la job
+    // match version_courante.video {
+    //     Some(v) => {
+    //         match v.get(cle_video.as_str()) { // Verifier si le video existe deja
+    //             Some(v) => {
+    //                 info!("commande_video_convertir Fichier video existe deja {} pour {}", cle_video, fuuid);
+    //                 return Ok(Some(middleware.reponse_err(Some(409), None, Some("Video dans ce format existe deja"))?))
+    //             },
+    //             None => ()  // Ok, le video n'existe pas
+    //         }
     //     },
-    //     None => true  // Nouvelle entree, emettre la nouvelle job.
+    //     None => ()  // Ok, aucuns videos existant
     // };
-
-    // if emettre_job {
-    //     // Faire la liste des consignations avec le fichier disponible
-    //     let consignation_disponible: Vec<&String> = version_courante.visites.keys().into_iter().collect();
     //
-    //     for consignation in consignation_disponible {
-    //         let routage = RoutageMessageAction::builder(DOMAINE_MEDIA_NOM, COMMANDE_VIDEO_DISPONIBLE, vec![Securite::L2Prive])
-    //             .partition(consignation)
-    //             .blocking(false)
-    //             .build();
-    //         let commande_fichiers = json!({CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video});
-    //         middleware.transmettre_commande(routage, &commande_fichiers).await?;
-    //     }
+    // // Conserver l'information de conversion, emettre nouveau message de job
+    // if version_courante.cle_id.is_some() && version_courante.format.is_some() && version_courante.nonce.is_some() {
+    //     let cle_id = version_courante.cle_id.expect("cle_id");
+    //     let format: &str = version_courante.format.expect("format").into();
+    //     let nonce = version_courante.nonce.expect("nonce");
+    //     let mimetype = version_courante.mimetype;
+    //     let filehost_ids: Vec<&String> = version_courante.visites.keys().collect();
     //
-    //     // Emettre evenement pour clients
-    //     let evenement = json!({
-    //         CHAMP_CLE_CONVERSION: &cle_video,
-    //         CHAMP_FUUID: fuuid,
-    //         "tuuid": &commande.tuuid,
-    //     });
-    //     let routage = RoutageMessageAction::builder(DOMAINE_NOM, "jobAjoutee", vec![Securite::L2Prive])
-    //         .partition(&user_id)
-    //         .build();
-    //     middleware.emettre_evenement(routage, &evenement).await?;
+    //     let mut job = BackgroundJob::new(tuuid, fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
+    //     let reponse = CommandeVideoConvertirReponse {ok: true, job_id: Some(job.job_id.clone())};
+    //
+    //     job.user_id = Some(user_id.clone());
+    //     let params = BackgroundJobParams {
+    //         defaults: None,
+    //         thumbnails: None,
+    //         mimetype: Some(commande.mimetype),
+    //         codec_video: Some(commande.codec_video),
+    //         codec_audio: Some(commande.codec_audio),
+    //         resolution_video: Some(commande.resolution_video),
+    //         quality_video: commande.quality_video,
+    //         bitrate_video: commande.bitrate_video,
+    //         bitrate_audio: Some(commande.bitrate_audio),
+    //         preset: commande.preset,
+    //         audio_stream_idx: commande.audio_stream_idx,
+    //         subtitle_stream_idx: commande.subtitle_stream_idx,
+    //     };
+    //     job.params = Some(params);
+    //     sauvegarder_job_video(middleware, &job, session).await?;
+    //
+    //     Ok(Some(middleware.build_reponse(reponse)?.0))
+    // } else {
+    //     Ok(Some(middleware.reponse_err(Some(2), None, Some("Information de chiffrage manquante"))?))
     // }
     //
-    // Ok(Some(middleware.reponse_ok(None, None)?))
+    // // let insert_ops = doc! {
+    // //     "tuuid": &commande.tuuid,
+    // //     CHAMP_FUUID: fuuid,
+    // //     CHAMP_USER_ID: &user_id,
+    // //     CHAMP_MIMETYPE: commande.mimetype,
+    // //     "codecVideo": commande.codec_video,
+    // //     "codecAudio": commande.codec_audio,
+    // //     "qualityVideo": commande.quality_video,
+    // //     "resolutionVideo": commande.resolution_video,
+    // //     "bitrateVideo": commande.bitrate_video,
+    // //     "bitrateAudio": commande.bitrate_audio,
+    // //     "preset": commande.preset,
+    // //     "etat": 1,  // Pending
+    // // };
+    // // let set_ops = doc! {
+    // //     CHAMP_FLAG_DB_RETRY: 0,  // Reset le retry count automatique
+    // // };
+    // // let ops = doc! {
+    // //     "$set": set_ops,
+    // //     "$setOnInsert": insert_ops,
+    // //     "$currentDate": {CHAMP_MODIFICATION: true},
+    // // };
+    // // let filtre_video = doc! {CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video};
+    // // let collection_video = middleware.get_collection(NOM_COLLECTION_VIDEO_JOBS)?;
+    // // let options = FindOneAndUpdateOptions::builder().upsert(true).build();
+    // // let emettre_job = match collection_video.find_one_and_update(filtre_video, ops, options).await? {
+    // //     Some(d) => {
+    // //         debug!("commande_video_convertir Etat precedent : {:?}", d);
+    // //         // Verifier l'etat du document precedent (e.g. pending, erreur, en cours, etc)
+    // //
+    // //         true  // Emettre la job
+    // //     },
+    // //     None => true  // Nouvelle entree, emettre la nouvelle job.
+    // // };
+    //
+    // // if emettre_job {
+    // //     // Faire la liste des consignations avec le fichier disponible
+    // //     let consignation_disponible: Vec<&String> = version_courante.visites.keys().into_iter().collect();
+    // //
+    // //     for consignation in consignation_disponible {
+    // //         let routage = RoutageMessageAction::builder(DOMAINE_MEDIA_NOM, COMMANDE_VIDEO_DISPONIBLE, vec![Securite::L2Prive])
+    // //             .partition(consignation)
+    // //             .blocking(false)
+    // //             .build();
+    // //         let commande_fichiers = json!({CHAMP_FUUID: fuuid, CHAMP_CLE_CONVERSION: &cle_video});
+    // //         middleware.transmettre_commande(routage, &commande_fichiers).await?;
+    // //     }
+    // //
+    // //     // Emettre evenement pour clients
+    // //     let evenement = json!({
+    // //         CHAMP_CLE_CONVERSION: &cle_video,
+    // //         CHAMP_FUUID: fuuid,
+    // //         "tuuid": &commande.tuuid,
+    // //     });
+    // //     let routage = RoutageMessageAction::builder(DOMAINE_NOM, "jobAjoutee", vec![Securite::L2Prive])
+    // //         .partition(&user_id)
+    // //         .build();
+    // //     middleware.emettre_evenement(routage, &evenement).await?;
+    // // }
+    // //
+    // // Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
 // async fn commande_image_get_job<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
@@ -2158,7 +2187,7 @@ async fn commande_supprimer_video<M>(middleware: &M, m: MessageValide, gestionna
             // Ok
         } else if user_id.is_some() {
             let u = user_id.as_ref().expect("commande_video_convertir user_id");
-            let resultat = verifier_acces_usager(middleware, &u, vec![fuuid]).await?;
+            let resultat = verifier_acces_usager_media(middleware, &u, vec![fuuid]).await?;
             if ! resultat.contains(fuuid) {
                 debug!("commande_video_convertir verifier_exchanges : Usager n'a pas acces a fuuid {}", fuuid);;
                 // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
@@ -2190,13 +2219,14 @@ async fn commande_supprimer_video<M>(middleware: &M, m: MessageValide, gestionna
         // Traiter la transaction
         let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
 
-        // Emettre fichier pour que tous les clients recoivent la mise a jour
-        let tuuid = doc_video.tuuid;
-        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO, session).await {
-            warn!("transaction_favoris_creerpath Erreur emettre_evenement_maj_fichier : {:?}", e);
-        }
-
-        Ok(response)
+        todo!()
+        // // Emettre fichier pour que tous les clients recoivent la mise a jour
+        // let tuuid = doc_video.tuuid;
+        // if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO, session).await {
+        //     warn!("transaction_favoris_creerpath Erreur emettre_evenement_maj_fichier : {:?}", e);
+        // }
+        //
+        // Ok(response)
     } else {
         Ok(Some(middleware.reponse_ok(None, None)?))
     }

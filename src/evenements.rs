@@ -30,6 +30,7 @@ use crate::requetes::mapper_fichier_db;
 use crate::traitement_index::{entretien_supprimer_fichiersrep, sauvegarder_job_index};
 use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams};
 use crate::traitement_media::{sauvegarder_job_images, sauvegarder_job_video};
+use crate::transactions::{NodeFichierRepOwned, NodeFichierRepRow, NodeFichierVersionRow};
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
 const EXPIRATION_THROTTLING_EVENEMENT_CUUID_CONTENU: i64 = 1;
@@ -331,12 +332,12 @@ struct EvenementFichierConsigne { hachage_bytes: String }
 #[derive(Clone, Deserialize)]
 struct DocumentFichierDetailIds {
     fuuid: String,
-    tuuid: String,
-    user_id: String,
-    flag_media: Option<String>,
+    // tuuid: String,
+    // user_id: String,
+    // flag_media: Option<String>,
     flag_media_traite: Option<bool>,
     flag_video_traite: Option<bool>,
-    flag_index: Option<bool>,
+    // flag_index: Option<bool>,
     mimetype: Option<String>,
     visites: Option<HashMap<String, u32>>,
     cle_id: Option<String>,
@@ -389,93 +390,87 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
     -> Result<(), CommonError>
     where M: GenerateurMessages + MongoDao, V: ToString
 {
-    let filtre = doc! { "fuuids": fuuid };
-    let projection = doc! {
-        "user_id": 1, "tuuid": 1, "fuuid": 1, "flag_media": 1, "mimetype": 1,
-        CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_FLAG_INDEX: 1, CHAMP_FLAG_VIDEO_TRAITE: 1,
-        "cle_id": 1, "format": 1, "nonce": 1,
-    };
-    let options = FindOptions::builder().projection(projection).build();
-    let collection = middleware.get_collection_typed::<DocumentFichierDetailIds>(NOM_COLLECTION_VERSIONS)?;
-
+    let filtre = doc! { "fuuid": fuuid };
+    // let projection = doc! {
+    //     "fuuid": 1, "mimetype": 1, "cle_id": 1, "format": 1, "nonce": 1,
+    //     CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_FLAG_VIDEO_TRAITE: 1,
+    // };
+    // let options = FindOptions::builder().projection(projection).build();
+    let collection_reps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionRow>(NOM_COLLECTION_VERSIONS)?;
     let filehost_ids = filehost_ids.into_iter().map(|f|f.to_string()).collect();
 
-    let mut curseur = collection.find_with_session(filtre, Some(options), session).await?;
+    // Find all tuuids that match this fuuid. Process independently.
+    // When this is a new file there should only be one. Later on processing is already complete.
+    let mut curseur = collection_versions.find_with_session(filtre, None, session).await?;
     while curseur.advance(session).await? {
         let doc_fuuid = curseur.deserialize_current()?;
 
         let cle_id = match doc_fuuid.cle_id.as_ref() {
-            Some(inner) => inner.as_str(),
+            Some(inner) => inner,
             None => doc_fuuid.fuuid.as_str()
         };
 
-        let image_traitee = match doc_fuuid.flag_media_traite {
-            Some(inner) => inner,
-            None => false
-        };
+        let image_traitee = doc_fuuid.flag_media_traite;
+        let video_traite = doc_fuuid.flag_video_traite;
 
-        let video_traite = match doc_fuuid.flag_video_traite {
-            Some(inner) => inner,
-            None => false
-        };
+        // Find a matching tuuid for the user_id/fuuid. If the user has copied the file multiple times,
+        // only one of the tuuid will be used. Since this is a new file, it should not be an issue.
+        let filtre_reps = doc!{"fuuids_versions": fuuid};
+        let mut cursor = collection_reps.find_with_session(filtre_reps, None, session).await?;
+        while cursor.advance(session).await? {
+            let rep = cursor.deserialize_current()?;
 
-        let index_traite = match doc_fuuid.flag_index {
-            Some(inner) => inner,
-            None => false
-        };
+            let tuuid = rep.tuuid.as_str();
+            emettre_evenement_maj_fichier(middleware, gestionnaire, tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION, session).await?;
 
-        emettre_evenement_maj_fichier(middleware, gestionnaire, &doc_fuuid.tuuid, EVENEMENT_FUUID_NOUVELLE_VERSION, session).await?;
-        let tuuid = doc_fuuid.tuuid;
+            // Extract information for background job if all fields present
+            let job = if doc_fuuid.format.is_some() && doc_fuuid.nonce.is_some() {
+                let mimetype = doc_fuuid.mimetype.clone();
+                let format: &str = doc_fuuid.format.clone().expect("format").into();
+                let nonce = doc_fuuid.nonce.clone().expect("nonce");
+                let job = BackgroundJob::new(tuuid.to_owned(), fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
+                Some(job)
+            } else {
+                None
+            };
 
-        // Extract information for background job if all fields present
-        let job = if doc_fuuid.mimetype.is_some() && doc_fuuid.format.is_some() && doc_fuuid.nonce.is_some() {
-            let mimetype = doc_fuuid.mimetype.expect("mimetype");
-            let format = doc_fuuid.format.expect("format");
-            let nonce = doc_fuuid.nonce.expect("nonce");
-            let job = BackgroundJob::new(tuuid.clone(), fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
-            Some(job)
-        } else {
-            None
-        };
+            if let Some(mut job) = job {
+                if !image_traitee {
+                    // Note : La job est uniquement creee si le format est une image. Exclus les videos.
+                    sauvegarder_job_images(middleware, &job, session).await?;
+                }
 
-        if let Some(mut job) = job {
+                if !video_traite {
+                    // Note : La job est uniquement creee si le format est video
+                    let params_initial = BackgroundJobParams {
+                        defaults: Some(true),
+                        thumbnails: Some(true),
+                        mimetype: None,
+                        codec_video: None,
+                        codec_audio: None,
+                        resolution_video: None,
+                        quality_video: None,
+                        bitrate_video: None,
+                        bitrate_audio: None,
+                        preset: None,
+                        audio_stream_idx: None,
+                        subtitle_stream_idx: None,
+                    };
+                    job.params = Some(params_initial);
+                    let user_id = rep.user_id.clone();
+                    job.user_id = Some(user_id);
+                    debug!("declencher_traitement_nouveau_fuuid Create new default video job for tuuid:{}/fuuid:{:?} ", tuuid, job.fuuid);
+                    sauvegarder_job_video(middleware, &job, session).await?;
+                }
 
-            if ! image_traitee {
-                // Note : La job est uniquement creee si le format est une image. Exclus les videos.
-                sauvegarder_job_images(middleware, &job, session).await?;
+                if !rep.flag_index {
+                    let user_id = rep.user_id.clone();
+                    job.user_id = Some(user_id);
+                    sauvegarder_job_index(middleware, &job, session).await?;
+                }
             }
-
-            if ! video_traite {
-                // Note : La job est uniquement creee si le format est video
-                let params_initial = BackgroundJobParams {
-                    defaults: Some(true),
-                    thumbnails: Some(true),
-                    mimetype: None,
-                    codec_video: None,
-                    codec_audio: None,
-                    resolution_video: None,
-                    quality_video: None,
-                    bitrate_video: None,
-                    bitrate_audio: None,
-                    preset: None,
-                    audio_stream_idx: None,
-                    subtitle_stream_idx: None,
-                };
-                job.params = Some(params_initial);
-                let user_id = doc_fuuid.user_id.clone();
-                job.user_id = Some(user_id);
-                debug!("declencher_traitement_nouveau_fuuid Create new default video job for tuuid:{}/fuuid:{:?} ", tuuid, job.fuuid);
-                sauvegarder_job_video(middleware, &job, session).await?;
-            }
-
-            if ! index_traite {
-                let user_id = doc_fuuid.user_id.clone();
-                job.user_id = Some(user_id);
-                sauvegarder_job_index(middleware, &job, session).await?;
-            }
-
         }
-
     }
 
     Ok(())
@@ -491,7 +486,7 @@ async fn marquer_visites_fuuids<M>(
     // Marquer versions
     {
         let filtre_versions = doc! {
-            "fuuids": {"$in": fuuids},  // Utiliser index
+            "fuuid": {"$in": fuuids},  // Utiliser index
         };
         debug!("marquer_visites_fuuids Filtre versions {:?}", filtre_versions);
 

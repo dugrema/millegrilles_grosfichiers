@@ -70,6 +70,7 @@ impl GestionnaireDomaineV2 for GrosFichiersDomainManager {
             String::from(NOM_COLLECTION_FICHIERS_REP),
             String::from(NOM_COLLECTION_DOCUMENTS),
             String::from(NOM_COLLECTION_PARTAGE_CONTACT),
+            String::from(NOM_COLLECTION_MEDIA),
         ])
     }
 
@@ -242,20 +243,6 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
     }
 
-    // let commandes_secures: Vec<&str> = vec![
-    //     // TRANSACTION_IMAGE_SUPPRIMER_JOB,
-    //     TRANSACTION_IMAGE_SUPPRIMER_JOB_V2,
-    //     // TRANSACTION_VIDEO_SUPPRIMER_JOB,
-    //     TRANSACTION_VIDEO_SUPPRIMER_JOB_V2,
-    //     TRANSACTION_CONFIRMER_FICHIER_INDEXE,
-    //     // COMMANDE_INDEXATION_GET_JOB,
-    //     // COMMANDE_VIDEO_GET_JOB,
-    //     // COMMANDE_IMAGE_GET_JOB,
-    // ];
-    // for cmd in commandes_secures {
-    //     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
-    // }
-
     // RK 2.prive
     let requetes_protegees: Vec<&str> = vec![
         REQUETE_SYNC_COLLECTION,
@@ -396,14 +383,10 @@ where M: MongoDao + ConfigMessages
         Some(options_favoris)
     ).await?;
 
-    // Index cuuid pour collections
-    let options_unique_versions_fuuid = IndexOptions {
-        nom_index: Some(format!("versions_fuuid")),
-        unique: true
-    };
+    // Index fuuid pour versions
+    let options_unique_versions_fuuid = IndexOptions {nom_index: Some(CHAMP_FUUID.to_string()), unique: true};
     let champs_index_versions_fuuid = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_FUUID), direction: 1},
-        ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_FUUID), direction: 1}
     );
     middleware.create_index(
         middleware,
@@ -412,51 +395,16 @@ where M: MongoDao + ConfigMessages
         Some(options_unique_versions_fuuid)
     ).await?;
 
-    // Index fuuid/user_id pour versions
-    let options_unique_fuuid_user_id = IndexOptions {
-        nom_index: Some(format!("fuuid_user_id")),
-        unique: true
-    };
-    let champs_index_fuuid_user_id = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_USER_ID), direction: 1},
-        ChampIndex {nom_champ: String::from(CHAMP_FUUID), direction: 1},
+    // Index fuuids_reclames pour versions
+    let options_unique_versions_fuuids_reclames = IndexOptions {nom_index: Some("fuuids_reclames".to_string()), unique: false};
+    let champs_index_versions_fuuids_reclames = vec!(
+        ChampIndex {nom_champ: String::from("fuuids_reclames"), direction: 1}
     );
     middleware.create_index(
         middleware,
         NOM_COLLECTION_VERSIONS,
-        champs_index_fuuid_user_id,
-        Some(options_unique_fuuid_user_id)
-    ).await?;
-
-    // Index fuuids pour fichiers (liste par fsuuid)
-    let options_unique_fuuid = IndexOptions {
-        nom_index: Some(format!("Versions_fuuids")),
-        unique: false
-    };
-    let champs_index_fuuid = vec!(
-        ChampIndex {nom_champ: String::from("fuuids"), direction: 1},
-    );
-    middleware.create_index(
-        middleware,
-        NOM_COLLECTION_VERSIONS,
-        champs_index_fuuid,
-        Some(options_unique_fuuid)
-    ).await?;
-
-    // Index flag indexe
-    let options_index_indexe = IndexOptions {
-        nom_index: Some(format!("flag_indexe")),
-        unique: false
-    };
-    let champs_index_indexe = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_FLAG_INDEX), direction: 1},
-        ChampIndex {nom_champ: String::from(CHAMP_CREATION), direction: 1},
-    );
-    middleware.create_index(
-        middleware,
-        NOM_COLLECTION_VERSIONS,
-        champs_index_indexe,
-        Some(options_index_indexe)
+        champs_index_versions_fuuids_reclames,
+        Some(options_unique_versions_fuuids_reclames)
     ).await?;
 
     // Index flag image_traitees
@@ -503,21 +451,6 @@ where M: MongoDao + ConfigMessages
         NOM_COLLECTION_VERSIONS,
         champs_index_last_visits,
         Some(options_index_last_visits)
-    ).await?;
-
-    let options_index_tuuid_userid = IndexOptions {
-        nom_index: Some("tuuid_userid".to_string()),
-        unique: false
-    };
-    let champs_index_tuuid_userid = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
-        ChampIndex {nom_champ: String::from(CHAMP_USER_ID), direction: 1},
-    );
-    middleware.create_index(
-        middleware,
-        NOM_COLLECTION_VERSIONS,
-        champs_index_tuuid_userid,
-        Some(options_index_tuuid_userid)
     ).await?;
 
     // Index conversion unique tuuid/params
@@ -662,6 +595,19 @@ where M: MongoDao + ConfigMessages
         NOM_COLLECTION_QUOTAS_USAGERS,
         champs_indexation_user_id_quotas,
         Some(options_indexation_quotas_user_id)
+    ).await?;
+
+    // Index fuuid pour media
+    let options_unique_media = IndexOptions {nom_index: Some("fuuid_userid".to_string()), unique: true};
+    let champs_index_media = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_FUUID), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_USER_ID), direction: 1}
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_MEDIA,
+        champs_index_media,
+        Some(options_unique_media)
     ).await?;
 
     Ok(())

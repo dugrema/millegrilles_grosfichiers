@@ -498,7 +498,6 @@ async fn entretien_retirer_supprimes_sans_visites_session<M>(middleware: &M, ges
         let mut curseur = collection.find_with_session(filtre, options, session).await?;
         while curseur.advance(session).await? {
             let row = curseur.deserialize_current()?;
-            debug!("Marquer {:?} comme retire (orphelin supprime)", row);
             fuuids_supprimes.push(row.fuuid.to_owned());
         }
         fuuids_supprimes

@@ -35,6 +35,7 @@ use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
+use crate::data_structs::{MediaOwnedRow, ResponseVersionCourante, VideoDetail};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::traitement_index::{ParametresGetClesStream, ParametresGetPermission, ParametresRecherche, ResultatHits, ResultatHitsDetail};
@@ -232,7 +233,6 @@ pub fn mapper_fichier_db(fichier: Document) -> Result<FichierDetail, CommonError
     let mut fichier_mappe: FichierDetail = convertir_bson_deserializable(fichier)?;
     fichier_mappe.date_creation = Some(date_creation.to_chrono());
     fichier_mappe.derniere_modification = Some(date_modification.to_chrono());
-    debug!("Fichier mappe : {:?}", fichier_mappe);
     Ok(fichier_mappe)
 }
 
@@ -285,7 +285,7 @@ struct Favoris {
     // titre: Option<HashMap<String, CommonError>>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct ReponseFichierRepVersion {
     pub tuuid: String,
     pub user_id: String,
@@ -308,7 +308,7 @@ pub struct ReponseFichierRepVersion {
 
     // Champs recuperes a partir de la version courante
     #[serde(skip_serializing_if="Option::is_none")]
-    pub version_courante: Option<NodeFichierVersionOwned>,
+    pub version_courante: Option<ResponseVersionCourante>,
 
     #[serde(default, skip_serializing_if="Option::is_none", with="optionepochseconds")]
     pub derniere_modification: Option<DateTime<Utc>>,
@@ -356,7 +356,7 @@ impl From<NodeFichierRepOwned> for ReponseFichierRepVersion {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Serialize)]
 struct ReponseDocumentsParTuuid {
     fichiers: Vec<ReponseFichierRepVersion>
 }
@@ -443,8 +443,8 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
 
     debug!("requete_documents_par_tuuid Filtre {:?}", serde_json::to_string(&filtre)?);
 
-    let collection_typed = middleware.get_collection_typed::<NodeFichierRepOwned>(
-        NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_typed =
+        middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
     let mut curseur = collection_typed.find(filtre, None).await?;
     let mut reponse = ReponseDocumentsParTuuid { fichiers: Vec::new() };
     let mut map_fichiers_par_fuuid: HashMap<String, ReponseFichierRepVersion> = HashMap::new();
@@ -473,26 +473,74 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
         }
     };
 
-    debug!("requete_documents_par_tuuid Fichiers trouves : {:?}", reponse.fichiers);
-
     // Recuperer l'information de versions de tous les fichiers
     let fuuids_fichiers: Vec<&str> = map_fichiers_par_fuuid.keys().map(|s| s.as_str()).collect();
-    let filtre = doc! { CHAMP_USER_ID: &user_id, CHAMP_FUUID: {"$in": fuuids_fichiers} };
+
+    // Get media information for all files
+    let mut media_map = HashMap::new();
+    let filtre = doc! { CHAMP_FUUID: {"$in": &fuuids_fichiers}, CHAMP_USER_ID: &user_id};
     let options = FindOptions::builder()
-        .hint(Hint::Name(String::from("fuuid_user_id")))
+        .hint(Hint::Name(String::from("fuuid")))
+        .build();
+    let collection_versions =
+        middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
+    let mut curseur = collection_versions.find(filtre, options).await?;
+    while let Some(r) = curseur.next().await {
+        let row = r?;
+        media_map.insert(row.fuuid.clone(), row);
+    }
+
+    let filtre = doc! { CHAMP_FUUID: {"$in": fuuids_fichiers} };
+    let options = FindOptions::builder()
+        .hint(Hint::Name(String::from("fuuid")))
         .build();
     let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(
         NOM_COLLECTION_VERSIONS)?;
     let mut curseur = collection_versions.find(filtre, options).await?;
     while let Some(r) = curseur.next().await {
-        let row = r?;
-        match map_fichiers_par_fuuid.remove(row.fuuid.as_str()) {
+        let mut row = r?;
+        let fuuid = row.fuuid.clone();
+        match map_fichiers_par_fuuid.remove(fuuid.as_str()) {
             Some(mut inner) => {
-                inner.version_courante = Some(row);
+                let mut version_response = ResponseVersionCourante {
+                    fuuid: row.fuuid,
+                    mimetype: row.mimetype,
+                    taille: row.taille,
+                    fuuids_reclames: row.fuuids_reclames,
+                    visites: row.visites,
+                    derniere_modification: row.derniere_modification,
+                    height: None,
+                    width: None,
+                    duration: None,
+                    video_codec: None,
+                    anime: None,
+                    images: None,
+                    video: None,
+                    audio: None,
+                    subtitles: None,
+                    cle_id: row.cle_id,
+                    format: row.format,
+                    nonce: row.nonce,
+                    verification: row.verification,
+                };
+
+                if let Some(media) = media_map.remove(&fuuid) {
+                    version_response.anime = Some(media.anime);
+                    version_response.height = media.height;
+                    version_response.width = media.width;
+                    version_response.duration = media.duration;
+                    version_response.video_codec = media.video_codec;
+                    version_response.images = media.images;
+                    version_response.video = media.video;
+                    version_response.audio = media.audio;
+                    version_response.subtitles = media.subtitles;
+                }
+
+                inner.version_courante = Some(version_response);
                 reponse.fichiers.push(inner);  // Transferer vers la liste de reponses
             },
             None => {
-                warn!("requetes.requete_documents_par_tuuid Recu version {} qui ne match aucun element en memoire", row.tuuid);
+                warn!("requetes.requete_documents_par_tuuid Recu version {} qui ne match aucun element en memoire", row.fuuid);
             }
         }
     }
@@ -629,17 +677,18 @@ async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValide, gest
         None => user_id.to_owned()
     };
 
-    let resultat = verifier_acces_usager(middleware, &user_id, &requete.fuuids).await?;
-
-    let acces_tous = resultat.len() == requete.fuuids.len();
-
-    // let reponse = json!({ "fuuids_acces": resultat , "acces_tous": acces_tous, "user_id": user_id });
-    let reponse = ReponseVerifierAccesFuuids {
-        fuuids_acces: resultat,
-        acces_tous,
-        user_id,
-    };
-    Ok(Some(middleware.build_reponse(&reponse)?.0))
+    todo!()  // Check if this is used in media queries
+    // let resultat = verifier_acces_usager(middleware, &user_id, &requete.fuuids).await?;
+    //
+    // let acces_tous = resultat.len() == requete.fuuids.len();
+    //
+    // // let reponse = json!({ "fuuids_acces": resultat , "acces_tous": acces_tous, "user_id": user_id });
+    // let reponse = ReponseVerifierAccesFuuids {
+    //     fuuids_acces: resultat,
+    //     acces_tous,
+    //     user_id,
+    // };
+    // Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 #[derive(Serialize)]
@@ -689,7 +738,7 @@ async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValide, gestio
     if let Some(fuuid) = requete.fuuid_ref.as_ref() {
         fuuids.push(fuuid.as_str());
     }
-    let resultat = verifier_acces_usager(middleware, &user_id, &fuuids).await?;
+    let resultat = verifier_acces_usager_media(middleware, &user_id, &fuuids).await?;
     if resultat.len() != fuuids.len() {
         warn!("requete_verifier_acces_fuuids Mismatch, l'usager n'a pas acces aux fuuids demandes");
         // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Acces aux fichiers est refuse"}), None)?))
@@ -722,48 +771,48 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
         U: AsRef<str>, S: AsRef<str>, R: AsRef<str>
 {
     let user_id = user_id.as_ref();
-    let fuuid = fuuid.as_ref();
-    let fuuid_ref = match fuuid_ref_in.as_ref() { Some(inner) => Some(inner.as_ref()), None => None };
-
-    let filtre = doc! { CHAMP_USER_ID: user_id, CHAMP_FUUIDS: fuuid };
-    let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(
-        NOM_COLLECTION_VERSIONS)?;
-    let fichier = match collection.find_one(filtre, None).await? {
-        Some(inner) => inner,
-        None => Err(format!("requetes.get_information_fichier_stream Fuuid inconnu {} pour user_id {}", fuuid, user_id))?
+    // let fuuid = fuuid.as_ref();
+    let (fuuid_original, fuuid_video) = match fuuid_ref_in.as_ref() {
+        Some(inner) => (inner.as_ref(), Some(fuuid.as_ref())),
+        None => (fuuid.as_ref(), None)
     };
 
-    let resultat = match fuuid_ref {
-        Some(fuuid_ref) => {
-            // On a un fuuid de reference (video transcode) - l'information de dechiffrage est
-            // dans la collection VERSIONS (deja charge).
-            if fuuid_ref != fichier.fuuid.as_str() {
-                Err(format!("requetes.get_information_fichier_stream Mismatch fuuid_ref {} et fichier trouve (db) {}", fuuid_ref, fichier.fuuid))?
-            }
+    let resultat = match fuuid_video {
+        Some(fuuid_video) => {
+            // On a un fuuid de reference (fuuid == video transcode).
+            // Fuuid_ref est l'original. Charger en confirmant le user_id de la collection media.
+            let filtre = doc! { "fuuid": fuuid_original, "user_id": user_id };
+            let collection =
+                middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
+            let fichier = match collection.find_one(filtre, None).await? {
+                Some(inner) => inner,
+                None => Err(format!("requetes.get_information_fichier_stream Fuuid media inconnu {} pour user_id {}", fuuid_original, user_id))?
+            };
 
             // Trouver video correspondant au fuuid.
             let video = match fichier.video {
                 Some(inner) => {
-                    let mut video_trouve: Vec<TransactionAssocierVideoVersionDetail> = inner.into_iter()
-                        .filter(|f| f.1.fuuid_video.as_str() == fuuid)
+                    let mut video_trouve: Vec<VideoDetail> = inner.into_iter()
+                        .filter(|f| f.1.fuuid_video.as_str() == fuuid_video)
                         .map(|f| f.1)
                         .collect();
                     match video_trouve.pop() {
                         Some(inner) => inner,
-                        None => Err(format!("requetes.get_information_fichier_stream Aucun video avec fuuid {} pour fuuid_ref {}", fuuid, fuuid_ref))?
+                        None => Err(format!("requetes.get_information_fichier_stream Aucun video avec fuuid_video {} pour fuuid_original {}",
+                                            fuuid_video, fuuid_original))?
                     }
                 },
-                None => Err(format!("requetes.get_information_fichier_stream Aucuns videos pour fuuid_ref {}", fuuid_ref))?
+                None => Err(format!("requetes.get_information_fichier_stream Aucuns videos pour fuuid_original {}", fuuid_original))?
             };
 
             let format = match video.format.as_ref() {
                 Some(inner) => FormatChiffrage::try_from(inner.as_str())?,
-                None => Err(format!("requetes.get_information_fichier_stream Format chiffrage video manquant pour fuuid {}", fuuid))?
+                None => Err(format!("requetes.get_information_fichier_stream Format chiffrage video manquant pour fuuid_video {}", fuuid_video))?
             };
 
             let cle_id = match video.cle_id {
                 Some(inner) => inner,
-                None => fuuid_ref.to_owned()
+                None => fuuid_original.to_owned()
             };
 
             let nonce = match video.nonce {
@@ -779,7 +828,7 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
                 format,
                 nonce,
                 verification: None,
-                fuuid: Some(fuuid_ref.to_owned()),  // Reference au fichier video, requis pour JWT
+                fuuid: Some(fuuid_original.to_owned()),  // Reference au fichier video, requis pour JWT
             };
 
             InformationFichierStream {
@@ -788,25 +837,44 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
             }
         },
         None => {
-            // On n'a pas de fuuid de reference - video original
+            // On n'a pas de fuuid de reference
+            // Load decryption information
+            let filtre = doc! { "fuuids_reclames": fuuid_original };
+            let collection =
+                middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+            let fichier_version = match collection.find_one(filtre, None).await? {
+                Some(inner) => inner,
+                None => Err(format!("requetes.get_information_fichier_stream Version fuuid inconnue {}", fuuid_original))?
+            };
+
+            // let fuuid_original = fichier_version.fuuid.as_str();
+
+            // Security verification
+            let filtre = doc! { "fuuids_versions": fuuid_original, "user_id": user_id };
+            let collection =
+                middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+            let count = collection.count_documents(filtre, None).await?;
+            if count == 0 {
+                Err(format!("requetes.get_information_fichier_stream Access denied for user_id {} to fuuid {}", user_id, fuuid_original))?
+            }
 
             // Verifier si on a l'ancien ou le nouveau format de chiffrage symmetrique (V2)
-            match fichier.cle_id {
+            match fichier_version.cle_id {
                 Some(cle_id) => {
                     // Nouveau format, toute l'information est deja disponible
-                    let format = match fichier.format {
+                    let format = match fichier_version.format {
                         Some(inner) => inner,
                         None => Err(Error::Str("requetes.get_information_fichier_stream Format de chiffrage manquant"))?
                     };
                     let info_dechiffrage = InformationDechiffrageV2 {
                         cle_id,
                         format,
-                        nonce: fichier.nonce,
-                        verification: fichier.verification,
+                        nonce: fichier_version.nonce,
+                        verification: fichier_version.verification,
                         fuuid: None,
                     };
                     InformationFichierStream {
-                        mimetype: fichier.mimetype,
+                        mimetype: fichier_version.mimetype,
                         dechiffrage: info_dechiffrage,
                     }
                 },
@@ -815,7 +883,7 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
                     let requete = RequeteDechiffrage {
                         domaine: DOMAINE_NOM.to_string(),
                         liste_hachage_bytes: None,
-                        cle_ids: Some(vec![fuuid.to_string()]),
+                        cle_ids: Some(vec![fuuid_original.to_string()]),
                         certificat_rechiffrage: None,
                         inclure_signature: None,
                     };
@@ -833,11 +901,11 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
                         let mut reponse_dechiffrage: ReponseRequeteDechiffrageV2 = message_ref.dechiffrer(enveloppe_privee.as_ref())?;
                         let cle = match reponse_dechiffrage.cles.take() {
                             Some(mut inner) => inner.remove(0),
-                            None => Err(format!("requetes.get_information_fichier_stream Cle fuuid {} manquante", fuuid))?
+                            None => Err(format!("requetes.get_information_fichier_stream Cle fuuid {} manquante", fuuid_original))?
                         };
                         let info = InformationDechiffrageV2 {
                             format: match cle.format.as_ref() { Some(inner) => inner.clone(), None => FormatChiffrage::MGS4 },
-                            cle_id: match cle.cle_id.as_ref() { Some(inner) => inner.to_string(), None => fuuid.to_string() },
+                            cle_id: match cle.cle_id.as_ref() { Some(inner) => inner.to_string(), None => fuuid_original.to_string() },
                             nonce: match cle.nonce.as_ref() { Some(inner) => Some(inner.to_string()), None => None },
                             verification: match cle.verification.as_ref() { Some(inner) => Some(inner.to_string()), None => None },
                             fuuid: None,
@@ -847,47 +915,15 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
 
                         info
                     } else {
-                        Err(format!("requetes.get_information_fichier_stream Erreur requete information dechiffrage {}, reponse invalide", fuuid))?
+                        Err(format!("requetes.get_information_fichier_stream Erreur requete information dechiffrage {}, reponse invalide", fuuid_original))?
                     };
                     InformationFichierStream {
-                        mimetype: fichier.mimetype,
+                        mimetype: fichier_version.mimetype,
                         dechiffrage: info_dechiffrage,
                     }
                 }
             }
 
-            // let requete = RequeteDechiffrage {
-            //     domaine: DOMAINE_NOM.to_string(),
-            //     liste_hachage_bytes: None,
-            //     cle_ids: Some(vec![fuuid.to_string()]),
-            //     certificat_rechiffrage: None,
-            // };
-            // let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE, vec![Securite::L4Secure])
-            //     .build();
-
-            // debug!("Transmettre requete permission dechiffrage cle : {:?}", requete);
-            // let reponse = middleware.transmettre_requete(routage, &requete).await?;
-            // let info_dechiffrage = if let Some(TypeMessage::Valide(reponse)) = reponse {
-            //     debug!("Reponse dechiffrage : {:?}", reponse);
-            //     let mut reponse_dechiffrage: ReponseDechiffrage = deser_message_buffer!(reponse.message);
-            //     let cle = match reponse_dechiffrage.cles.remove(fuuid) {
-            //         Some(inner) => inner,
-            //         None => Err(format!("requetes.get_information_fichier_stream Cle fuuid {} manquante", fuuid))?
-            //     };
-            //     InformationDechiffrage {
-            //         format: match cle.format.as_ref() { Some(inner) => Some(FormatChiffrage::try_from(inner.as_str())?), None => None },
-            //         cle_id: None,
-            //         ref_hachage_bytes: None,
-            //         header: cle.header,
-            //         tag: cle.tag,
-            //     }
-            // } else {
-            //     Err(format!("Erreur requete information dechiffrage {}, reponse invalide", fuuid))?
-            // };
-            // InformationFichierStream {
-            //     mimetype: fichier.mimetype,
-            //     dechiffrage: info_dechiffrage,
-            // }
         }
     };
 
@@ -1243,14 +1279,34 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnai
         }
     };
 
-    // let user_id = requete.user_id;
+    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    let filtre_version = doc!{"fuuids_reclames": &fuuid};
+    let file_version = match collection_versions.find_one(filtre_version, None).await? {
+        Some(inner) => inner,
+        None => Err(format!("Fuuid {} unknown (no version match)", fuuid))?
+    };
+    let original_fuuid = file_version.fuuid.as_str();
 
-    // let mut hachage_bytes = Vec::new();
-    // let mut hachage_bytes_demandes = HashSet::new();
-    // hachage_bytes_demandes.extend(requete.fuuids.iter().map(|f| f.to_string()));
+    // Ensure the user has acces to that file
+    let collection_reps = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let filtre_reps = doc!{"fuuids_versions": &original_fuuid, "user_id": &user_id};
+    let count = collection_reps.count_documents(filtre_reps, None).await?;
+    if count == 0 {
+        Err(format!("User {} does not have access to fuuid {}", user_id, original_fuuid))?
+    }
 
+    // Create set of allowed cle_ids
+    let mut set_cle_ids = HashSet::new();
+
+    // set_cle_ids.insert(fuuid.clone());
+    // if let Some(cle_id) = file_version.cle_id {
+    //     // Allow decryption of the original file
+    //     set_cle_ids.insert(cle_id);
+    // }
+
+    // Get all decryption keys for videos
     let filtre = doc!{
-        "fuuids": { "$in": vec![&fuuid] },
+        "fuuid": { "$in": vec![&fuuid] },
         "user_id": &user_id,
         "$or": [
             {"mimetype": {"$regex": "(video\\/|audio\\/)"}},
@@ -1267,57 +1323,46 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnai
     let pem_rechiffrage = m.certificat.chaine_pem()?;
 
     debug!("requete_get_cles_stream Filtre : {:?}", filtre);
-    let projection = doc! { CHAMP_FUUID: true, CHAMP_FUUIDS: true, CHAMP_METADATA: true, "cle_id": true };
-    let opts = FindOptions::builder().projection(projection).limit(1000).build();
-    let collection = middleware.get_collection_typed::<ResultatDocsVersionsFuuidsBorrow>(
-        NOM_COLLECTION_VERSIONS)?;
+    // let projection = doc! { CHAMP_FUUID: true, CHAMP_FUUIDS: true, CHAMP_METADATA: true, "cle_id": true };
+    let opts = FindOptions::builder().limit(1000).build();
+    let collection = middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
     let mut curseur = collection.find(filtre, Some(opts)).await?;
 
     let mut hachage_bytes_demandes = HashSet::new();
     hachage_bytes_demandes.extend(requete.fuuids.iter().map(|f| f.to_string()));
-    let mut hachage_bytes = Vec::new();
+
     while curseur.advance().await? {
         let doc_mappe = curseur.deserialize_current()?;
-        debug!("requete_get_cles_stream document trouve pour permission cle : {:?}", doc_mappe);
-        match doc_mappe.cle_id {
-            Some(inner) => {
-                // Nouvelle approche chiffrage V2
-                hachage_bytes.push(inner.to_owned());
-            },
-            None => {
-                // Ancienne approche
-                // let doc_mappe: ResultatDocsPermission = convertir_bson_deserializable(fresult?)?;
-                hachage_bytes.push(doc_mappe.fuuid.to_owned());
-                // if let Some(fuuids) = doc_mappe.fuuids {
-                //     for d in fuuids {
-                //         if hachage_bytes_demandes.remove(d) {
-                //             hachage_bytes.push(d.to_owned());
-                //         }
-                //     }
-                // }
-                if let Some(metadata) = doc_mappe.metadata {
-                    if let Some(ref_hachage_bytes) = metadata.ref_hachage_bytes {
-                        if hachage_bytes_demandes.remove(ref_hachage_bytes) {
-                            hachage_bytes.push(ref_hachage_bytes.to_owned());
-                        }
+        if let Some(video) = doc_mappe.video {
+            for video in video.into_values() {
+                if video.fuuid_video.as_str() == fuuid.as_str() {
+                    // This is the video to load
+                    if let Some(cle_id) = video.cle_id {
+                        set_cle_ids.insert(cle_id);
                     }
                 }
             }
         }
     }
 
+    // let cle_ids: Vec<String> = hachage_bytes_demandes.intersection(&set_cle_ids).map(|x|x.to_string()).collect();
+    if set_cle_ids.len() == 0 {
+        if let Some(cle_id) = file_version.cle_id {
+            // Allow loading the original file
+            set_cle_ids.insert(cle_id);
+        } else {
+            // Legacy / fallback for original file
+            set_cle_ids.insert(original_fuuid.to_owned());
+        }
+    }
+
     let permission = RequeteDechiffrage {
         domaine: DOMAINE_NOM.to_string(),
         liste_hachage_bytes: None,
-        cle_ids: Some(hachage_bytes),
+        cle_ids: Some(set_cle_ids.into_iter().collect()),
         certificat_rechiffrage: Some(pem_rechiffrage),
         inclure_signature: None,
     };
-
-    // let permission = json!({
-    //     "liste_hachage_bytes": hachage_bytes,
-    //     "certificat_rechiffrage": pem_rechiffrage,
-    // });
 
     // Emettre requete de rechiffrage de cle, reponse acheminee directement au demandeur
     let (reply_to, correlation_id) = match &m.type_message {
@@ -1415,8 +1460,6 @@ async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHits
         fichiers
     };
 
-    debug!("requete.mapper_fichiers_resultat Fichiers par tuuid : {:?}", fichiers_par_tuuid);
-
     // Charger les details "courants" pour les fichiers
     {
         let tuuids: Vec<String> = fichiers_par_tuuid.keys().map(|k| k.clone()).collect();
@@ -1453,12 +1496,10 @@ async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHits
         }
     }
 
-    debug!("requete.mapper_fichiers_resultat Liste response hits : {:?}", liste_reponse);
-
     Ok(liste_reponse)
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ResultatDocumentRecherche {
     tuuid: String,
     fuuid: String,
@@ -1695,17 +1736,17 @@ async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValide, gest
 }
 
 pub async fn verifier_acces_usager<M,S,T,V>(middleware: &M, user_id_in: S, fuuids_in: V)
-    -> Result<Vec<String>, CommonError>
-    where M: GenerateurMessages + MongoDao,
-          S: AsRef<str>,
-          T: AsRef<str>,
-          V: AsRef<Vec<T>>
+                                            -> Result<Vec<String>, CommonError>
+where M: GenerateurMessages + MongoDao,
+      S: AsRef<str>,
+      T: AsRef<str>,
+      V: AsRef<Vec<T>>
 {
     let user_id = user_id_in.as_ref();
     let fuuids: Vec<&str> = fuuids_in.as_ref().iter().map(|s| s.as_ref()).collect();
 
     let mut filtre = doc! {
-        CHAMP_FUUIDS: { "$in": &fuuids },
+        CHAMP_FUUID: { "$in": &fuuids },
         CHAMP_USER_ID: user_id,
         CHAMP_SUPPRIME: false,
     };
@@ -1713,9 +1754,9 @@ pub async fn verifier_acces_usager<M,S,T,V>(middleware: &M, user_id_in: S, fuuid
     // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let collection = middleware.get_collection_typed::<RowEtatFuuid>(NOM_COLLECTION_VERSIONS)?;
     let options = FindOptions::builder()
-        .projection(doc!{CHAMP_FUUIDS: 1, CHAMP_SUPPRIME: 1})
+        .projection(doc!{CHAMP_FUUID: 1, CHAMP_SUPPRIME: 1})
         //.projection(doc!{CHAMP_FUUIDS: 1})
-        .hint(Hint::Name("Versions_fuuids".into()))
+        .hint(Hint::Name("fuuid".into()))
         .build();
     let mut curseur = collection.find(filtre, Some(options)).await?;
 
@@ -1736,6 +1777,74 @@ pub async fn verifier_acces_usager<M,S,T,V>(middleware: &M, user_id_in: S, fuuid
     }
 
     let resultat: Vec<&&str> = hashset_acces.intersection(&hashset_requete).collect();
+
+    // String to_owned
+    Ok(resultat.into_iter().map(|s| s.to_string()).collect())
+}
+
+pub async fn verifier_acces_usager_media<M,S,T,V>(middleware: &M, user_id_in: S, fuuids_in: V)
+    -> Result<Vec<String>, CommonError>
+    where M: GenerateurMessages + MongoDao,
+          S: AsRef<str>,
+          T: ToString,
+          V: AsRef<Vec<T>>
+{
+    let user_id = user_id_in.as_ref();
+    let fuuids: Vec<String> = fuuids_in.as_ref().iter().map(|s| s.to_string()).collect();
+
+    debug!("verifier_acces_usager_media Requested fuuids : {:?}", fuuids);
+
+    // Build list of all original fuuids for this user on requested fuuids (may be images or videos).
+    let original_fuuids = {
+        let mut original_fuuids = Vec::new();
+        let filtre = doc! {"fuuids_reclames": {"$in": &fuuids}};
+        let options = FindOptions::builder()
+            .hint(Hint::Name("fuuids_reclames".into()))
+            .build();
+        let collection_versions =
+            middleware.get_collection_typed::<NodeFichierVersionRow>(NOM_COLLECTION_VERSIONS)?;
+        let mut cursor = collection_versions.find(filtre, options).await?;
+        while cursor.advance().await? {
+            let row = cursor.deserialize_current()?;
+            original_fuuids.push(row.fuuid);
+        }
+        original_fuuids
+    };
+
+    debug!("verifier_acces_usager_media Original fuuids = {:?}", original_fuuids);
+
+    // Get all media available to the user for these files
+    let allowable_fuuids = {
+        let mut fuuids_acces = HashSet::new();
+        let filtre = doc! {
+            CHAMP_FUUID: { "$in": original_fuuids },
+            CHAMP_USER_ID: user_id,
+        };
+        let collection = middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
+        let options = FindOptions::builder()
+            .hint(Hint::Name("fuuid_userid".into()))
+            .build();
+        let mut curseur = collection.find(filtre, Some(options)).await?;
+        while curseur.advance().await? {
+            let doc_map = curseur.deserialize_current()?;
+            fuuids_acces.insert(doc_map.fuuid);
+            if let Some(images) = doc_map.images {
+                fuuids_acces.extend(images.into_values().map(|x| x.hachage));
+            }
+            if let Some(video) = doc_map.video {
+                fuuids_acces.extend(video.into_values().map(|x| x.fuuid_video));
+            }
+        }
+        fuuids_acces
+    };
+
+    debug!("verifier_acces_usager_media Allowable : {:?}", allowable_fuuids);
+
+    // Join the set of fuuids requested to the allowable fuuids
+    let hashset_requete = HashSet::from_iter(fuuids.into_iter());
+    let resultat: Vec<&String> = allowable_fuuids.intersection(&hashset_requete).collect();
+
+    debug!("verifier_acces_usager_media Intersection : {:?}", resultat);
 
     // String to_owned
     Ok(resultat.into_iter().map(|s| s.to_string()).collect())
@@ -2869,20 +2978,21 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
 
     let requete: RequeteInfoVideo = deser_message_buffer!(m.message);
 
-    let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
-    let filtre = doc!{"user_id": &user_id, "fuuid": &requete.fuuid};
-    match collection.find_one(filtre, None).await? {
-        Some(fichier) => {
-            let response = RequeteInfoVideoResponse {
-                fuuid: fichier.fuuid,
-                tuuid: fichier.tuuid,
-                audio: fichier.audio,
-                subtitles: fichier.subtitles,
-            };
-            Ok(Some(middleware.build_reponse(response)?.0))
-        },
-        None => Ok(Some(middleware.reponse_err(Some(404), None, Some("File not found"))?))
-    }
+    todo!()
+    // let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    // let filtre = doc!{"user_id": &user_id, "fuuid": &requete.fuuid};
+    // match collection.find_one(filtre, None).await? {
+    //     Some(fichier) => {
+    //         let response = RequeteInfoVideoResponse {
+    //             fuuid: fichier.fuuid,
+    //             tuuid: fichier.tuuid,
+    //             audio: fichier.audio,
+    //             subtitles: fichier.subtitles,
+    //         };
+    //         Ok(Some(middleware.build_reponse(response)?.0))
+    //     },
+    //     None => Ok(Some(middleware.reponse_err(Some(404), None, Some("File not found"))?))
+    // }
 }
 
 pub async fn get_decrypted_keys<M>(middleware: &M, cle_ids: Vec<String>) -> Result<Vec<ResponseRequestDechiffrageV2Cle>, CommonError>

@@ -1,23 +1,22 @@
 use std::collections::HashMap;
 
-use millegrilles_common_rust::error::Error;
 use millegrilles_common_rust::bson::{Bson, Document};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::dechiffrage::{DataChiffre, DataChiffreBorrow};
 use millegrilles_common_rust::messages_generiques::CommandeUsager;
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{FormatChiffrage, optionformatchiffragestr};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{optionformatchiffragestr, FormatChiffrage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epochseconds, optionepochseconds};
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::{mapstringepochseconds, optionmapstringepochseconds};
-
-
+use crate::data_structs::ImageDetail;
 use crate::requetes::mapper_fichier_db;
 
 pub const DOMAINE_NOM: &str = "GrosFichiers";
 pub const NOM_COLLECTION_TRANSACTIONS: &str = "GrosFichiers";
 pub const NOM_COLLECTION_FICHIERS_REP: &str = "GrosFichiers/fichiersRep";
 pub const NOM_COLLECTION_VERSIONS: &str = "GrosFichiers/versionsFichiers";
+pub const NOM_COLLECTION_MEDIA: &str = "GrosFichiers/media";
 pub const NOM_COLLECTION_DOCUMENTS: &str = "GrosFichiers/documents";
 pub const NOM_COLLECTION_IMAGES_JOBS: &str = "GrosFichiers/jobs/images";
 pub const NOM_COLLECTION_VIDEO_JOBS: &str = "GrosFichiers/jobs/video";
@@ -255,7 +254,7 @@ impl Into<Bson> for TypeNode {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct FichierDetail {
     pub tuuid: String,
     // #[serde(skip_serializing_if="Option::is_none")]
@@ -312,7 +311,7 @@ impl TryFrom<Document> for FichierDetail {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DBFichierVersionDetail {
     #[serde(skip_serializing_if="Option::is_none")]
     pub nom: Option<String>,
@@ -337,7 +336,7 @@ pub struct DBFichierVersionDetail {
     #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
     pub video_codec: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
-    pub images: Option<HashMap<String, ImageConversion>>,
+    pub images: Option<HashMap<String, ImageDetail>>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub anime: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
@@ -370,7 +369,7 @@ pub struct SubtitleStreamInfo {
     pub language: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct TransactionAssocierConversions {
     pub tuuid: Option<String>,
     pub fuuid: String,
@@ -378,7 +377,7 @@ pub struct TransactionAssocierConversions {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub mimetype: Option<String>,
-    pub images: HashMap<String, ImageConversion>,
+    pub images: HashMap<String, ImageDetail>,
     pub anime: Option<bool>,
     pub duration: Option<f32>,
     #[serde(rename="videoCodec")]
@@ -456,30 +455,6 @@ pub struct TransactionAssocierVideoVersionDetail {
     pub audio_stream_idx: Option<u32>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub subtitle_stream_idx: Option<u32>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ImageConversion {
-    pub hachage: String,
-
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub mimetype: Option<String>,
-    pub taille: Option<u64>,
-    pub resolution: Option<u32>,
-
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub data_chiffre: Option<String>,
-
-    // Information dechiffrage - note : fuuid_v_courante du fichier -> ref_hachage_bytes
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub header: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub format: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub nonce: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub cle_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -805,7 +780,7 @@ pub struct NodeFichierRepVersionCouranteOwned {
     pub versions: Option<Vec<NodeVersionCouranteInlineOwned>>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NodeFichierVersionBorrowed<'a> {
     #[serde(borrow)]
     pub fuuid: &'a str,
@@ -834,7 +809,7 @@ pub struct NodeFichierVersionBorrowed<'a> {
     #[serde(skip_serializing_if="Option::is_none")]
     pub anime: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
-    pub images: Option<HashMap<&'a str, ImageConversion>>,
+    pub images: Option<HashMap<&'a str, ImageDetail>>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub video: Option<HashMap<&'a str, TransactionAssocierVideoVersionDetail>>,
 

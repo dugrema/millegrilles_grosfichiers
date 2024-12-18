@@ -27,7 +27,7 @@ use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::{bson, bson::doc};
 use millegrilles_common_rust::{hex, serde_json, serde_json::json};
-
+use crate::data_structs::{ImageDetail, MediaOwnedRow, VideoDetail};
 use crate::domain_manager::GrosFichiersDomainManager;
 
 use crate::grosfichiers_constantes::*;
@@ -294,9 +294,9 @@ pub struct NodeFichierRepRow<'a> {
     pub tuuid: String,
     pub user_id: String,
     pub type_node: &'a str,
-    #[serde(default, rename(deserialize="_mg-derniere-modification"), with="chrono_datetime_as_bson_datetime")]
+    #[serde(default, rename="_mg-derniere-modification", with="chrono_datetime_as_bson_datetime")]
     pub derniere_modification: DateTime<Utc>,
-    #[serde(default, rename(deserialize="_mg-creation"), with="chrono_datetime_as_bson_datetime")]
+    #[serde(default, rename="_mg-creation", with="chrono_datetime_as_bson_datetime")]
     pub date_creation: DateTime<Utc>,
     pub flag_index: bool,
     pub supprime: bool,
@@ -323,6 +323,7 @@ pub struct NodeFichierRepOwned {
     pub supprime: bool,
     pub supprime_indirect: bool,
     pub metadata: DataChiffre,
+    pub flag_index: bool,
 
     // Champs pour type_node Fichier
     pub mimetype: Option<String>,
@@ -345,65 +346,65 @@ pub struct NodeFichierRepOwned {
 
 }
 
-impl NodeFichierRepOwned {
-    pub async fn from_nouvelle_version<M,U,S>(middleware: &M, value: &TransactionNouvelleVersion, uuid_transaction: S, user_id: U, session: &mut ClientSession)
-        -> Result<Self, CommonError>
-        where M: MongoDao, S: ToString, U: ToString
-    {
-        let user_id = user_id.to_string();
-
-        let tuuid = match &value.tuuid {
-            Some(t) => t.to_owned(),
-            None => uuid_transaction.to_string(),
-        };
-
-        let cuuid = value.cuuid.as_str();
-        //     match value.cuuid.as_ref() {
-        //     Some(inner) => inner.as_str(),
-        //     None => Err(format!("transactions.transaction_nouvelle_version Cuuid absent de transaction nouvelle_version"))?
-        // };
-
-        let mut cuuids = vec![cuuid.to_owned()];
-
-        // Inserer l'information du path (cuuids parents)
-        let filtre = doc!{ CHAMP_TUUID: &cuuid, CHAMP_USER_ID: &user_id };
-        let collection_nodes = middleware.get_collection_typed::<NodeFichiersRepBorrow>(
-            NOM_COLLECTION_FICHIERS_REP)?;
-        let mut curseur = collection_nodes.find_with_session(filtre, None, session).await?;
-        if curseur.advance(session).await? {
-            let row = curseur.deserialize_current()?;
-            if let Some(path_parent) = row.path_cuuids {
-                // Inserer les cuuids du parent
-                cuuids.extend(path_parent.into_iter().map(|c|c.to_owned()));
-            }
-        } else {
-            Err(format!("transactions.transaction_nouvelle_version Cuuid {} inconnu", cuuid))?;
-        };
-
-        Ok(Self {
-            tuuid: tuuid.to_owned(),
-            user_id,
-            type_node: TypeNode::Fichier.to_str().to_owned(),
-            supprime: false,
-            supprime_indirect: false,
-            metadata: value.metadata.clone(),
-            mimetype: Some(value.mimetype.clone()),
-            fuuids_versions: Some(vec![value.fuuid.clone()]),
-            path_cuuids: Some(cuuids),
-            // map_derniere_modification: Default::default(),
-            derniere_modification: None,
-            date_creation: None,
-            // cle_id: value.cle_id.clone(),
-            // format: value.format.clone(),
-            // nonce: value.nonce.clone(),
-            // verification: value.verification.clone(),
-        })
-    }
-    
-    // pub fn map_date_modification(&mut self) {
-    //     self.derniere_modification = Some(self.map_derniere_modification.clone());
-    // }
-}
+// impl NodeFichierRepOwned {
+//     pub async fn from_nouvelle_version<M,U,S>(middleware: &M, value: &TransactionNouvelleVersion, uuid_transaction: S, user_id: U, session: &mut ClientSession)
+//         -> Result<Self, CommonError>
+//         where M: MongoDao, S: ToString, U: ToString
+//     {
+//         let user_id = user_id.to_string();
+//
+//         let tuuid = match &value.tuuid {
+//             Some(t) => t.to_owned(),
+//             None => uuid_transaction.to_string(),
+//         };
+//
+//         let cuuid = value.cuuid.as_str();
+//         //     match value.cuuid.as_ref() {
+//         //     Some(inner) => inner.as_str(),
+//         //     None => Err(format!("transactions.transaction_nouvelle_version Cuuid absent de transaction nouvelle_version"))?
+//         // };
+//
+//         let mut cuuids = vec![cuuid.to_owned()];
+//
+//         // Inserer l'information du path (cuuids parents)
+//         let filtre = doc!{ CHAMP_TUUID: &cuuid, CHAMP_USER_ID: &user_id };
+//         let collection_nodes = middleware.get_collection_typed::<NodeFichiersRepBorrow>(
+//             NOM_COLLECTION_FICHIERS_REP)?;
+//         let mut curseur = collection_nodes.find_with_session(filtre, None, session).await?;
+//         if curseur.advance(session).await? {
+//             let row = curseur.deserialize_current()?;
+//             if let Some(path_parent) = row.path_cuuids {
+//                 // Inserer les cuuids du parent
+//                 cuuids.extend(path_parent.into_iter().map(|c|c.to_owned()));
+//             }
+//         } else {
+//             Err(format!("transactions.transaction_nouvelle_version Cuuid {} inconnu", cuuid))?;
+//         };
+//
+//         Ok(Self {
+//             tuuid: tuuid.to_owned(),
+//             user_id,
+//             type_node: TypeNode::Fichier.to_str().to_owned(),
+//             supprime: false,
+//             supprime_indirect: false,
+//             metadata: value.metadata.clone(),
+//             mimetype: Some(value.mimetype.clone()),
+//             fuuids_versions: Some(vec![value.fuuid.clone()]),
+//             path_cuuids: Some(cuuids),
+//             // map_derniere_modification: Default::default(),
+//             derniere_modification: None,
+//             date_creation: None,
+//             // cle_id: value.cle_id.clone(),
+//             // format: value.format.clone(),
+//             // nonce: value.nonce.clone(),
+//             // verification: value.verification.clone(),
+//         })
+//     }
+//
+//     // pub fn map_date_modification(&mut self) {
+//     //     self.derniere_modification = Some(self.map_derniere_modification.clone());
+//     // }
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeFichierVersionAudioOwned {
@@ -426,81 +427,80 @@ pub struct NodeFichierVersionSubtitlesOwned {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct NodeFichierVersionRow<'a> {
     pub fuuid: String,
-    pub tuuid: String,
-    pub user_id: String,
+    // pub tuuid: String,
+    // pub user_id: String,
     pub mimetype: &'a str,
-    pub metadata: DataChiffreBorrow<'a>,
     pub taille: u64,
 
-    pub fuuids: Vec<&'a str>,
+    pub tuuids: Vec<&'a str>,
+    // pub fuuids: Vec<&'a str>,
     pub fuuids_reclames: Vec<&'a str>,
 
-    pub supprime: bool,
+    // pub supprime: bool,
     #[serde(with="mapstringepochseconds")]
     pub visites: HashMap<String, DateTime<Utc>>,
+    #[serde(with="chrono_datetime_as_bson_datetime")]
+    pub last_visit_verification: DateTime<Utc>,
 
     // Mapping date
-    #[serde(rename(deserialize = "_mg-creation"), with = "chrono_datetime_as_bson_datetime")]
+    #[serde(rename="_mg-creation", with="chrono_datetime_as_bson_datetime")]
     creation: DateTime<Utc>,
-    #[serde(rename(deserialize = "_mg-derniere-modification"), with = "chrono_datetime_as_bson_datetime")]
+    #[serde(rename="_mg-derniere-modification", with="chrono_datetime_as_bson_datetime")]
     derniere_modification: DateTime<Utc>,
 
     // Champs optionnels media
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub height: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub width: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub duration: Option<f32>,
-    #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
-    pub video_codec: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub anime: Option<bool>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub images: Option<HashMap<String, ImageConversion>>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub video: Option<HashMap<String, TransactionAssocierVideoVersionDetail>>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub height: Option<u32>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub width: Option<u32>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub duration: Option<f32>,
+    // #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
+    // pub video_codec: Option<String>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub anime: Option<bool>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub images: Option<HashMap<String, ImageConversion>>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub video: Option<HashMap<String, TransactionAssocierVideoVersionDetail>>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub audio: Option<Vec<NodeFichierVersionAudioOwned>>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub subtitles: Option<Vec<NodeFichierVersionSubtitlesOwned>>,
 
     #[serde(skip_serializing_if="Option::is_none")]
     flag_media: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub flag_media_retry: Option<i32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub flag_media_traite: Option<bool>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub flag_video_traite: Option<bool>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub flag_index: Option<bool>,
+    pub flag_media_traite: bool,
+    pub flag_video_traite: bool,
 
     // Information de chiffrage symmetrique (depuis 2024.3.0)
     #[serde(skip_serializing_if="Option::is_none")]
-    pub cle_id: Option<String>,
+    pub cle_id: Option<&'a str>,
     #[serde(default, with="optionformatchiffragestr", skip_serializing_if="Option::is_none")]
     pub format: Option<FormatChiffrage>,
     #[serde(skip_serializing_if="Option::is_none")]
-    pub nonce: Option<String>,
+    pub nonce: Option<&'a str>,
     #[serde(skip_serializing_if="Option::is_none")]
-    pub verification: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub audio: Option<Vec<NodeFichierVersionAudioOwned>>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub subtitles: Option<Vec<NodeFichierVersionSubtitlesOwned>>,
+    pub verification: Option<&'a str>,
 }
 
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeFichierVersionOwned {
     pub fuuid: String,
-    pub tuuid: String,
-    pub user_id: String,
+    // pub tuuid: String,
+    // pub user_id: String,
     pub mimetype: String,
-    pub metadata: DataChiffre,
+    // pub metadata: DataChiffre,
     pub taille: u64,
 
-    pub fuuids: Vec<String>,
+    // pub fuuids: Vec<String>,
+    pub tuuids: Vec<String>,
     pub fuuids_reclames: Vec<String>,
 
-    pub supprime: bool,
+    // pub supprime: bool,
     #[serde(with="mapstringepochseconds")]
     pub visites: HashMap<String, DateTime<Utc>>,
 
@@ -510,23 +510,27 @@ pub struct NodeFichierVersionOwned {
     #[serde(default, rename(deserialize = "_mg-derniere-modification"),
     serialize_with = "optionepochseconds::serialize",
     deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
-    derniere_modification: Option<DateTime<Utc>>,
+    pub derniere_modification: Option<DateTime<Utc>>,
 
-    // Champs optionnels media
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub height: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub width: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub duration: Option<f32>,
-    #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
-    pub video_codec: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub anime: Option<bool>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub images: Option<HashMap<String, ImageConversion>>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub video: Option<HashMap<String, TransactionAssocierVideoVersionDetail>>,
+    // // Champs optionnels media
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub height: Option<u32>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub width: Option<u32>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub duration: Option<f32>,
+    // #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
+    // pub video_codec: Option<String>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub anime: Option<bool>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub images: Option<HashMap<String, ImageConversion>>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub video: Option<HashMap<String, TransactionAssocierVideoVersionDetail>>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub audio: Option<Vec<NodeFichierVersionAudioOwned>>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub subtitles: Option<Vec<NodeFichierVersionSubtitlesOwned>>,
 
     #[serde(skip_serializing_if="Option::is_none")]
     flag_media: Option<String>,
@@ -536,8 +540,8 @@ pub struct NodeFichierVersionOwned {
     pub flag_media_traite: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub flag_video_traite: Option<bool>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub flag_index: Option<bool>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub flag_index: Option<bool>,
 
     // Information de chiffrage symmetrique (depuis 2024.3.0)
     #[serde(skip_serializing_if="Option::is_none")]
@@ -548,78 +552,95 @@ pub struct NodeFichierVersionOwned {
     pub nonce: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub verification: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub audio: Option<Vec<NodeFichierVersionAudioOwned>>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub subtitles: Option<Vec<NodeFichierVersionSubtitlesOwned>>,
 }
 
-impl NodeFichierVersionOwned {
-    pub async fn from_nouvelle_version<U, S>(value: &TransactionNouvelleVersion, tuuid: S, user_id: U)
-        -> Result<Self, CommonError>
-        where S: ToString, U: ToString
-    {
-        let user_id = user_id.to_string();
+// impl NodeFichierVersionOwned {
+//     pub async fn from_nouvelle_version<U, S>(value: &TransactionNouvelleVersion, tuuid: S, user_id: U)
+//         -> Result<Self, CommonError>
+//         where S: ToString, U: ToString
+//     {
+//         let user_id = user_id.to_string();
+//
+//         let mimetype = value.mimetype.as_str();
+//
+//         let (flag_media_traite, flag_video_traite, flag_media) = Self::get_flags_media(mimetype);
+//
+//         Ok(Self {
+//             fuuid: value.fuuid.clone(),
+//             tuuid: tuuid.to_string(),
+//             user_id: user_id.to_string(),
+//             mimetype: value.mimetype.clone(),
+//             metadata: value.metadata.clone(),
+//             taille: value.taille.clone(),
+//             fuuids: vec![value.fuuid.clone()],
+//             fuuids_reclames: vec![value.fuuid.clone()],
+//             supprime: false,
+//             visites: Default::default(),
+//             // map_derniere_modification: Default::default(),
+//             derniere_modification: None,
+//             height: None,
+//             width: None,
+//             duration: None,
+//             video_codec: None,
+//             anime: None,
+//             images: None,
+//             video: None,
+//             flag_media,
+//             flag_media_retry: None,
+//             flag_media_traite: Some(flag_media_traite),
+//             flag_video_traite: Some(flag_video_traite),
+//             flag_index: Some(false),
+//             cle_id: value.cle_id.clone(),
+//             format: value.format.clone(),
+//             nonce: value.nonce.clone(),
+//             verification: value.verification.clone(),
+//             audio: None,
+//             subtitles: None,
+//         })
+//     }
+//
+//     pub fn get_flags_media(mimetype: &str) -> (bool, bool, Option<String>) {
+//         let mut flag_media_traite = true;
+//         let mut flag_video_traite = true;
+//         let mut flag_media = None;
+//
+//         // Information optionnelle pour accelerer indexation/traitement media
+//         if mimetype.starts_with("image") {
+//             flag_media_traite = false;
+//             flag_media = Some("image".to_string());
+//         } else if is_mimetype_video(mimetype) {
+//             // flag_media_traite = false;
+//             flag_media_traite = true;  // Thumbnails generes avec le video depuis 2024.9
+//             flag_video_traite = false;
+//             flag_media = Some("video".to_string());
+//         } else if mimetype == "application/pdf" {
+//             flag_media_traite = false;
+//             flag_media = Some("poster".to_string());
+//         }
+//         (flag_media_traite, flag_video_traite, flag_media)
+//     }
+//
+// }
 
-        let mimetype = value.mimetype.as_str();
+pub fn get_flags_media(mimetype: &str) -> (bool, bool, Option<String>) {
+    let mut flag_media_traite = true;
+    let mut flag_video_traite = true;
+    let mut flag_media = None;
 
-        let (flag_media_traite, flag_video_traite, flag_media) = Self::get_flags_media(mimetype);
-
-        Ok(Self {
-            fuuid: value.fuuid.clone(),
-            tuuid: tuuid.to_string(),
-            user_id: user_id.to_string(),
-            mimetype: value.mimetype.clone(),
-            metadata: value.metadata.clone(),
-            taille: value.taille.clone(),
-            fuuids: vec![value.fuuid.clone()],
-            fuuids_reclames: vec![value.fuuid.clone()],
-            supprime: false,
-            visites: Default::default(),
-            // map_derniere_modification: Default::default(),
-            derniere_modification: None,
-            height: None,
-            width: None,
-            duration: None,
-            video_codec: None,
-            anime: None,
-            images: None,
-            video: None,
-            flag_media,
-            flag_media_retry: None,
-            flag_media_traite: Some(flag_media_traite),
-            flag_video_traite: Some(flag_video_traite),
-            flag_index: Some(false),
-            cle_id: value.cle_id.clone(),
-            format: value.format.clone(),
-            nonce: value.nonce.clone(),
-            verification: value.verification.clone(),
-            audio: None,
-            subtitles: None,
-        })
+    // Information optionnelle pour accelerer indexation/traitement media
+    if mimetype.starts_with("image") {
+        flag_media_traite = false;
+        flag_media = Some("image".to_string());
+    } else if is_mimetype_video(mimetype) {
+        // flag_media_traite = false;
+        flag_media_traite = true;  // Thumbnails generes avec le video depuis 2024.9
+        flag_video_traite = false;
+        flag_media = Some("video".to_string());
+    } else if mimetype == "application/pdf" {
+        flag_media_traite = false;
+        flag_media = Some("poster".to_string());
     }
-
-    pub fn get_flags_media(mimetype: &str) -> (bool, bool, Option<String>) {
-        let mut flag_media_traite = true;
-        let mut flag_video_traite = true;
-        let mut flag_media = None;
-
-        // Information optionnelle pour accelerer indexation/traitement media
-        if mimetype.starts_with("image") {
-            flag_media_traite = false;
-            flag_media = Some("image".to_string());
-        } else if is_mimetype_video(mimetype) {
-            // flag_media_traite = false;
-            flag_media_traite = true;  // Thumbnails generes avec le video depuis 2024.9
-            flag_video_traite = false;
-            flag_media = Some("video".to_string());
-        } else if mimetype == "application/pdf" {
-            flag_media_traite = false;
-            flag_media = Some("poster".to_string());
-        }
-        (flag_media_traite, flag_video_traite, flag_media)
-    }
-
+    (flag_media_traite, flag_video_traite, flag_media)
 }
 
 async fn transaction_nouvelle_version<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
@@ -637,98 +658,179 @@ async fn transaction_nouvelle_version<M>(middleware: &M, transaction: Transactio
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_version Erreur get_user_id() : {:?}", e))?
     };
 
-    let fichier_rep = match NodeFichierRepOwned::from_nouvelle_version(
-        middleware, &transaction_fichier, &transaction.transaction.id, &user_id, session).await {
-        Ok(inner) => inner,
-        Err(e) => Err(format!("grosfichiers.NodeFichierRepOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
+    // let fichier_rep = match NodeFichierRepOwned::from_nouvelle_version(
+    //     middleware, &transaction_fichier, &transaction.transaction.id, &user_id, session).await {
+    //     Ok(inner) => inner,
+    //     Err(e) => Err(format!("grosfichiers.NodeFichierRepOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
+    // };
+
+    // let tuuid = fichier_rep.tuuid.clone();
+    let tuuid = match &transaction_fichier.tuuid {
+        Some(t) => t.to_owned(),
+        None => transaction.transaction.id.clone(),
     };
 
-    let tuuid = fichier_rep.tuuid.clone();
+    let cuuid = transaction_fichier.cuuid.as_str();
+    //     match value.cuuid.as_ref() {
+    //     Some(inner) => inner.as_str(),
+    //     None => Err(format!("transactions.transaction_nouvelle_version Cuuid absent de transaction nouvelle_version"))?
+    // };
 
-    let fichier_version = match NodeFichierVersionOwned::from_nouvelle_version(
-        &transaction_fichier, &tuuid, &user_id).await {
-        Ok(mut inner) => {
-            inner.visites.insert("nouveau".to_string(), Utc::now());
-            inner
-        },
-        Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
+    let mut cuuids = vec![cuuid.to_owned()];
+
+    // Inserer l'information du path (cuuids parents)
+    let filtre = doc!{ CHAMP_TUUID: &cuuid, CHAMP_USER_ID: &user_id };
+    let collection_nodes = middleware.get_collection_typed::<NodeFichiersRepBorrow>(
+        NOM_COLLECTION_FICHIERS_REP)?;
+    let mut curseur = collection_nodes.find_with_session(filtre, None, session).await?;
+    if curseur.advance(session).await? {
+        let row = curseur.deserialize_current()?;
+        if let Some(path_parent) = row.path_cuuids {
+            // Inserer les cuuids du parent
+            cuuids.extend(path_parent.into_iter().map(|c|c.to_owned()));
+        }
+    } else {
+        Err(format!("transactions.transaction_nouvelle_version Cuuid {} inconnu", cuuid))?;
     };
+
+    // let fichier_version = match NodeFichierVersionOwned::from_nouvelle_version(
+    //     &transaction_fichier, &tuuid, &user_id).await {
+    //     Ok(mut inner) => {
+    //         inner.visites.insert("nouveau".to_string(), Utc::now());
+    //         inner
+    //     },
+    //     Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
+    // };
 
     let fuuid = transaction_fichier.fuuid;
     // let cuuid = transaction_fichier.cuuid;
 
     // let mut flag_media = false;
     let mut flag_duplication = false;
-    let taille_fichier = fichier_version.taille as i64;
+    let taille_fichier = transaction_fichier.taille as i64;
 
     // Inserer document de version
     {
-        let visites = {
-            let mut visites = doc!();
-            for (k, v) in &fichier_version.visites {
-                visites.insert(k.to_owned(), v.timestamp());
-            }
-            visites
-        };
+        let (flag_media_traite, flag_video_traite, flag_media) = get_flags_media(transaction_fichier.mimetype.as_str());
 
-        // Utiliser la struct fichier_version comme contenu initial
-        let mut doc_version_bson = match convertir_to_bson(fichier_version) {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur convertir_to_bson fichier_version : {:?}", e))?
-        };
-
-        // Ajouter date creation
-        doc_version_bson.insert(CHAMP_CREATION, Utc::now());
-        doc_version_bson.insert(CHAMP_MODIFICATION, Utc::now());  // Remplacer champ
-        doc_version_bson.insert(CHAMP_VISITES, visites);  // Override visites avec date i64
+        let mut visites = HashMap::new();
+        visites.insert("nouveau".to_string(), Utc::now());
 
         // Creer date de verification anterieure pour forcer reclamation initiale
-        let date_initial_verification = DateTime::from_timestamp(1704085200, 0).expect("from_timestamp");
-        doc_version_bson.insert(CONST_FIELD_LAST_VISIT_VERIFICATION, date_initial_verification);
+        let last_visit_verification = DateTime::from_timestamp(1704085200, 0).expect("from_timestamp");
 
-        let ops = doc!{
-            "$setOnInsert": doc_version_bson,
-            // "$currentDate": { CHAMP_MODIFICATION: true }
+        let row_version = NodeFichierVersionRow {
+            fuuid: fuuid.clone(),
+            // tuuid: tuuid.clone(),
+            // user_id: user_id.clone(),
+            mimetype: transaction_fichier.mimetype.as_str(),
+            taille: transaction_fichier.taille,
+            // fuuids: vec![],
+            tuuids: vec![tuuid.as_str()],
+            fuuids_reclames: vec![fuuid.as_str()],
+            // supprime: false,
+            visites,
+            last_visit_verification,
+            creation: Utc::now(),
+            derniere_modification: Utc::now(),
+            // height: None,
+            // width: None,
+            // duration: None,
+            // video_codec: None,
+            // anime: None,
+            // images: None,
+            // video: None,
+            // audio: None,
+            // subtitles: None,
+            flag_media,
+            flag_media_retry: None,
+            flag_media_traite,
+            flag_video_traite,
+            cle_id: transaction_fichier.cle_id.as_ref().map(|x|x.as_str()),
+            format: transaction_fichier.format,
+            nonce: transaction_fichier.nonce.as_ref().map(|x|x.as_str()),
+            verification: transaction_fichier.verification.as_ref().map(|x|x.as_str()),
         };
 
-        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-        let filtre = doc! { CHAMP_FUUID: &fuuid, CHAMP_TUUID: &tuuid, CHAMP_USER_ID: &user_id };
-        let options = UpdateOptions::builder().upsert(true).build();
-        match collection.update_one_with_session(filtre, ops, options, session).await {
-            Ok(inner) => {
-                if inner.upserted_id.is_none() {
-                    // Row pas inseree, on a une duplication
-                    flag_duplication = true;
-                }
-            },
-            Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur update_one fichier_version : {:?}", e))?
-        };
+        // // Utiliser la struct fichier_version comme contenu initial
+        // let mut doc_version_bson = match convertir_to_bson(fichier_version) {
+        //     Ok(inner) => inner,
+        //     Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur convertir_to_bson fichier_version : {:?}", e))?
+        // };
+
+        // // Ajouter date creation
+        // doc_version_bson.insert(CHAMP_CREATION, Utc::now());
+        // doc_version_bson.insert(CHAMP_MODIFICATION, Utc::now());  // Remplacer champ
+        // doc_version_bson.insert(CHAMP_VISITES, visites);  // Override visites avec date i64
+
+        // Creer date de verification anterieure pour forcer reclamation initiale
+        // let date_initial_verification = DateTime::from_timestamp(1704085200, 0).expect("from_timestamp");
+        // doc_version_bson.insert(CONST_FIELD_LAST_VISIT_VERIFICATION, date_initial_verification);
+
+        // let ops = doc!{
+        //     "$setOnInsert": doc_version_bson,
+        //     // "$currentDate": { CHAMP_MODIFICATION: true }
+        // };
+
+        let collection = middleware.get_collection_typed::<NodeFichierVersionRow>(NOM_COLLECTION_VERSIONS)?;
+        if let Err(e) = collection.insert_one_with_session(&row_version, None, session).await {
+            Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur update_one fichier_version : {:?}", e))?
+        }
+        // let filtre = doc! { CHAMP_FUUID: &fuuid, CHAMP_TUUID: &tuuid, CHAMP_USER_ID: &user_id };
+        // let options = UpdateOptions::builder().upsert(true).build();
+        // match collection.update_one_with_session(filtre, ops, options, session).await {
+        //     Ok(inner) => {
+        //         if inner.upserted_id.is_none() {
+        //             // Row pas inseree, on a une duplication
+        //             flag_duplication = true;
+        //         }
+        //     },
+        //     Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur update_one fichier_version : {:?}", e))?
+        // };
     }
 
     // Inserer document FichierRep
     {
-        // Utiliser la struct fichier_version comme contenu initial
-        let mut doc_rep_bson = match convertir_to_bson(fichier_rep) {
-            Ok(inner) => inner,
-            Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur convertir_to_bson fichier_rep : {:?}", e))?
+        let row_rep = NodeFichierRepRow {
+            tuuid,
+            user_id: user_id.clone(),
+            type_node: TypeNode::Fichier.to_str(),
+            derniere_modification: Utc::now(),
+            date_creation: Utc::now(),
+            flag_index: false,
+            supprime: false,
+            supprime_indirect: false,
+            metadata: transaction_fichier.metadata.borrow(),
+            mimetype: Some(transaction_fichier.mimetype.as_str()),
+            fuuids_versions: Some(vec![fuuid.as_str()]),
+            path_cuuids: Some(cuuids.iter().map(|x|x.as_str()).collect()),
         };
 
-        // Ajouter date creation
-        doc_rep_bson.insert(CHAMP_CREATION, Utc::now());
-        doc_rep_bson.insert(CHAMP_MODIFICATION, Utc::now());  // Remplacer champ modification
-        doc_rep_bson.insert(CHAMP_FLAG_INDEX, false);
+        // // Utiliser la struct fichier_version comme contenu initial
+        // let mut doc_rep_bson = match convertir_to_bson(fichier_rep) {
+        //     Ok(inner) => inner,
+        //     Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur convertir_to_bson fichier_rep : {:?}", e))?
+        // };
+        //
+        // // Ajouter date creation
+        // doc_rep_bson.insert(CHAMP_CREATION, Utc::now());
+        // doc_rep_bson.insert(CHAMP_MODIFICATION, Utc::now());  // Remplacer champ modification
+        // doc_rep_bson.insert(CHAMP_FLAG_INDEX, false);
 
-        let ops = doc!{
-            "$setOnInsert": doc_rep_bson,
-            // "$currentDate": { CHAMP_MODIFICATION: true }
-        };
+        // let ops = doc!{
+        //     "$setOnInsert": doc_rep_bson,
+        //     // "$currentDate": { CHAMP_MODIFICATION: true }
+        // };
 
-        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-        let filtre = doc! { CHAMP_TUUID: &tuuid, CHAMP_USER_ID: &user_id };
-        let options = UpdateOptions::builder().upsert(true).build();
-        if let Err(e) = collection.update_one_with_session(filtre, ops, options, session).await {
+        let collection = middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
+        if let Err(e) = collection.insert_one_with_session(&row_rep, None, session).await {
             Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur update_one fichier_version : {:?}", e))?
         }
+        // let filtre = doc! { CHAMP_TUUID: &tuuid, CHAMP_USER_ID: &user_id };
+        // let options = UpdateOptions::builder().upsert(true).build();
+        // if let Err(e) = collection.update_one_with_session(filtre, ops, options, session).await {
+        //     Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur update_one fichier_version : {:?}", e))?
+        // }
     }
 
     if flag_duplication == false {
@@ -1747,113 +1849,105 @@ async fn transaction_associer_conversions<M>(middleware: &M, transaction: Transa
         Some(inner) => Some(inner.as_str()),
         None => None
     };
-    // let fuuid = transaction_mappee.fuuid.as_str();
-
-    let doc_images = match convertir_to_bson(transaction_mappee.images.clone()) {
-        Ok(inner) => inner,
-        Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur conversion images en bson : {:?}", e))?
-    };
+    let fuuid = transaction_mappee.fuuid.as_str();
 
     // Mapper tous les fuuids avec leur mimetype
-    let (fuuids, fuuids_reclames) = {
-        let mut fuuids = Vec::new();
+    let fuuids_reclames = {
         let mut fuuids_reclames = Vec::new();
-        fuuids.push(transaction_mappee.fuuid.clone());
         for (_, image) in transaction_mappee.images.iter() {
-            fuuids.push(image.hachage.to_owned());
-            if image.data_chiffre.is_none() {
+            if image.data_chiffre.is_none() {  // Ignore content with data: no file to manage
                 fuuids_reclames.push(image.hachage.to_owned());
             }
         }
-        (fuuids, fuuids_reclames)
+        fuuids_reclames
     };
 
-    // MAJ de la version du fichier
     {
-        let filtre = match tuuid.as_ref() {
-            Some(tuuid) => doc! { CHAMP_TUUID: tuuid },
+        let user_id = match user_id {
+            Some(inner) => inner.to_string(),
             None => {
-                match user_id {
-                    Some(user_id) => doc! { "fuuids_versions": &transaction_mappee.fuuid, CHAMP_USER_ID: user_id },
-                    None => doc! { "fuuids_versions": &transaction_mappee.fuuid } // Note : legacy, supporte ancienne transaction (pre 2023.6) qui n'avait pas le user_id
+                // Find the user id
+                let filtre_reps = match tuuid.as_ref() {
+                    // Best approach with tuuid (unique index)
+                    Some(tuuid) => doc! { CHAMP_TUUID: tuuid },
+                    // Legacy support
+                    None => {
+                        match user_id {
+                            Some(user_id) => doc! { "fuuids_versions": fuuid, CHAMP_USER_ID: user_id },
+                            // Note : legacy, supporte ancienne transaction (pre 2023.6) qui n'avait pas le user_id
+                            None => doc! { "fuuids_versions": fuuid }
+                        }
+                    },
+                };
+                let collection_reps = middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
+                let mut cursor = collection_reps.find_with_session(filtre_reps, None, session).await?;
+                if cursor.advance(session).await? {
+                    let row = cursor.deserialize_current()?;
+                    row.user_id
+                } else {
+                    Err(format!("transaction_associer_conversions No match for fuuid {}", fuuid))?
                 }
-            },
+            }
         };
 
-        let mut set_ops = doc! {};
-
-        // Si on a le thumbnail, on va marquer media_traite
-        debug!("Traiter images : {:?}", transaction_mappee.images);
-        set_ops.insert(CHAMP_FLAG_MEDIA_TRAITE, true);
-
-        // Inserer images par cle dans set_ops
-        for (k, v) in &doc_images {
-            debug!("Traiter image {} : {:?}", k, v);
-            let cle_image = format!("images.{}", k);
-            set_ops.insert(cle_image, v.to_owned());
+        // Map with the struct (acts as data validation)
+        let media_row = MediaOwnedRow {
+            fuuid: transaction_mappee.fuuid.clone(),
+            user_id,
+            creation: Utc::now(),
+            derniere_modification: Utc::now(),
+            mimetype: transaction_mappee.mimetype,
+            height: transaction_mappee.height,
+            width: transaction_mappee.width,
+            duration: transaction_mappee.duration,
+            video_codec: transaction_mappee.video_codec.clone(),
+            anime: transaction_mappee.anime.unwrap_or(false),
+            images: None,
+            video: None,
+            audio: None,
+            subtitles: None,
         };
 
-        if let Some(inner) = transaction_mappee.anime {
-            set_ops.insert("anime", inner);
-        }
-        if let Some(inner) = &transaction_mappee.mimetype {
-            set_ops.insert("mimetype", inner);
-        }
-        if let Some(inner) = transaction_mappee.width {
-            set_ops.insert("width", inner);
-        }
-        if let Some(inner) = transaction_mappee.height {
-            set_ops.insert("height", inner);
-        }
-        if let Some(inner) = transaction_mappee.video_codec.as_ref() {
-            set_ops.insert("videoCodec", inner);
-        }
-        if let Some(inner) = transaction_mappee.duration.as_ref() {
-            set_ops.insert("duration", inner);
-        }
-
-        if let Some(inner) = transaction_mappee.audio.as_ref() {
-            set_ops.insert("audio", convertir_to_bson_array(inner)?);
-        }
-
-        if let Some(inner) = transaction_mappee.subtitles.as_ref() {
-            set_ops.insert("subtitles", convertir_to_bson_array(inner)?);
-        }
-
-        let add_to_set = doc! {
-            CHAMP_FUUIDS: {"$each": &fuuids},
-            CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids_reclames},
+        let mut set_ops = doc!{
+            "mimetype": media_row.mimetype,
+            "height": media_row.height,
+            "width": media_row.width,
+            "duration": media_row.duration,
+            "video_codec": media_row.video_codec,
+            "anime": media_row.anime,
+            "images": convertir_to_bson(transaction_mappee.images)?,
         };
+        if let Some(audio) = transaction_mappee.audio {
+            set_ops.insert("audio", convertir_to_bson_array(audio)?);
+        }
+        if let Some(subtitles) = transaction_mappee.subtitles {
+            set_ops.insert("subtitles", convertir_to_bson_array(subtitles)?);
+        }
 
+        // Insert into the media table.
+        let collection_media = middleware.get_collection(NOM_COLLECTION_MEDIA)?;
+        let filtre_media = doc! {"fuuid": media_row.fuuid, "user_id": media_row.user_id};
         let ops = doc! {
             "$set": set_ops,
-            "$addToSet": add_to_set,
+            "$setOnInsert": {CHAMP_CREATION: Utc::now()},
+            "$currentDate": {CHAMP_MODIFICATION: true},
+        };
+        let options = UpdateOptions::builder().upsert(true).build();
+        collection_media.update_one_with_session(filtre_media, ops, options, session).await?;
+
+        // Update the versions table
+        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        let ops = doc! {
+            "$set": {CHAMP_FLAG_MEDIA_TRAITE: true},
+            "$addToSet": {CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids_reclames}},
             "$currentDate": { CHAMP_MODIFICATION: true }
         };
-        debug!("transactions.transaction_associer_conversions set ops versions : {:?}", ops);
-        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-        match collection.update_one_with_session(filtre, ops, None, session).await {
+        let filtre_versions = doc!{"fuuid": fuuid};
+        match collection.update_one_with_session(filtre_versions, ops, None, session).await {
             Ok(inner) => debug!("transactions.transaction_associer_conversions Update versions : {:?}", inner),
             Err(e) => Err(format!("transactions.transaction_associer_conversions Erreur maj versions : {:?}", e))?
         }
-
-        // if let Err(e) = set_flag_image_traitee(middleware, tuuid.as_ref(), fuuid).await {
-        //     error!("transaction_associer_conversions Erreur set flag true pour traitement job images {:?}/{} : {:?}", user_id, fuuid, e);
-        // }
     }
-
-    // {
-    //     if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), &fuuids).await {
-    //         error!("transaction_associer_conversions Erreur touch_fichiers_rep {:?}/{} : {:?}", user_id, fuuid, e);
-    //     }
-    // }
-
-    // // Emettre fichier pour que tous les clients recoivent la mise a jour
-    // if let Some(tuuid) = tuuid {
-    //     if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION).await {
-    //         warn!("transaction_associer_conversions Erreur emettre_evenement_maj_fichier : {:?}", e);
-    //     }
-    // }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -1864,29 +1958,29 @@ async fn transaction_associer_video<M>(middleware: &M, transaction: TransactionV
 {
     debug!("transaction_associer_video Consommer transaction : {}", transaction.transaction.id);
     let transaction_mappee: TransactionAssocierVideo = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let transaction_mappee: TransactionAssocierVideo = match transaction.clone().convertir::<TransactionAssocierVideo>() {
-    //     Ok(t) => t,
-    //     Err(e) => Err(format!("transactions.transaction_associer_video Erreur conversion transaction : {:?}", e))?
-    // };
 
-    let tuuid = transaction_mappee.tuuid.clone();
-    // let job_id = match transaction_mappee.job_id.as_ref() {Some(inner)=>Some(inner.as_str()), None=>None};
+    let fuuid = transaction_mappee.fuuid.as_str();
+    let fuuid_video = transaction_mappee.fuuid_video.as_str();
+    let user_id = transaction_mappee.user_id.as_str();
 
-    let doc_video = match convertir_to_bson(transaction_mappee.clone()) {
-        Ok(inner) => inner,
-        Err(e) => Err(format!("transactions.transaction_associer_video Erreur conversion images en bson : {:?}", e))?
+    let video_detail = VideoDetail {
+        fuuid: fuuid.to_owned(),
+        fuuid_video: transaction_mappee.fuuid_video.clone(),
+        taille_fichier: transaction_mappee.taille_fichier,
+        mimetype: transaction_mappee.mimetype.clone(),
+        codec: transaction_mappee.codec.clone(),
+        cle_conversion: transaction_mappee.cle_conversion.clone(),
+        width: transaction_mappee.width,
+        height: transaction_mappee.height,
+        bitrate: transaction_mappee.bitrate,
+        quality: transaction_mappee.quality,
+        audio_stream_idx: transaction_mappee.audio_stream_idx,
+        subtitle_stream_idx: transaction_mappee.subtitle_stream_idx,
+        header: transaction_mappee.header,
+        format: transaction_mappee.format,
+        nonce: transaction_mappee.nonce,
+        cle_id: transaction_mappee.cle_id,
     };
-
-    // // Mapper tous les fuuids avec leur mimetype
-    // let (fuuids, fuuid_mimetypes) = {
-    //     let mut fuuids = Vec::new();
-    //     let mut fuuid_mimetypes = HashMap::new();
-    //     fuuids.push(transaction_mappee.fuuid_video.clone());
-    //     fuuid_mimetypes.insert(transaction_mappee.fuuid_video.clone(), transaction_mappee.mimetype.clone());
-    //
-    //     (fuuids, fuuid_mimetypes)
-    // };
-    let fuuids = vec![transaction_mappee.fuuid_video.clone()];
 
     let cle_video = match transaction_mappee.cle_conversion {
         Some(inner) => inner,  // Nouveau avec 2023.7.4
@@ -1920,124 +2014,27 @@ async fn transaction_associer_video<M>(middleware: &M, transaction: TransactionV
         }
     };
 
-    // // Appliquer le filtre sur la version courante (pour l'usager si applicable)
-    // // Note : obsolete depuis 2023.9 (refact structure fichiersRep). fuuid_v_courante n'est pas dans fichierRep
-    // let mut fuuid_video_existant = None;
-    // {
-    //     let mut filtre = doc! {CHAMP_TUUID: &transaction_mappee.tuuid};
-    //
-    //     // Verifier si le video existe deja - retirer le fuuid_video si c'est le cas
-    //     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    //     {
-    //         let doc_existant: Option<FichierDetail> = match collection.find_one_with_session(filtre.clone(), None).await {
-    //             Ok(d) => match d {
-    //                 Some(d) => match convertir_bson_deserializable(d) {
-    //                     Ok(d) => d,
-    //                     Err(e) => Err(format!("transactions.transaction_associer_video Erreur conversion bson fichier (video) : {:?}", e))?
-    //                 },
-    //                 None => None
-    //             },
-    //             Err(e) => Err(format!("transaction_associer_video Erreur chargement fichier (video) : {:?}", e))?
-    //         };
-    //         if let Some(d) = doc_existant {
-    //             if let Some(version_courante) = d.version_courante {
-    //                 if let Some(v) = version_courante.video {
-    //                     if let Some(video) = v.get(cle_video.as_str()) {
-    //                         fuuid_video_existant = Some(video.fuuid_video.to_owned());
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     }
-    //
-    //     if let Some(fuuid_video) = fuuid_video_existant.as_ref() {
-    //         let ops = doc! {
-    //             "$pull": {
-    //                 CHAMP_FUUIDS: &fuuid_video,
-    //                 CHAMP_FUUIDS_RECLAMES: &fuuid_video
-    //             },
-    //             // "$unset": {format!("version_courante.fuuidMimetypes.{}", fuuid_video): true},
-    //         };
-    //         match collection.update_many_with_session(filtre.clone(), ops, None).await {
-    //             Ok(inner) => debug!("transaction_associer_video Suppression video : {:?}", inner),
-    //             Err(e) => Err(format!("transactions.transaction_associer_video Erreur suppression video existant : {:?}", e))?
-    //         }
-    //     }
-    //
-    //     let mut set_ops = doc! {
-    //         format!("version_courante.video.{}", &cle_video): &doc_video,
-    //     };
-    //     // for (fuuid, mimetype) in fuuid_mimetypes.iter() {
-    //     //     set_ops.insert(format!("version_courante.{}.{}", CHAMP_FUUID_MIMETYPES, fuuid), mimetype);
-    //     // }
-    //
-    //     // Combiner les fuuids hors de l'info de version
-    //     let add_to_set = doc! {
-    //         CHAMP_FUUIDS: {"$each": &fuuids},
-    //         CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids},
-    //     };
-    //
-    //     let mut ops = doc! {
-    //         "$set": set_ops,
-    //         "$addToSet": add_to_set,
-    //         "$currentDate": { CHAMP_MODIFICATION: true }
-    //     };
-    //
-    //     match collection.update_many_with_session(filtre, ops, None).await {
-    //         Ok(inner) => debug!("transaction_associer_video Update versions : {:?}", inner),
-    //         Err(e) => Err(format!("transactions.transaction_associer_video Erreur maj versions : {:?}", e))?
-    //     }
-    // }
-    // // Fin obsolete depuis 2023.9
+    let filtre = doc!{ "fuuid": fuuid, "user_id": user_id };
+    let collection_media = middleware.get_collection(NOM_COLLECTION_MEDIA)?;
+    let ops = doc!{
+        "$set": {format!("video.{}", cle_video): convertir_to_bson(video_detail)?},
+        "$setOnInsert": {CHAMP_CREATION: Utc::now()},
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    let options = UpdateOptions::builder().upsert(true).build();
+    collection_media.update_one_with_session(filtre, ops, options, session).await?;
 
     // MAJ de la version du fichier
     {
-        let filtre = match tuuid.as_ref() {
-            Some(tuuid) => doc!{CHAMP_TUUID: tuuid},
-            None => doc! {
-                // Old transaction, less efficient (tuuid is indexed uniquely)
-                // CHAMP_FUUID: &transaction_mappee.fuuid,
-                "fuuids_versions": &transaction_mappee.fuuid,
-                CHAMP_USER_ID: &transaction_mappee.user_id,
-            }
-        };
-
         let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-
-        // if let Some(fuuid_video) = fuuid_video_existant.as_ref() {
-        //     let ops = doc! {
-        //         "$pull": {
-        //             CHAMP_FUUIDS: &fuuid_video,
-        //             CHAMP_FUUIDS_RECLAMES: &fuuid_video,
-        //         },
-        //         // "$unset": {format!("fuuidMimetypes.{}", fuuid_video): true},
-        //     };
-        //     match collection.update_many_with_session(filtre.clone(), ops, None).await {
-        //         Ok(inner) => debug!("transaction_associer_video Suppression video : {:?}", inner),
-        //         Err(e) => Err(format!("transactions.transaction_associer_video Erreur suppression video existant : {:?}", e))?
-        //     }
-        // }
-
-        let set_ops = doc! {
-            CHAMP_FLAG_VIDEO_TRAITE: true,
-            format!("video.{}", &cle_video): &doc_video,
-        };
-        let add_to_set = doc! {
-            CHAMP_FUUIDS: {"$each": &fuuids},
-            CHAMP_FUUIDS_RECLAMES: {"$each": &fuuids},
-        };
+        let filtre = doc!{"fuuid": fuuid};
         let ops = doc! {
-            "$set": set_ops,
-            "$addToSet": add_to_set,
-            "$currentDate": { CHAMP_MODIFICATION: true }
+            "$set": {CHAMP_FLAG_VIDEO_TRAITE: true},
+            "$addToSet": {CHAMP_FUUIDS_RECLAMES: fuuid_video},
+            "$currentDate": {CHAMP_MODIFICATION: true}
         };
-        match collection_versions.find_one_and_update_with_session(filtre, ops, None, session).await {
-            Ok(Some(old_existing)) => {
-                debug!("transaction_associer_video Update versions : {:?}", old_existing);
-                // TODO Check if the new video replaces an existing one
-            },
-            Ok(None) => info!("transaction_associer_video No existing document found, skipped : {:?}", transaction_mappee.fuuid),
-            Err(e) => Err(format!("transactions.transaction_associer_video Erreur maj versions : {:?}", e))?
+        if let Err(e) = collection_versions.update_one_with_session(filtre, ops, None, session).await {
+            Err(format!("transactions.transaction_associer_video Erreur maj versions : {:?}", e))?
         }
     }
 
@@ -2312,65 +2309,66 @@ async fn transaction_supprimer_video<M>(middleware: &M, transaction: Transaction
 
     let user_id = transaction.certificat.get_user_id()?;
 
-    let mut labels_videos = Vec::new();
-    let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
-    let collection_fichier_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
-    let doc_video = match collection_fichier_versions.find_one_with_session(filtre.clone(), None, session).await {
-        Ok(d) => match d {
-            Some(d) => d,
-            None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
-        },
-        Err(e) => Err(format!("transaction_supprimer_video Erreur chargement info document : {:?}", e))?
-    };
-
-    // let tuuid = doc_video.tuuid;
-
-    let mut ops_unset = doc!{};
-    if let Some(map_video) = doc_video.video.as_ref() {
-        for (label, video) in map_video {
-            if &video.fuuid_video == fuuid {
-                ops_unset.insert(format!("video.{}", label), true);
-                labels_videos.push(label);
-            }
-        }
-    }
-
-    {
-        let filtre = doc!{CHAMP_FUUIDS: fuuid};
-        let mut ops_unset = doc!{format!("fuuidMimetypes.{}", fuuid): true};
-        for label in labels_videos {
-            ops_unset.insert(format!("video.{}", label), true);
-        }
-
-        let ops = doc! {
-            "$pull": {CHAMP_FUUIDS: fuuid, CHAMP_FUUIDS_RECLAMES: fuuid},
-            "$unset": ops_unset,
-            "$currentDate": {CHAMP_MODIFICATION: true},
-        };
-        let collection_version_fichier = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-
-        debug!("transaction_supprimer_video Supprimer video {:?} ops {:?}", filtre, ops);
-
-        match collection_version_fichier.update_one_with_session(filtre, ops, None, session).await {
-            Ok(_r) => (),
-            Err(e) => Err(format!("transaction_supprimer_video Erreur update_one collection fichiers rep : {:?}", e))?
-        }
-    }
-
-    if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), vec![fuuid], session).await {
-        error!("transaction_favoris_creerpath Erreur touch_fichiers_rep {:?}/{:?} : {:?}", user_id, fuuid, e);
-    }
-
-    // // Emettre fichier pour que tous les clients recoivent la mise a jour
-    // if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
-    //     warn!("transaction_favoris_creerpath Erreur emettre_evenement_maj_fichier : {:?}", e);
+    todo!()
+    // let mut labels_videos = Vec::new();
+    // let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
+    // let collection_fichier_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    // let doc_video = match collection_fichier_versions.find_one_with_session(filtre.clone(), None, session).await {
+    //     Ok(d) => match d {
+    //         Some(d) => d,
+    //         None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
+    //     },
+    //     Err(e) => Err(format!("transaction_supprimer_video Erreur chargement info document : {:?}", e))?
+    // };
+    //
+    // // let tuuid = doc_video.tuuid;
+    //
+    // let mut ops_unset = doc!{};
+    // if let Some(map_video) = doc_video.video.as_ref() {
+    //     for (label, video) in map_video {
+    //         if &video.fuuid_video == fuuid {
+    //             ops_unset.insert(format!("video.{}", label), true);
+    //             labels_videos.push(label);
+    //         }
+    //     }
     // }
-
-    // Retourner le tuuid comme reponse, aucune transaction necessaire
-    match middleware.reponse_ok(None, None) {
-        Ok(r) => Ok(Some(r)),
-        Err(_) => Err(CommonError::Str("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
-    }
+    //
+    // {
+    //     let filtre = doc!{CHAMP_FUUIDS: fuuid};
+    //     let mut ops_unset = doc!{format!("fuuidMimetypes.{}", fuuid): true};
+    //     for label in labels_videos {
+    //         ops_unset.insert(format!("video.{}", label), true);
+    //     }
+    //
+    //     let ops = doc! {
+    //         "$pull": {CHAMP_FUUIDS: fuuid, CHAMP_FUUIDS_RECLAMES: fuuid},
+    //         "$unset": ops_unset,
+    //         "$currentDate": {CHAMP_MODIFICATION: true},
+    //     };
+    //     let collection_version_fichier = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    //
+    //     debug!("transaction_supprimer_video Supprimer video {:?} ops {:?}", filtre, ops);
+    //
+    //     match collection_version_fichier.update_one_with_session(filtre, ops, None, session).await {
+    //         Ok(_r) => (),
+    //         Err(e) => Err(format!("transaction_supprimer_video Erreur update_one collection fichiers rep : {:?}", e))?
+    //     }
+    // }
+    //
+    // if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), vec![fuuid], session).await {
+    //     error!("transaction_favoris_creerpath Erreur touch_fichiers_rep {:?}/{:?} : {:?}", user_id, fuuid, e);
+    // }
+    //
+    // // // Emettre fichier pour que tous les clients recoivent la mise a jour
+    // // if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
+    // //     warn!("transaction_favoris_creerpath Erreur emettre_evenement_maj_fichier : {:?}", e);
+    // // }
+    //
+    // // Retourner le tuuid comme reponse, aucune transaction necessaire
+    // match middleware.reponse_ok(None, None) {
+    //     Ok(r) => Ok(Some(r)),
+    //     Err(_) => Err(CommonError::Str("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
+    // }
 }
 
 
@@ -2917,7 +2915,8 @@ pub struct TransactionCopyV2 {
     pub destination: Vec<String>,
     pub directories: Option<Vec<TransactionMoveV2Directory>>,
     pub files: Option<Vec<String>>,
-    pub user_id: Option<String>,
+    pub user_id: String,
+    pub source_user_id: Option<String>,
 }
 
 fn digest_new_tuuid(transaction_id_bytes: &Vec<u8>, old_tuuid: &str) -> String {
@@ -2927,12 +2926,72 @@ fn digest_new_tuuid(transaction_id_bytes: &Vec<u8>, old_tuuid: &str) -> String {
     hex::encode(digest_value)
 }
 
+async fn copy_files<M>(middleware: &M, session: &mut ClientSession, destination_path: Vec<&str>,
+                       source_directory: Option<&str>, source_files: Option<Vec<&str>>,
+                       source_user_id: &str, destination_user_id: &str)
+    -> Result<(), CommonError>
+    where M: MongoDao
+{
+    let collection_reps =
+        middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
+
+    if source_directory.is_some() && source_files.is_some() {
+        Err("copy_files Only one of source_directory or source_files can be specified")?;
+    }
+    let (filtre, tuuids) = if let Some(cuuid) = source_directory.as_ref() {
+        let filtre = doc!{"path_cuuids.0": cuuid};
+
+        let tuuids = if source_user_id != destination_user_id {
+            // Files are being moved. Extract the list of tuuids to allow copying the versions later on.
+            Some(vec!["".to_string()])
+        } else {
+            None
+        };
+        (filtre, tuuids)
+    } else if let Some(tuuids) = source_files.as_ref() {
+        (doc!{"tuuid": {"$in": tuuids}}, None)
+    } else {
+        Err("copy_files No source information provided")?
+    };
+    todo!()
+    // let filtre = doc!{"tuuid": {"$in": &files}};
+    // let mut cursor_reps = collection_reps.find_with_session(filtre.clone(), None, session).await?;
+    // while cursor_reps.advance(session).await? {
+    //     let mut row = cursor_reps.deserialize_current()?;
+    //
+    //     #[cfg(debug_assertions)]
+    //     let old_tuuid = row.tuuid.clone();
+    //
+    //     // Update path_cuuids and identifier. Then re-insert.
+    //     // Hash the old tuuid and the current transaction id with blake2s to get a new unique tuuid.
+    //     let new_tuuid = digest_new_tuuid(&transaction_id_bytes, row.tuuid.as_str());
+    //     row.tuuid = new_tuuid;
+    //     if let Some(user_id) = user_id {
+    //         // In case this is a copy from shared resource
+    //         row.user_id = user_id.to_owned();
+    //     }
+    //     row.path_cuuids = Some(destination.clone());
+    //     row.flag_index = false;  // Need to index new path
+    //
+    //     // Insert the row with the updated identifiers
+    //     #[cfg(debug_assertions)]
+    //     debug!("transaction_copy_v2 Copy (files-1) tuuid {} to {}", old_tuuid, row.tuuid);
+    //     collection_reps.insert_one_with_session(row, None, session).await?;
+    // }
+}
+
 async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
     let transaction_content: TransactionCopyV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
     let user_id = &transaction_content.user_id;
+    let source_user_id = &transaction_content.source_user_id;
+
+    let change_users = match source_user_id.as_ref() {
+        Some(inner) => inner.as_str() != user_id,
+        None => false,
+    };
 
     let collection_reps =
         middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
@@ -2954,10 +3013,7 @@ async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, 
             // Hash the old tuuid and the current transaction id with blake2s to get a new unique tuuid.
             let new_tuuid = digest_new_tuuid(&transaction_id_bytes, row.tuuid.as_str());
             row.tuuid = new_tuuid;
-            if let Some(user_id) = user_id {
-                // In case this is a copy from shared resource
-                row.user_id = user_id.to_owned();
-            }
+            row.user_id = user_id.clone();  // We may be copying from shared collections
             row.path_cuuids = Some(destination.clone());
             row.flag_index = false;  // Need to index new path
 
@@ -2996,10 +3052,7 @@ async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, 
                 if cursor_reps.advance(session).await? {
                     let mut row = cursor_reps.deserialize_current()?;
                     row.tuuid = new_directory_tuuid.clone();
-                    if let Some(user_id) = user_id {
-                        // In case this is a copy from shared resource
-                        row.user_id = user_id.to_owned();
-                    }
+                    row.user_id = user_id.clone();  // In case this is a copy from shared collections
                     row.path_cuuids = Some(destination.clone());
                     row.type_node = TypeNode::Repertoire.to_str();  // It is possible to copy a Collection to another one
                     row.flag_index = false;  // Need to index new path
@@ -3023,10 +3076,7 @@ async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, 
 
                     let new_tuuid = digest_new_tuuid(&transaction_id_bytes, row.tuuid.as_str());
                     row.tuuid = new_tuuid;
-                    if let Some(user_id) = user_id {
-                        // In case this is a copy from shared resource
-                        row.user_id = user_id.to_owned();
-                    }
+                    row.user_id = user_id.clone();  // In case this is a copy from shared resource
                     row.path_cuuids = Some(destination.clone());
                     row.flag_index = false;  // Need to index new path
                     // Insert the directory with the updated identifiers
