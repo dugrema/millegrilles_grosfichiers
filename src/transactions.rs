@@ -2801,9 +2801,9 @@ where M: GenerateurMessages + MongoDao
 
     if let Some(files) = transaction_content.files {
         // Mark all listed files as deleted.
-        let file_filtre = doc!{ "tuuid": {"$in": &files} };
+        let file_filtre = doc!{ "tuuids": {"$in": &files} };
 
-        let version_ops = doc!{"$set": {"supprime": true}, "$currentDate": {CHAMP_MODIFICATION: true} };
+        let version_ops = doc!{"$pullAll": {"tuuids": &files}, "$currentDate": {CHAMP_MODIFICATION: true} };
         collection_fichiersversion.update_many_with_session(file_filtre.clone(), version_ops, None, session).await?;
 
         let rep_ops = doc!{"$set": {"supprime": true, "supprime_indirect": false}, "$currentDate": {CHAMP_MODIFICATION: true} };
@@ -2840,9 +2840,11 @@ async fn delete_file_versions_from_directories<M>(middleware: &M, session: &mut 
         }
 
         // Mark all files in the version collection as deleted
-        let filtre_tuuids = doc! {"tuuid": {"$in": file_tuuids}};
-        let ops_versions = doc! {"$set": {"supprime": true}, "$currentDate": {CHAMP_MODIFICATION: true}};
-        collection_fichiersversion.update_many_with_session(filtre_tuuids.clone(), ops_versions, None, session).await?;
+        let filtre_tuuids = doc! {"tuuids": {"$in": &file_tuuids}};
+        let version_ops = doc!{"$pullAll": {"tuuids": file_tuuids}, "$currentDate": {CHAMP_MODIFICATION: true} };
+        collection_fichiersversion.update_many_with_session(filtre_tuuids, version_ops, None, session).await?;
+        // let ops_versions = doc! {"$set": {"supprime": true}, "$currentDate": {CHAMP_MODIFICATION: true}};
+        // collection_fichiersversion.update_many_with_session(filtre_tuuids.clone(), ops_versions, None, session).await?;
     }
 
     Ok(())
