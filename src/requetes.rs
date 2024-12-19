@@ -1698,41 +1698,42 @@ async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValide, gest
         fuuids.insert(fuuid.clone());
     }
 
-    let projection = doc! {
-        "fuuids": 1,
-        "supprime": 1,
-    };
-
-    let opts = FindOptions::builder()
-        .hint(Hint::Name(String::from("fichiers_fuuid")))
-        .build();
-    let mut filtre = doc!{"fuuids": {"$in": requete.fuuids}};
-
-    let collection = middleware.get_collection_typed::<RowEtatFuuid>(NOM_COLLECTION_FICHIERS_REP)?;
-    let mut fichiers_confirmation = Vec::new();
-    let mut curseur = collection.find(filtre, opts).await?;
-    //while let Some(d) = curseur.next().await {
-    while curseur.advance().await? {
-        // let record: RowEtatFuuid = convertir_bson_deserializable(d?)?;
-        let row = curseur.deserialize_current()?;
-        for fuuid in row.fuuids.into_iter() {
-            if fuuids.remove(fuuid) {
-            //if fuuids.contains(fuuid) {
-            //    fuuids.remove(fuuid);
-                fichiers_confirmation.push( ConfirmationEtatFuuid { fuuid: fuuid.to_owned(), supprime: row.supprime } );
-            }
-        }
-    }
-
-    // Ajouter tous les fuuids manquants (encore dans le set)
-    // Ces fichiers sont inconnus et presumes supprimes
-    for fuuid in fuuids.into_iter() {
-        fichiers_confirmation.push( ConfirmationEtatFuuid { fuuid, supprime: true } );
-    }
-
-    let confirmation = ReponseConfirmerEtatFuuids { fichiers: fichiers_confirmation };
-    let reponse = json!({ "confirmation": confirmation });
-    Ok(Some(middleware.build_reponse(&reponse)?.0))
+    todo!("obsolete?")
+    // let projection = doc! {
+    //     "fuuids": 1,
+    //     "supprime": 1,
+    // };
+    //
+    // let opts = FindOptions::builder()
+    //     .hint(Hint::Name(String::from("fichiers_fuuid")))
+    //     .build();
+    // let mut filtre = doc!{"fuuids": {"$in": requete.fuuids}};
+    //
+    // let collection = middleware.get_collection_typed::<RowEtatFuuid>(NOM_COLLECTION_FICHIERS_REP)?;
+    // let mut fichiers_confirmation = Vec::new();
+    // let mut curseur = collection.find(filtre, opts).await?;
+    // //while let Some(d) = curseur.next().await {
+    // while curseur.advance().await? {
+    //     // let record: RowEtatFuuid = convertir_bson_deserializable(d?)?;
+    //     let row = curseur.deserialize_current()?;
+    //     for fuuid in row.fuuids.into_iter() {
+    //         if fuuids.remove(fuuid) {
+    //         //if fuuids.contains(fuuid) {
+    //         //    fuuids.remove(fuuid);
+    //             fichiers_confirmation.push( ConfirmationEtatFuuid { fuuid: fuuid.to_owned(), supprime: false } );
+    //         }
+    //     }
+    // }
+    //
+    // // Ajouter tous les fuuids manquants (encore dans le set)
+    // // Ces fichiers sont inconnus et presumes supprimes
+    // for fuuid in fuuids.into_iter() {
+    //     fichiers_confirmation.push( ConfirmationEtatFuuid { fuuid, supprime: true } );
+    // }
+    //
+    // let confirmation = ReponseConfirmerEtatFuuids { fichiers: fichiers_confirmation };
+    // let reponse = json!({ "confirmation": confirmation });
+    // Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 pub async fn verifier_acces_usager<M,S,T,V>(middleware: &M, user_id_in: S, fuuids_in: V)
@@ -1742,44 +1743,45 @@ where M: GenerateurMessages + MongoDao,
       T: AsRef<str>,
       V: AsRef<Vec<T>>
 {
-    let user_id = user_id_in.as_ref();
-    let fuuids: Vec<&str> = fuuids_in.as_ref().iter().map(|s| s.as_ref()).collect();
-
-    let mut filtre = doc! {
-        CHAMP_FUUID: { "$in": &fuuids },
-        CHAMP_USER_ID: user_id,
-        CHAMP_SUPPRIME: false,
-    };
-
-    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let collection = middleware.get_collection_typed::<RowEtatFuuid>(NOM_COLLECTION_VERSIONS)?;
-    let options = FindOptions::builder()
-        .projection(doc!{CHAMP_FUUID: 1, CHAMP_SUPPRIME: 1})
-        //.projection(doc!{CHAMP_FUUIDS: 1})
-        .hint(Hint::Name("fuuid".into()))
-        .build();
-    let mut curseur = collection.find(filtre, Some(options)).await?;
-
-    let mut fuuids_acces = HashSet::new();
-
-    //while let Some(row) = curseur.next().await {
-    while curseur.advance().await? {
-        let doc_map = curseur.deserialize_current()?;
-        // let doc_row = row?;
-        // let doc_map: RowEtatFuuid = convertir_bson_deserializable(doc_row)?;
-        fuuids_acces.extend(doc_map.fuuids.into_iter().map(|s| s.to_owned()));
-    }
-
-    let hashset_requete = HashSet::from_iter(fuuids);
-    let mut hashset_acces = HashSet::new();
-    for fuuid in &fuuids_acces {
-        hashset_acces.insert(fuuid.as_str());
-    }
-
-    let resultat: Vec<&&str> = hashset_acces.intersection(&hashset_requete).collect();
-
-    // String to_owned
-    Ok(resultat.into_iter().map(|s| s.to_string()).collect())
+    todo!("obsolete?")
+    // let user_id = user_id_in.as_ref();
+    // let fuuids: Vec<&str> = fuuids_in.as_ref().iter().map(|s| s.as_ref()).collect();
+    //
+    // let mut filtre = doc! {
+    //     CHAMP_FUUID: { "$in": &fuuids },
+    //     // CHAMP_USER_ID: user_id,
+    //     // CHAMP_SUPPRIME: false,
+    // };
+    //
+    // // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    // let collection = middleware.get_collection_typed::<RowEtatFuuid>(NOM_COLLECTION_VERSIONS)?;
+    // let options = FindOptions::builder()
+    //     .projection(doc!{CHAMP_FUUID: 1})
+    //     //.projection(doc!{CHAMP_FUUIDS: 1})
+    //     .hint(Hint::Name("fuuid".into()))
+    //     .build();
+    // let mut curseur = collection.find(filtre, Some(options)).await?;
+    //
+    // let mut fuuids_acces = HashSet::new();
+    //
+    // //while let Some(row) = curseur.next().await {
+    // while curseur.advance().await? {
+    //     let doc_map = curseur.deserialize_current()?;
+    //     // let doc_row = row?;
+    //     // let doc_map: RowEtatFuuid = convertir_bson_deserializable(doc_row)?;
+    //     fuuids_acces.extend(doc_map.fuuids.into_iter().map(|s| s.to_owned()));
+    // }
+    //
+    // let hashset_requete = HashSet::from_iter(fuuids);
+    // let mut hashset_acces = HashSet::new();
+    // for fuuid in &fuuids_acces {
+    //     hashset_acces.insert(fuuid.as_str());
+    // }
+    //
+    // let resultat: Vec<&&str> = hashset_acces.intersection(&hashset_requete).collect();
+    //
+    // // String to_owned
+    // Ok(resultat.into_iter().map(|s| s.to_string()).collect())
 }
 
 pub async fn verifier_acces_usager_media<M,S,T,V>(middleware: &M, user_id_in: S, fuuids_in: V)
@@ -1907,7 +1909,7 @@ struct ReponseConfirmerEtatFuuids {
 struct RowEtatFuuid<'a> {
     #[serde(borrow)]
     fuuids: Vec<&'a str>,
-    supprime: bool,
+    // supprime: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2575,10 +2577,10 @@ async fn requete_info_statistiques<M>(middleware: &M, m: MessageValide, gestionn
             // "let": { "fuuid": "zSEfXUAKuWwK4NeWAGX573uCTCCG4xak1DEWCzk4JqcRjc6h25d2ov74c93pATRxbcCxQToY7kU3drygxWREuRkb7MCKET" },
             "pipeline": [
                 // {"$match": { CHAMP_USER_ID: &user_id, CHAMP_FUUID: "$fuuid"}},
-                {"$match": { CHAMP_USER_ID: &user_id }},
-                {"$project": {CHAMP_TAILLE: 1, CHAMP_USER_ID: 1, CHAMP_FUUID: 1}},
+                // {"$match": { CHAMP_USER_ID: &user_id }},
+                {"$project": {CHAMP_TAILLE: 1, CHAMP_FUUID: 1}},
                 { "$group": {
-                        "_id": "$user_id",
+                        "_id": "$fuuid",
                         "taille": {"$sum": "$taille"}
                     }
                 }
@@ -2722,9 +2724,9 @@ async fn requete_structure_repertoire<M>(middleware: &M, m: MessageValide, gesti
             // "let": { "fuuid": "zSEfXUAKuWwK4NeWAGX573uCTCCG4xak1DEWCzk4JqcRjc6h25d2ov74c93pATRxbcCxQToY7kU3drygxWREuRkb7MCKET" },
             "pipeline": [
                 // {"$match": { CHAMP_USER_ID: &user_id, CHAMP_FUUID: "$fuuid"}},
-                {"$match": { CHAMP_USER_ID: &user_id }},
+                // {"$match": { CHAMP_USER_ID: &user_id }},
                 {"$project": {
-                    CHAMP_TAILLE: 1, CHAMP_USER_ID: 1, CHAMP_FUUID: 1,
+                    CHAMP_TAILLE: 1, CHAMP_FUUID: 1,
                     // Dechiffrage V2
                     "cle_id": 1, "nonce": 1, "format": 1,
                 }},
