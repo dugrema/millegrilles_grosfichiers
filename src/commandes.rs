@@ -238,46 +238,72 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
         Some(inner) => inner,
         None => Err(format!("commande_decrire_fichier User_id absent"))?
     };
+
+    let role_admin = m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)?;
     let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
-    if role_prive {
-        let tuuids = vec![&commande.tuuid];
-        let resultat = verifier_autorisation_usager(middleware, user_id.as_str(), Some(&tuuids), None::<String>).await?;
-        if let Some(erreur) = resultat.erreur {
-            return Ok(Some(erreur.try_into()?))
-        }
-    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
-        // Ok
-    } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
+    if !role_admin && !role_prive {
+        debug!("commande_decrire_fichier Access denied, not a user/admin");
+        return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access denied"))?))
     }
 
-    let (changement_media, fuuid) = match commande.mimetype.as_ref() {
-        Some(mimetype) => {
-            debug!("commande_decrire_fichier Verifier si le mimetype du fichier a change (nouveau: {})", mimetype);
-            let filtre = doc!{CHAMP_TUUID: &commande.tuuid, CHAMP_USER_ID: &user_id};
-            let collection = middleware.get_collection_typed::<NodeFichierRepVersionCouranteOwned>(
-                NOM_COLLECTION_FICHIERS_REP)?;
-            if let Some(fichier) = collection.find_one_with_session(filtre, None, session).await? {
-                if fichier.mimetype != commande.mimetype {
-                    debug!("commande_decrire_fichier Le mimetype a change de {:?} vers {:?}, reset traitement media de {}", fichier.mimetype, commande.mimetype, commande.tuuid);
-                    match fichier.fuuids_versions {
-                        Some(mut inner) => {
-                            if let Some(fuuid) = inner.pop() {
-                                (true, Some(fuuid))
-                            } else {
-                                (false, None)
-                            }
-                        },
-                        None => (false, None)
-                    }
-                } else {
-                    (false, None)
-                }
+    // Find matching file
+    let collection_reps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+    let filtre_reps = doc!{"tuuid": &commande.tuuid, "user_id": &user_id};
+    let file_rep = match collection_reps.find_one_with_session(filtre_reps, None, session).await? {
+        Some(inner) => inner,
+        None => Err(format!("commande_decrire_fichier File not found: tuuid:{}", commande.tuuid))?
+    };
+
+    // let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
+    // if role_prive {
+    //     let tuuids = vec![&commande.tuuid];
+    //     let resultat = verifier_autorisation_usager(middleware, user_id.as_str(), Some(&tuuids), None::<String>).await?;
+    //     if let Some(erreur) = resultat.erreur {
+    //         return Ok(Some(erreur.try_into()?))
+    //     }
+    // } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+    //     // Ok
+    // } else {
+    //     Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
+    // }
+
+    // If this is a file, extract the first fuuid (most recent version)
+    let fuuid = match file_rep.fuuids_versions.as_ref() {
+        Some(mut inner) => {
+            if let Some(fuuid) = inner.first() {
+                fuuid.to_owned()
             } else {
-                (false, None)
+                Err(format!("commande_decrire_fichier No file version found for tuuid:{}", commande.tuuid))?
             }
         },
-        None => (false, None),
+        None => {
+            Err(format!("commande_decrire_fichier No file version found for tuuid:{}", commande.tuuid))?
+        }
+    };
+
+    let changement_media = match commande.mimetype.as_ref() {
+        Some(mimetype) => {
+            debug!("commande_decrire_fichier Verifier si le mimetype du fichier a change (nouveau: {})", mimetype);
+            if file_rep.mimetype != commande.mimetype {
+                debug!("commande_decrire_fichier Le mimetype a change de {:?} vers {:?}, reset traitement media de {}",
+                    file_rep.mimetype, commande.mimetype, commande.tuuid);
+                true
+                // match file_rep.fuuids_versions.as_ref() {
+                //     Some(mut inner) => {
+                //         if let Some(fuuid) = inner.first() {
+                //             (true, Some(fuuid.to_owned()))
+                //         } else {
+                //             (false, None)
+                //         }
+                //     },
+                //     None => (false, None)
+                // }
+            } else {
+                // (false, None)
+                false
+            }
+        },
+        None => false  // (false, None),
     };
 
     // Traiter la transaction
@@ -285,61 +311,58 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
 
     if changement_media {
         if let Some(mimetype) = commande.mimetype.as_ref() {
-            if fuuid.is_some() {
-                // Ajouter flags media au fichier si approprie
-                let (flag_media_traite, flag_video_traite, flag_media) = get_flags_media(
-                    mimetype.as_str());
-                let filtre = doc! {CHAMP_TUUID: &commande.tuuid, CHAMP_USER_ID: &user_id};
-                let ops = doc! {
-                    "$set": {
-                        CHAMP_FLAG_MEDIA: flag_media,
-                        CHAMP_FLAG_MEDIA_TRAITE: flag_media_traite,
-                        CHAMP_FLAG_VIDEO_TRAITE: flag_video_traite,
-                    },
-                    "$currentDate": {CHAMP_MODIFICATION: true}
-                };
-                debug!("commande_decrire_fichier Reset flags media sur changement mimetype pour {} : {:?}", commande.tuuid, ops);
-                let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(
-                    NOM_COLLECTION_VERSIONS)?;
-                let fichier_version = match collection.find_one_and_update_with_session(filtre.clone(), ops, None, session).await? {
-                    Some(inner) => inner,
-                    None => Err(CommonError::Str("commande_decrire_fichier Erreur maj fichier, non trouve"))?
-                };
-
-                let cle_id = match fichier_version.cle_id {
-                    Some(inner) => inner,
-                    None => fichier_version.fuuid
-                };
-
-                let mut champs_cles = HashMap::new();
-                champs_cles.insert("tuuid".to_string(), commande.tuuid.clone());
-                champs_cles.insert("mimetype".to_string(), mimetype.to_owned());
-
-                let mut champs_parametres = HashMap::new();
-                champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_string()));
-            } else {
-                warn!("commande_decrire_fichier Erreur utilisation fuuid sur changement (None)");
-            }
+            // Ajouter flags media au fichier si approprie
+            todo!("change mimetype for shared version file")
+            // let (flag_media_traite, flag_video_traite, flag_media) = get_flags_media(
+            //     mimetype.as_str());
+            // let filtre = doc! {CHAMP_TUUID: &commande.tuuid, CHAMP_USER_ID: &user_id};
+            // let ops = doc! {
+            //     "$set": {
+            //         CHAMP_FLAG_MEDIA: flag_media,
+            //         CHAMP_FLAG_MEDIA_TRAITE: flag_media_traite,
+            //         CHAMP_FLAG_VIDEO_TRAITE: flag_video_traite,
+            //     },
+            //     "$currentDate": {CHAMP_MODIFICATION: true}
+            // };
+            // debug!("commande_decrire_fichier Reset flags media sur changement mimetype pour {} : {:?}", commande.tuuid, ops);
+            // let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(
+            //     NOM_COLLECTION_VERSIONS)?;
+            // let fichier_version = match collection.find_one_and_update_with_session(filtre.clone(), ops, None, session).await? {
+            //     Some(inner) => inner,
+            //     None => Err(CommonError::Str("commande_decrire_fichier Erreur maj fichier, non trouve"))?
+            // };
+            //
+            // let cle_id = match fichier_version.cle_id {
+            //     Some(inner) => inner,
+            //     None => fichier_version.fuuid
+            // };
+            //
+            // let mut champs_cles = HashMap::new();
+            // champs_cles.insert("tuuid".to_string(), commande.tuuid.clone());
+            // champs_cles.insert("mimetype".to_string(), mimetype.to_owned());
+            //
+            // let mut champs_parametres = HashMap::new();
+            // champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_string()));
         } else {
-            warn!("commande_decrire_fichier Erreur utilisation mimetype sur changement (None)");
+            warn!("commande_decrire_fichier Erreur utilisation fuuid sur changement (None)");
         }
     }
 
     // Declencher indexation
     let tuuid = &commande.tuuid;
-    if let Some(fuuid) = fuuid.as_ref() {
-        let filtre = doc!{CHAMP_TUUID: &commande.tuuid, CHAMP_USER_ID: &user_id};
-        let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
-        if let Some(fichier) = collection.find_one_with_session(filtre, None, session).await? {
-            if fichier.cle_id.is_some() && fichier.format.is_some() && fichier.nonce.is_some() {
-                let cle_id = fichier.cle_id.expect("cle_id");
-                let format: &str = fichier.format.expect("format").into();
-                let nonce = fichier.nonce.expect("nonce");
-                let mimetype = fichier.mimetype;
-                let filehost_ids: Vec<&String> = fichier.visites.keys().collect();
-                let job = BackgroundJob::new_index(tuuid, Some(fuuid), user_id, mimetype, &filehost_ids, cle_id, format, nonce);
-                sauvegarder_job_index(middleware, &job, session).await?;
-            }
+    let filtre = doc!{"fuuid": &fuuid};
+    let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    let mut cursor = collection.find_with_session(filtre, None, session).await?;
+    if cursor.advance(session).await? {
+        let row = cursor.deserialize_current()?;
+        if row.cle_id.is_some() && row.format.is_some() && row.nonce.is_some() {
+            let cle_id = row.cle_id.expect("cle_id");
+            let format: &str = row.format.expect("format").into();
+            let nonce = row.nonce.expect("nonce");
+            let mimetype = row.mimetype;
+            let filehost_ids: Vec<&String> = row.visites.keys().collect();
+            let job = BackgroundJob::new_index(tuuid, Some(fuuid), &user_id, mimetype, &filehost_ids, cle_id, format, nonce);
+            sauvegarder_job_index(middleware, &job, session).await?;
         }
     }
 
