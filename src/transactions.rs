@@ -2307,68 +2307,75 @@ async fn transaction_supprimer_video<M>(middleware: &M, transaction: Transaction
 
     let fuuid = &transaction_collection.fuuid_video;
 
-    let user_id = transaction.certificat.get_user_id()?;
-    todo!()
+    let user_id = match transaction.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err("transaction_supprimer_video No user_id in certificate")?
+    };
 
-    // let mut labels_videos = Vec::new();
-    // let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
-    // let collection_fichier_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
-    // let doc_video = match collection_fichier_versions.find_one_with_session(filtre.clone(), None, session).await {
-    //     Ok(d) => match d {
-    //         Some(d) => d,
-    //         None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
-    //     },
-    //     Err(e) => Err(format!("transaction_supprimer_video Erreur chargement info document : {:?}", e))?
-    // };
-    //
-    // // let tuuid = doc_video.tuuid;
-    //
-    // let mut ops_unset = doc!{};
-    // if let Some(map_video) = doc_video.video.as_ref() {
-    //     for (label, video) in map_video {
-    //         if &video.fuuid_video == fuuid {
-    //             ops_unset.insert(format!("video.{}", label), true);
-    //             labels_videos.push(label);
-    //         }
-    //     }
-    // }
-    //
-    // {
-    //     let filtre = doc!{CHAMP_FUUIDS: fuuid};
-    //     let mut ops_unset = doc!{format!("fuuidMimetypes.{}", fuuid): true};
-    //     for label in labels_videos {
-    //         ops_unset.insert(format!("video.{}", label), true);
-    //     }
-    //
-    //     let ops = doc! {
-    //         "$pull": {CHAMP_FUUIDS: fuuid, CHAMP_FUUIDS_RECLAMES: fuuid},
-    //         "$unset": ops_unset,
-    //         "$currentDate": {CHAMP_MODIFICATION: true},
-    //     };
-    //     let collection_version_fichier = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    //
-    //     debug!("transaction_supprimer_video Supprimer video {:?} ops {:?}", filtre, ops);
-    //
-    //     match collection_version_fichier.update_one_with_session(filtre, ops, None, session).await {
-    //         Ok(_r) => (),
-    //         Err(e) => Err(format!("transaction_supprimer_video Erreur update_one collection fichiers rep : {:?}", e))?
-    //     }
-    // }
-    //
-    // if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), vec![fuuid], session).await {
-    //     error!("transaction_favoris_creerpath Erreur touch_fichiers_rep {:?}/{:?} : {:?}", user_id, fuuid, e);
-    // }
-    //
-    // // // Emettre fichier pour que tous les clients recoivent la mise a jour
-    // // if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO).await {
-    // //     warn!("transaction_favoris_creerpath Erreur emettre_evenement_maj_fichier : {:?}", e);
-    // // }
-    //
-    // // Retourner le tuuid comme reponse, aucune transaction necessaire
-    // match middleware.reponse_ok(None, None) {
-    //     Ok(r) => Ok(Some(r)),
-    //     Err(_) => Err(CommonError::Str("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
-    // }
+    // Find the original fuuid for the video
+    let filtre_versions = doc!{"fuuids_reclames": fuuid};
+    let collection_versions =
+        middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    let file_version = match collection_versions.find_one_with_session(filtre_versions.clone(), None, session).await? {
+        Some(inner) => inner,
+        None => Err(format!("transaction_supprimer_video No matching file version found with fuuid {}", fuuid))?
+    };
+    let fuuid_original = file_version.fuuid.as_str();
+
+    // Load media information for original fuuid/user_id
+    let filtre_media = doc!{CHAMP_FUUID: fuuid_original, CHAMP_USER_ID: &user_id};
+    let collection_media = middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
+    let doc_video = match collection_media.find_one_with_session(filtre_media.clone(), None, session).await {
+        Ok(d) => match d {
+            Some(d) => d,
+            None => Err(format!("transaction_supprimer_video No document match on user_id:{}/fuuid:{}", user_id, fuuid))?
+        },
+        Err(e) => Err(format!("transaction_supprimer_video Erreur chargement info document : {:?}", e))?
+    };
+
+    // Find video label matching video fuuid to remove
+    let mut ops_unset_video = doc!{};
+    if let Some(map_video) = doc_video.video.as_ref() {
+        for (label, video) in map_video {
+            if &video.fuuid_video == fuuid {
+                ops_unset_video.insert(format!("video.{}", label), true);
+            }
+        }
+    }
+
+    // Ensure there is a video with that fuuid
+    if ops_unset_video.len() == 0 {
+        return Ok(None)  // Nothing to do
+    }
+
+    // Remove video with matching fuuid
+    let ops_media = doc!{"$unset": ops_unset_video, "$currentDate": {CHAMP_MODIFICATION: true}};
+    collection_media.update_one_with_session(filtre_media, ops_media, None, session).await?;
+
+    // Cleanup file version (claimed fuuids)
+    {
+        let ops = doc! {
+            "$pull": {CHAMP_FUUIDS_RECLAMES: fuuid},
+            "$currentDate": {CHAMP_MODIFICATION: true},
+        };
+        let collection_version_fichier = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+
+        debug!("transaction_supprimer_video Supprimer video {:?} ops {:?}", filtre_versions, ops);
+        match collection_version_fichier.update_one_with_session(filtre_versions, ops, None, session).await {
+            Ok(_r) => (),
+            Err(e) => Err(format!("transaction_supprimer_video Erreur update_one collection fichiers rep : {:?}", e))?
+        }
+    }
+
+    if let Err(e) = touch_fichiers_rep(middleware, Some(&user_id), vec![fuuid], session).await {
+        error!("transaction_favoris_creerpath Erreur touch_fichiers_rep {:?}/{:?} : {:?}", user_id, fuuid, e);
+    }
+
+    // Retourner le tuuid comme reponse, aucune transaction necessaire
+    match middleware.reponse_ok(None, None) {
+        Ok(r) => Ok(Some(r)),
+        Err(_) => Err(CommonError::Str("grosfichiers.transaction_favoris_creerpath Erreur formattage reponse"))
+    }
 }
 
 

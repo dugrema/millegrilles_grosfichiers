@@ -2125,56 +2125,58 @@ async fn commande_supprimer_video<M>(middleware: &M, m: MessageValide, gestionna
         message_ref.contenu()?.deserialize()?
     };
 
-    let fuuid_video = &commande.fuuid_video;
-    let user_id = match m.certificat.get_user_id()? {
-        Some(inner) => inner,
-        None => Err("User_id missing from certificate")?
-    };
-
-    {   // Verifier acces
-        let delegation_globale = m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)?;
-        if delegation_globale || m.certificat.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege, Securite::L4Secure])? {
-            // Ok
-        } else {
-            let resultat = verifier_acces_usager_media(middleware, &user_id, vec![fuuid_video]).await?;
-            if ! resultat.contains(fuuid_video) {
-                debug!("commande_video_convertir verifier_exchanges : Usager n'a pas acces a fuuid {}", fuuid_video);;
-                // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Access denied"}), None)?))
-                return Ok(Some(middleware.reponse_err(None, None, Some("Access denied"))?))
-            }
-        }
+    let admin_account = m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)?;
+    let private_account = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
+    if !admin_account && !private_account {
+        Err("Certificate is not for a private user account/admin, access refused")?
     }
 
+    let fuuid_video = &commande.fuuid_video;
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => {
+            inner
+        },
+        None => Err("commande_supprimer_video User_id missing from certificate")?
+    };
+
+    // Find original fuuid for this video
     let filtre_fichier = doc!{"fuuids_reclames": fuuid_video};
     let collection_fichier_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
     let file_version = match collection_fichier_versions.find_one_with_session(filtre_fichier, None, session).await? {
         Some(inner) => inner,
-        None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
+        None => Err("commande_supprimer_video Erreur chargement info document, aucun match")?
     };
     let fuuid_original = file_version.fuuid.as_str();
 
-    // Recuperer information - utilisee pour emettre evenement apres transactions
-    // let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
-    // let collection_fichier_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
-    // let doc_video = match collection_fichier_versions.find_one(filtre.clone(), None).await {
-    //     Ok(d) => match d {
-    //         Some(d) => d,
-    //         None => Err(format!("transaction_supprimer_video Erreur chargement info document, aucun match"))?
-    //     },
-    //     Err(e) => Err(format!("transaction_supprimer_video Erreur chargement info document : {:?}", e))?
-    // };
+    // Ensure access
+    let filtre_rep = doc!{"fuuids_versions": fuuid_original, "user_id": &user_id};
+    let collection_rep = middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut cursor = collection_rep.find_with_session(filtre_rep, None, session).await?;
+    let mut tuuids = Vec::new();
+    while cursor.advance(session).await ? {
+        let row = cursor.deserialize_current()?;
+        tuuids.push(row.tuuid);
+    }
+    if tuuids.is_empty() {
+        debug!("Access refused for user_id:{} to fuuid_video:{}", user_id, fuuid_video);
+        return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access refused"))?))
+    }
 
-    // Traiter la transaction
+    // Process transaction
     let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
 
-    todo!()
-    // // Emettre fichier pour que tous les clients recoivent la mise a jour
-    // let tuuid = doc_video.tuuid;
-    // if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO, session).await {
-    //     warn!("transaction_favoris_creerpath Erreur emettre_evenement_maj_fichier : {:?}", e);
-    // }
-    //
-    // Ok(response)
+    // Work done, commit before emitting events
+    session.commit_transaction().await?;
+    start_transaction_regular(session).await?;
+
+    // Emit event
+    for tuuid in tuuids {
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, tuuid, EVENEMENT_FUUID_ASSOCIER_VIDEO, session).await {
+            warn!("commande_supprimer_video Erreur emettre_evenement_maj_fichier : {:?}", e);
+        }
+    }
+
+    Ok(response)
 }
 
 #[derive(Clone, Debug, Deserialize)]

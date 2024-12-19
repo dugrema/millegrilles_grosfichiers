@@ -849,7 +849,7 @@ impl EvenementContenuCollection {
 }
 
 pub async fn emettre_evenement_maj_fichier<M, S, T>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, tuuid: S, action: T, session: &mut ClientSession)
-                                                    -> Result<(), CommonError>
+    -> Result<(), CommonError>
 where
     M: GenerateurMessages + MongoDao,
     S: AsRef<str>,
@@ -865,17 +865,6 @@ where
     let mut curseur = collection.find_with_session(filtre, None, session).await?;
     if curseur.advance(session).await? {
         let doc_fichier = curseur.deserialize_current()?;
-
-        // Extraire liste de fuuids directement
-        // if let Some(fuuids) = doc_fichier.fuuids_versions.as_ref() {
-        //     if let Some(fuuid) = fuuids.first() {
-        //         let routage_action = RoutageMessageAction::builder(DOMAINE_NOM, action_str)
-        //             .exchanges(vec![Securite::L2Prive])
-        //             .build();
-        //
-        //         middleware.emettre_evenement(routage_action.clone(), &json!({CHAMP_FUUIDS: vec![*fuuid]})).await?;
-        //     }
-        // }
 
         if let Some(cuuids) = doc_fichier.path_cuuids.as_ref() {
             if let Some(cuuid) = cuuids.first() {
