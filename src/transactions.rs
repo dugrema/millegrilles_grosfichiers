@@ -21,7 +21,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::mapstring
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, convertir_to_bson_array, start_transaction_regeneration, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint, UpdateOptions};
-use millegrilles_common_rust::mongodb::ClientSession;
+use millegrilles_common_rust::mongodb::{ClientSession, Collection};
 use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
@@ -2308,8 +2308,8 @@ async fn transaction_supprimer_video<M>(middleware: &M, transaction: Transaction
     let fuuid = &transaction_collection.fuuid_video;
 
     let user_id = transaction.certificat.get_user_id()?;
-
     todo!()
+
     // let mut labels_videos = Vec::new();
     // let filtre = doc!{CHAMP_FUUIDS: fuuid, CHAMP_USER_ID: user_id.as_ref()};
     // let collection_fichier_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
@@ -2843,8 +2843,6 @@ async fn delete_file_versions_from_directories<M>(middleware: &M, session: &mut 
         let filtre_tuuids = doc! {"tuuids": {"$in": &file_tuuids}};
         let version_ops = doc!{"$pullAll": {"tuuids": file_tuuids}, "$currentDate": {CHAMP_MODIFICATION: true} };
         collection_fichiersversion.update_many_with_session(filtre_tuuids, version_ops, None, session).await?;
-        // let ops_versions = doc! {"$set": {"supprime": true}, "$currentDate": {CHAMP_MODIFICATION: true}};
-        // collection_fichiersversion.update_many_with_session(filtre_tuuids.clone(), ops_versions, None, session).await?;
     }
 
     Ok(())
@@ -2918,7 +2916,7 @@ pub struct TransactionCopyV2 {
     pub directories: Option<Vec<TransactionMoveV2Directory>>,
     pub files: Option<Vec<String>>,
     pub user_id: String,
-    pub source_user_id: Option<String>,
+    // pub source_user_id: Option<String>,
 }
 
 fn digest_new_tuuid(transaction_id_bytes: &Vec<u8>, old_tuuid: &str) -> String {
@@ -2928,75 +2926,25 @@ fn digest_new_tuuid(transaction_id_bytes: &Vec<u8>, old_tuuid: &str) -> String {
     hex::encode(digest_value)
 }
 
-async fn copy_files<M>(middleware: &M, session: &mut ClientSession, destination_path: Vec<&str>,
-                       source_directory: Option<&str>, source_files: Option<Vec<&str>>,
-                       source_user_id: &str, destination_user_id: &str)
-    -> Result<(), CommonError>
-    where M: MongoDao
-{
-    let collection_reps =
-        middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
-
-    if source_directory.is_some() && source_files.is_some() {
-        Err("copy_files Only one of source_directory or source_files can be specified")?;
-    }
-    let (filtre, tuuids) = if let Some(cuuid) = source_directory.as_ref() {
-        let filtre = doc!{"path_cuuids.0": cuuid};
-
-        let tuuids = if source_user_id != destination_user_id {
-            // Files are being moved. Extract the list of tuuids to allow copying the versions later on.
-            Some(vec!["".to_string()])
-        } else {
-            None
-        };
-        (filtre, tuuids)
-    } else if let Some(tuuids) = source_files.as_ref() {
-        (doc!{"tuuid": {"$in": tuuids}}, None)
-    } else {
-        Err("copy_files No source information provided")?
-    };
-    todo!()
-    // let filtre = doc!{"tuuid": {"$in": &files}};
-    // let mut cursor_reps = collection_reps.find_with_session(filtre.clone(), None, session).await?;
-    // while cursor_reps.advance(session).await? {
-    //     let mut row = cursor_reps.deserialize_current()?;
-    //
-    //     #[cfg(debug_assertions)]
-    //     let old_tuuid = row.tuuid.clone();
-    //
-    //     // Update path_cuuids and identifier. Then re-insert.
-    //     // Hash the old tuuid and the current transaction id with blake2s to get a new unique tuuid.
-    //     let new_tuuid = digest_new_tuuid(&transaction_id_bytes, row.tuuid.as_str());
-    //     row.tuuid = new_tuuid;
-    //     if let Some(user_id) = user_id {
-    //         // In case this is a copy from shared resource
-    //         row.user_id = user_id.to_owned();
-    //     }
-    //     row.path_cuuids = Some(destination.clone());
-    //     row.flag_index = false;  // Need to index new path
-    //
-    //     // Insert the row with the updated identifiers
-    //     #[cfg(debug_assertions)]
-    //     debug!("transaction_copy_v2 Copy (files-1) tuuid {} to {}", old_tuuid, row.tuuid);
-    //     collection_reps.insert_one_with_session(row, None, session).await?;
-    // }
-}
-
 async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
     let transaction_content: TransactionCopyV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
     let user_id = &transaction_content.user_id;
-    let source_user_id = &transaction_content.source_user_id;
+    // let source_user_id = &transaction_content.source_user_id;
 
-    let change_users = match source_user_id.as_ref() {
-        Some(inner) => inner.as_str() != user_id,
-        None => false,
-    };
+    // let change_users = match source_user_id.as_ref() {
+    //     Some(inner) => inner.as_str() != user_id,
+    //     None => false,
+    // };
 
     let collection_reps =
         middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_versions =
+        middleware.get_collection_typed::<NodeFichierVersionRow>(NOM_COLLECTION_VERSIONS)?;
+    let collection_media =
+        middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
 
     let transaction_id = &transaction.transaction.id;
     let transaction_id_bytes = hex::decode(transaction_id)?;
@@ -3007,6 +2955,8 @@ async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, 
         let mut cursor_reps = collection_reps.find_with_session(filtre.clone(), None, session).await?;
         while cursor_reps.advance(session).await? {
             let mut row = cursor_reps.deserialize_current()?;
+            let original_user_id = row.user_id.clone();
+            let change_user = original_user_id.as_str() != user_id;
 
             #[cfg(debug_assertions)]
             let old_tuuid = row.tuuid.clone();
@@ -3014,15 +2964,29 @@ async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, 
             // Update path_cuuids and identifier. Then re-insert.
             // Hash the old tuuid and the current transaction id with blake2s to get a new unique tuuid.
             let new_tuuid = digest_new_tuuid(&transaction_id_bytes, row.tuuid.as_str());
-            row.tuuid = new_tuuid;
+            row.tuuid = new_tuuid.clone();
             row.user_id = user_id.clone();  // We may be copying from shared collections
             row.path_cuuids = Some(destination.clone());
             row.flag_index = false;  // Need to index new path
+
+            let fuuids_versions = row.fuuids_versions.clone();
 
             // Insert the row with the updated identifiers
             #[cfg(debug_assertions)]
             debug!("transaction_copy_v2 Copy (files-1) tuuid {} to {}", old_tuuid, row.tuuid);
             collection_reps.insert_one_with_session(row, None, session).await?;
+
+            // Add tuuid to versions
+            if let Some(fuuids_versions) = fuuids_versions {
+                let filtre_versions = doc! {"fuuid": {"$in": &fuuids_versions}};
+                let ops = doc! {"$addToSet": {"tuuids": &new_tuuid}, "$currentDate": {CHAMP_MODIFICATION: true}};
+                debug!("transaction_copy_v2 Filtre {:?}, ops: {:?}", filtre_versions, ops);
+                collection_versions.update_many_with_session(filtre_versions, ops, None, session).await?;
+
+                if change_user {
+                    copy_media_file(middleware, session, user_id, original_user_id, fuuids_versions).await?;
+                }
+            }
         }
     }
 
@@ -3072,23 +3036,92 @@ async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, 
                 let mut cursor_reps = collection_reps.find_with_session(filtre.clone(), None, session).await?;
                 while cursor_reps.advance(session).await? {
                     let mut row = cursor_reps.deserialize_current()?;
+                    let original_user_id = row.user_id.clone();
+                    let change_user = original_user_id.as_str() != user_id;
 
                     #[cfg(debug_assertions)]
                     let old_tuuid = row.tuuid.clone();
 
                     let new_tuuid = digest_new_tuuid(&transaction_id_bytes, row.tuuid.as_str());
-                    row.tuuid = new_tuuid;
+                    row.tuuid = new_tuuid.clone();
                     row.user_id = user_id.clone();  // In case this is a copy from shared resource
                     row.path_cuuids = Some(destination.clone());
                     row.flag_index = false;  // Need to index new path
+
+                    let fuuids_versions = row.fuuids_versions.clone();
+
                     // Insert the directory with the updated identifiers
                     #[cfg(debug_assertions)]
                     debug!("transaction_copy_v2 Copy (files-sub) tuuid {} to {}", old_tuuid, row.tuuid);
                     collection_reps.insert_one_with_session(row, None, session).await?;
+
+                    // Add tuuid to versions
+                    if let Some(fuuids_versions) = fuuids_versions {
+                        let filtre_versions = doc! {"fuuid": {"$in": &fuuids_versions}};
+                        let ops = doc! {"$addToSet": {"tuuids": &new_tuuid}, "$currentDate": {CHAMP_MODIFICATION: true}};
+                        collection_versions.update_many_with_session(filtre_versions, ops, None, session).await?;
+
+                        if change_user {
+                            copy_media_file(middleware, session, user_id, original_user_id, fuuids_versions).await?;
+                        }
+                    }
                 }
             }
         }
     }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
+}
+
+async fn copy_media_file<M>(middleware: &M, session: &mut ClientSession, user_id: &String, original_user_id: String, fuuids_versions: Vec<&str>)
+    -> Result<(), CommonError>
+    where M: MongoDao
+{
+    debug!("copy_media_file fuuids_versions: {:?}, user_id: {:?}", fuuids_versions, user_id);
+    let collection_media = middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
+
+    let filtre_media = doc! {"fuuid": {"$in": &fuuids_versions}, "user_id": &original_user_id};
+    let mut cursor = collection_media.find_with_session(filtre_media, None, session).await?;
+    while cursor.advance(session).await? {
+        let mut row = cursor.deserialize_current()?;
+        let filtre = doc! {"fuuid": &row.fuuid, "user_id": &user_id};
+
+        let mut set_on_insert = doc! {
+            CHAMP_CREATION: Utc::now(),
+            "mimetype": row.mimetype,
+            "height": row.height,
+            "width": row.width,
+            "duration": row.duration,
+            "videoCodec": row.video_codec,
+            "anime": row.anime,
+        };
+        if let Some(images) = row.images {
+            set_on_insert.insert("images", convertir_to_bson(images)?);
+        }
+        if let Some(audio) = row.audio {
+            set_on_insert.insert("audio", convertir_to_bson_array(audio)?);
+        }
+        if let Some(subtitles) = row.subtitles {
+            set_on_insert.insert("subtitles", convertir_to_bson_array(subtitles)?);
+        }
+
+        let mut ops = doc! {
+            "$setOnInsert": set_on_insert,
+            "$currentDate": {CHAMP_MODIFICATION: true}
+        };
+        // Copy videos individually to merge to merge the entries.
+        if let Some(video) = row.video {
+            let mut set_ops = doc! {};
+            for (key, value) in video {
+                set_ops.insert(format!("video.{}", key), convertir_to_bson(value)?);
+            }
+            if !set_ops.is_empty() {
+                ops.insert("$set", set_ops);
+            }
+        }
+        debug!("copy_media_file ops {:?}", ops);
+        let options = UpdateOptions::builder().upsert(true).build();
+        collection_media.update_one_with_session(filtre, ops, options, session).await?;
+    }
+    Ok(())
 }

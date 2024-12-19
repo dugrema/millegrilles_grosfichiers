@@ -1001,7 +1001,7 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
         directories: result.directories,
         files: result.files,
         user_id,
-        source_user_id,
+        // source_user_id,
     };
 
     debug!("commande_ajouter_fichiers_collection Transaction\n{}", serde_json::to_string(&transaction)?);
