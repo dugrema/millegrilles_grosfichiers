@@ -453,6 +453,20 @@ where M: MongoDao + ConfigMessages
         Some(options_index_last_visits)
     ).await?;
 
+    let options_index_tuuids = IndexOptions {
+        nom_index: Some("tuuids".to_string()),
+        unique: false
+    };
+    let champs_index_tuuids = vec!(
+        ChampIndex {nom_champ: String::from("tuuids"), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_VERSIONS,
+        champs_index_tuuids,
+        Some(options_index_tuuids)
+    ).await?;
+
     // Index conversion unique tuuid/params
     let options_tuuids_params = IndexOptions {
         nom_index: Some(format!("tuuid_params")),

@@ -254,19 +254,6 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
         None => Err(format!("commande_decrire_fichier File not found: tuuid:{}", commande.tuuid))?
     };
 
-    // let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
-    // if role_prive {
-    //     let tuuids = vec![&commande.tuuid];
-    //     let resultat = verifier_autorisation_usager(middleware, user_id.as_str(), Some(&tuuids), None::<String>).await?;
-    //     if let Some(erreur) = resultat.erreur {
-    //         return Ok(Some(erreur.try_into()?))
-    //     }
-    // } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
-    //     // Ok
-    // } else {
-    //     Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
-    // }
-
     // If this is a file, extract the first fuuid (most recent version)
     let fuuid = match file_rep.fuuids_versions.as_ref() {
         Some(mut inner) => {
@@ -288,65 +275,42 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
                 debug!("commande_decrire_fichier Le mimetype a change de {:?} vers {:?}, reset traitement media de {}",
                     file_rep.mimetype, commande.mimetype, commande.tuuid);
                 true
-                // match file_rep.fuuids_versions.as_ref() {
-                //     Some(mut inner) => {
-                //         if let Some(fuuid) = inner.first() {
-                //             (true, Some(fuuid.to_owned()))
-                //         } else {
-                //             (false, None)
-                //         }
-                //     },
-                //     None => (false, None)
-                // }
             } else {
-                // (false, None)
                 false
             }
         },
-        None => false  // (false, None),
+        None => false
     };
 
     // Traiter la transaction
     let resultat = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
 
-    if changement_media {
+    let (flag_media_traite, flag_video_traite) = if changement_media {
         if let Some(mimetype) = commande.mimetype.as_ref() {
             // Ajouter flags media au fichier si approprie
-            todo!("change mimetype for shared version file")
-            // let (flag_media_traite, flag_video_traite, flag_media) = get_flags_media(
-            //     mimetype.as_str());
-            // let filtre = doc! {CHAMP_TUUID: &commande.tuuid, CHAMP_USER_ID: &user_id};
-            // let ops = doc! {
-            //     "$set": {
-            //         CHAMP_FLAG_MEDIA: flag_media,
-            //         CHAMP_FLAG_MEDIA_TRAITE: flag_media_traite,
-            //         CHAMP_FLAG_VIDEO_TRAITE: flag_video_traite,
-            //     },
-            //     "$currentDate": {CHAMP_MODIFICATION: true}
-            // };
-            // debug!("commande_decrire_fichier Reset flags media sur changement mimetype pour {} : {:?}", commande.tuuid, ops);
-            // let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(
-            //     NOM_COLLECTION_VERSIONS)?;
-            // let fichier_version = match collection.find_one_and_update_with_session(filtre.clone(), ops, None, session).await? {
-            //     Some(inner) => inner,
-            //     None => Err(CommonError::Str("commande_decrire_fichier Erreur maj fichier, non trouve"))?
-            // };
-            //
-            // let cle_id = match fichier_version.cle_id {
-            //     Some(inner) => inner,
-            //     None => fichier_version.fuuid
-            // };
-            //
-            // let mut champs_cles = HashMap::new();
-            // champs_cles.insert("tuuid".to_string(), commande.tuuid.clone());
-            // champs_cles.insert("mimetype".to_string(), mimetype.to_owned());
-            //
-            // let mut champs_parametres = HashMap::new();
-            // champs_parametres.insert("cle_id".to_string(), Bson::String(cle_id.to_string()));
+            let (flag_media_traite, flag_video_traite, _) = get_flags_media(
+                mimetype.as_str());
+            let filtre = doc! {CHAMP_FUUID: &fuuid};
+            let ops = doc! {
+                "$set": {
+                    // CHAMP_FLAG_MEDIA: flag_media,
+                    CHAMP_FLAG_MEDIA_TRAITE: flag_media_traite,
+                    CHAMP_FLAG_VIDEO_TRAITE: flag_video_traite,
+                },
+                "$currentDate": {CHAMP_MODIFICATION: true}
+            };
+            debug!("commande_decrire_fichier Reset flags media sur changement mimetype pour {} : {:?}", commande.tuuid, ops);
+            let collection = middleware.get_collection_typed::<NodeFichierVersionOwned>(
+                NOM_COLLECTION_VERSIONS)?;
+            collection.update_one_with_session(filtre.clone(), ops, None, session).await?;
+            (flag_media_traite, flag_video_traite)
         } else {
             warn!("commande_decrire_fichier Erreur utilisation fuuid sur changement (None)");
+            (true, true)  // prevent media jobs from being created
         }
-    }
+    } else {
+        (true, true)  // prevent media jobs from being created
+    };
 
     // Declencher indexation
     let tuuid = &commande.tuuid;
@@ -356,13 +320,23 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
     if cursor.advance(session).await? {
         let row = cursor.deserialize_current()?;
         if row.cle_id.is_some() && row.format.is_some() && row.nonce.is_some() {
-            let cle_id = row.cle_id.expect("cle_id");
-            let format: &str = row.format.expect("format").into();
-            let nonce = row.nonce.expect("nonce");
-            let mimetype = row.mimetype;
+
+            // Create indexing job
+            let cle_id = row.cle_id.clone().expect("cle_id");
+            let format: &str = row.format.clone().expect("format").into();
+            let nonce = row.nonce.clone().expect("nonce");
+            let mimetype = row.mimetype.clone();
             let filehost_ids: Vec<&String> = row.visites.keys().collect();
             let job = BackgroundJob::new_index(tuuid, Some(fuuid), &user_id, mimetype, &filehost_ids, cle_id, format, nonce);
             sauvegarder_job_index(middleware, &job, session).await?;
+
+            if ! flag_video_traite {
+                // Create video job
+                sauvegarder_job_video(middleware, &job, session).await?;
+            } else if ! flag_media_traite {
+                // Create media job
+                sauvegarder_job_images(middleware, &job, session).await?;
+            }
         }
     }
 
@@ -1870,7 +1844,7 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, sessio
     // Parcourir tous les fuuids demandes pour le user_id
     let filtre = match commande.fuuids {
         Some(fuuids) => {
-            doc! {CHAMP_USER_ID: &user_id, CHAMP_FUUID: {"$in": fuuids}}
+            doc! {CHAMP_FUUID: {"$in": fuuids}}
         },
         None => {
             warn!("commande_completer_previews Aucuns fuuids, pas d'effet.");
@@ -1880,8 +1854,10 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, sessio
         }
     };
 
-    let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
-    let mut curseur = collection.find_with_session(filtre, None, session).await?;
+    let collection_reps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+
+    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
+    let mut curseur = collection_versions.find_with_session(filtre, None, session).await?;
     while curseur.advance(session).await? {
         let fichier_version = match curseur.deserialize_current() {
             Ok(inner) => inner,
@@ -1891,9 +1867,18 @@ async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, sessio
             }
         };
 
-        let tuuid = fichier_version.tuuid;
         let fuuid = fichier_version.fuuid;
         let mimetype= fichier_version.mimetype;
+
+        let filtre_rep = doc!{"fuuids_versions": fuuid, "user_id": &user_id};
+        let file_rep = match collection_reps.find_one_with_session(filtre_rep, None, session).await? {
+            Some(inner) => inner,
+            None => {
+                info!("No matching file_rep for fuuid:{}/user_id:{} - SKIP", fuuid, user_id);
+                continue
+            }
+        };
+        let tuuid = file_rep.tuuid;
 
         if fichier_version.cle_id.is_some() && fichier_version.format.is_some() && fichier_version.nonce.is_some() {
             let cle_id = fichier_version.cle_id.expect("cle_id");
@@ -2405,24 +2390,25 @@ async fn commande_supprimer_orphelins<M>(middleware: &M, mut m: MessageValide, g
         message_ref.contenu()?.deserialize()?
     };
 
-    let resultat = trouver_orphelins_supprimer(middleware, &commande, session).await?;
-    debug!("commande_supprimer_orphelins Versions supprimees : {:?}, fuuids a conserver : {:?}",
-        resultat.versions_supprimees, resultat.fuuids_a_conserver);
-
-    let mut fuuids_supprimes = 0;
-    for (fuuid, supprime) in &resultat.versions_supprimees {
-        if *supprime { fuuids_supprimes += 1; };
-    }
-
-    // Determiner si on repond immediatement ou si on procede vers la transaction
-    if fuuids_supprimes > 0 {
-        // On execute la transaction pour supprimer les fichiers dans la base de donnes
-        debug!("commande_supprimer_orphelins Au moins une version supprimer (count: {}), executer la transaction", fuuids_supprimes);
-        sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
-    }
-
-    let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };
-    Ok(Some(middleware.build_reponse(reponse)?.0))
+    todo!("fix me")
+    // let resultat = trouver_orphelins_supprimer(middleware, &commande, session).await?;
+    // debug!("commande_supprimer_orphelins Versions supprimees : {:?}, fuuids a conserver : {:?}",
+    //     resultat.versions_supprimees, resultat.fuuids_a_conserver);
+    //
+    // let mut fuuids_supprimes = 0;
+    // for (fuuid, supprime) in &resultat.versions_supprimees {
+    //     if *supprime { fuuids_supprimes += 1; };
+    // }
+    //
+    // // Determiner si on repond immediatement ou si on procede vers la transaction
+    // if fuuids_supprimes > 0 {
+    //     // On execute la transaction pour supprimer les fichiers dans la base de donnes
+    //     debug!("commande_supprimer_orphelins Au moins une version supprimer (count: {}), executer la transaction", fuuids_supprimes);
+    //     sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
+    // }
+    //
+    // let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };
+    // Ok(Some(middleware.build_reponse(reponse)?.0))
 }
 
 async fn transmettre_cle_attachee<M>(middleware: &M, cle: Value)

@@ -426,7 +426,7 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
 
             // Extract information for background job if all fields present
             let job = if doc_fuuid.format.is_some() && doc_fuuid.nonce.is_some() {
-                let mimetype = doc_fuuid.mimetype.clone();
+                let mimetype = doc_fuuid.mimetype;
                 let format: &str = doc_fuuid.format.clone().expect("format").into();
                 let nonce = doc_fuuid.nonce.clone().expect("nonce");
                 let job = BackgroundJob::new(tuuid.to_owned(), fuuid, mimetype, &filehost_ids, cle_id, format, nonce);

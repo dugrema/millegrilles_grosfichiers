@@ -315,42 +315,42 @@ impl TryFrom<Document> for FichierDetail {
 pub struct DBFichierVersionDetail {
     #[serde(skip_serializing_if="Option::is_none")]
     pub nom: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub fuuid: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub tuuid: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub user_id: Option<String>,
+    pub fuuid: String,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub tuuid: Option<String>,
+    pub tuuids: Vec<String>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub user_id: Option<String>,
     pub mimetype: String,
     pub taille: usize,
-    #[serde(rename="dateFichier", default,
-    serialize_with = "optionepochseconds::serialize",
-    deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
-    pub date_fichier: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub height: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub width: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub duration: Option<f32>,
-    #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
-    pub video_codec: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub images: Option<HashMap<String, ImageDetail>>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub anime: Option<bool>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub video: Option<HashMap<String, TransactionAssocierVideoVersionDetail>>,
+    // #[serde(rename="dateFichier", default,
+    // serialize_with = "optionepochseconds::serialize",
+    // deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
+    // pub date_fichier: Option<DateTime<Utc>>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub height: Option<u32>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub width: Option<u32>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub duration: Option<f32>,
+    // #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
+    // pub video_codec: Option<String>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub images: Option<HashMap<String, ImageDetail>>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub anime: Option<bool>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub video: Option<HashMap<String, TransactionAssocierVideoVersionDetail>>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub flag_media_retry: Option<i32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub metadata: Option<DataChiffre>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub metadata: Option<DataChiffre>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub flag_media_traite: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub flag_video_traite: Option<bool>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub flag_index: Option<bool>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub flag_index: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -784,45 +784,46 @@ pub struct NodeFichierRepVersionCouranteOwned {
 pub struct NodeFichierVersionBorrowed<'a> {
     #[serde(borrow)]
     pub fuuid: &'a str,
-    pub tuuid: &'a str,
-    pub user_id: &'a str,
+    // pub tuuid: &'a str,
+    pub tuuids: Vec<&'a str>,
+    // pub user_id: &'a str,
     pub mimetype: &'a str,
-    pub metadata: DataChiffreBorrow<'a>,
+    // pub metadata: DataChiffreBorrow<'a>,
     pub taille: u64,
 
-    pub fuuids: Vec<&'a str>,
+    // pub fuuids: Vec<&'a str>,
     pub fuuids_reclames: Vec<&'a str>,
 
-    pub supprime: bool,
+    // pub supprime: bool,
     #[serde(with="mapstringepochseconds")]
     pub visites: HashMap<String, DateTime<Utc>>,
 
     // Champs optionnels media
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub height: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub width: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub duration: Option<f32>,
-    #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
-    pub video_codec: Option<&'a str>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub anime: Option<bool>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub images: Option<HashMap<&'a str, ImageDetail>>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub video: Option<HashMap<&'a str, TransactionAssocierVideoVersionDetail>>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub height: Option<u32>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub width: Option<u32>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub duration: Option<f32>,
+    // #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
+    // pub video_codec: Option<&'a str>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub anime: Option<bool>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub images: Option<HashMap<&'a str, ImageDetail>>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub video: Option<HashMap<&'a str, TransactionAssocierVideoVersionDetail>>,
 
-    #[serde(skip_serializing_if="Option::is_none")]
-    flag_media: Option<&'a str>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // flag_media: Option<&'a str>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub flag_media_retry: Option<i32>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub flag_media_traite: Option<bool>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub flag_video_traite: Option<bool>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub flag_index: Option<bool>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub flag_index: Option<bool>,
 
     // Information de chiffrage symmetrique (depuis 2024.3.0)
     #[serde(skip_serializing_if="Option::is_none")]

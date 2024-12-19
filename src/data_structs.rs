@@ -18,8 +18,8 @@ pub struct MediaOwnedRow {
     #[serde(rename="_mg-derniere-modification", with="chrono_datetime_as_bson_datetime")]
     pub derniere_modification: DateTime<Utc>,
 
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub mimetype: Option<String>,
+    // #[serde(skip_serializing_if="Option::is_none")]
+    // pub mimetype: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub height: Option<u32>,
     #[serde(skip_serializing_if="Option::is_none")]

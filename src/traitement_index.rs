@@ -77,78 +77,78 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-/// Format de document pret a etre indexe
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct InfoDocumentIndexation {
-    tuuid: String,
-    fuuid: String,
-    doc: DocumentIndexation,
-
-    // Info permission dechiffrage
-    permission_duree: Option<u32>,
-    permission_hachage_bytes: Option<Vec<String>>,
-}
+// /// Format de document pret a etre indexe
+// #[derive(Clone, Debug, Serialize, Deserialize)]
+// pub struct InfoDocumentIndexation {
+//     tuuid: String,
+//     fuuid: String,
+//     doc: DocumentIndexation,
+//
+//     // Info permission dechiffrage
+//     permission_duree: Option<u32>,
+//     permission_hachage_bytes: Option<Vec<String>>,
+// }
 
 /// Contenu et mots-cles pour l'indexation d'un document
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DocumentIndexation {
-    nom: Option<String>,    // Nom du fichier
-    mimetype: String,
-    date_v_courante: Option<DateTime<Utc>>,
-
-    // Champs qui proviennent du fichierRep (courant uniquement)
-    titre: Option<HashMap<String, String>>,          // Dictionnaire combine
-    description: Option<HashMap<String, String>>,    // Dictionnaire combine
-    cuuids: Option<Vec<String>>,
-    userid: Option<String>,
-}
-
-impl DocumentIndexation {
-    fn merge_fichier(&mut self, fichier: &FichierDetail) {
-        self.titre = fichier.titre.clone();
-        self.description = fichier.description.clone();
-        self.userid = fichier.user_id.clone();
-        self.cuuids = fichier.path_cuuids.clone();
-    }
-}
-
-impl TryFrom<FichierDetail> for DocumentIndexation {
-    type Error = String;
-
-    fn try_from(value: FichierDetail) -> Result<Self, Self::Error> {
-
-        let version_courante = match value.version_courante {
-            Some(v) => v,
-            None => Err(format!("DocumentIndexation.try_from Erreur mapping fichier, version_courante manquante"))?
-        };
-
-        Ok(DocumentIndexation {
-            nom: value.nom.clone(),
-            mimetype: version_courante.mimetype.clone(),
-            date_v_courante: version_courante.date_fichier.clone(),
-            titre: value.titre,
-            description: value.description,
-            cuuids: value.path_cuuids,
-            userid: value.user_id,
-        })
-    }
-}
-
-impl TryFrom<DBFichierVersionDetail> for DocumentIndexation {
-    type Error = String;
-
-    fn try_from(value: DBFichierVersionDetail) -> Result<Self, Self::Error> {
-        Ok(DocumentIndexation {
-            nom: value.nom.clone(),
-            mimetype: value.mimetype.clone(),
-            date_v_courante: value.date_fichier.clone(),
-            titre: None,
-            description: None,
-            cuuids: None,
-            userid: None,
-        })
-    }
-}
+// #[derive(Clone, Debug, Serialize, Deserialize)]
+// pub struct DocumentIndexation {
+//     nom: Option<String>,    // Nom du fichier
+//     mimetype: String,
+//     date_v_courante: Option<DateTime<Utc>>,
+//
+//     // Champs qui proviennent du fichierRep (courant uniquement)
+//     titre: Option<HashMap<String, String>>,          // Dictionnaire combine
+//     description: Option<HashMap<String, String>>,    // Dictionnaire combine
+//     cuuids: Option<Vec<String>>,
+//     userid: Option<String>,
+// }
+//
+// impl DocumentIndexation {
+//     fn merge_fichier(&mut self, fichier: &FichierDetail) {
+//         self.titre = fichier.titre.clone();
+//         self.description = fichier.description.clone();
+//         self.userid = fichier.user_id.clone();
+//         self.cuuids = fichier.path_cuuids.clone();
+//     }
+// }
+//
+// impl TryFrom<FichierDetail> for DocumentIndexation {
+//     type Error = String;
+//
+//     fn try_from(value: FichierDetail) -> Result<Self, Self::Error> {
+//
+//         let version_courante = match value.version_courante {
+//             Some(v) => v,
+//             None => Err(format!("DocumentIndexation.try_from Erreur mapping fichier, version_courante manquante"))?
+//         };
+//
+//         Ok(DocumentIndexation {
+//             nom: value.nom.clone(),
+//             mimetype: version_courante.mimetype.clone(),
+//             date_v_courante: version_courante.date_fichier.clone(),
+//             titre: value.titre,
+//             description: value.description,
+//             cuuids: value.path_cuuids,
+//             userid: value.user_id,
+//         })
+//     }
+// }
+//
+// impl TryFrom<DBFichierVersionDetail> for DocumentIndexation {
+//     type Error = String;
+//
+//     fn try_from(value: DBFichierVersionDetail) -> Result<Self, Self::Error> {
+//         Ok(DocumentIndexation {
+//             nom: value.nom.clone(),
+//             mimetype: value.mimetype.clone(),
+//             date_v_courante: value.date_fichier.clone(),
+//             titre: None,
+//             description: None,
+//             cuuids: None,
+//             userid: None,
+//         })
+//     }
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ParametresIndex {

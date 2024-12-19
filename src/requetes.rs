@@ -1396,108 +1396,108 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnai
     Ok(None)  // Aucune reponse a transmettre, c'est le maitre des cles qui va repondre
 }
 
-async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHitsDetail>, user_id: Option<String>)
-    -> Result<Vec<ResultatDocumentRecherche>, CommonError>
-    where M: MongoDao
-{
-    // Generer liste de tous les fichiers par version
-    let (resultat_par_fuuid, fuuids) = {
-        let mut map = HashMap::new();
-        let mut fuuids = Vec::new();
-        for r in &resultats {
-            map.insert(r.id_.as_str(), r);
-            fuuids.push(r.id_.clone());
-        }
-        (map, fuuids)
-    };
-
-    debug!("requete.mapper_fichiers_resultat resultat par fuuid : {:?}", resultat_par_fuuid);
-
-    let mut fichiers_par_tuuid = {
-        let mut filtre = doc! { CHAMP_FUUIDS: {"$in": &fuuids} };
-        if user_id.is_some() {
-            filtre.insert(String::from("user_id"), user_id.expect("user_id"));
-        }
-        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-        let mut curseur = collection.find(filtre, None).await?;
-
-        let mut fichiers: HashMap<String, Vec<ResultatDocumentRecherche>> = HashMap::new();
-        while let Some(c) = curseur.next().await {
-            // let fichier: DBFichierVersionDetail = convertir_bson_deserializable(c?)?;
-            let fcurseur = c?;
-            let fichier = mapper_fichier_db(fcurseur)?;
-
-            if fichier.fuuid_v_courante.is_none() {
-                warn!("Fichier tuuid={} sans fuuid_v_courante", fichier.tuuid);
-                continue  // Skip le mapping
-            }
-
-            let fuuid = match fichier.fuuid_v_courante.as_ref() {
-                Some(f) => f.to_owned(),
-                None => {
-                    warn!("mapper_fichiers_resultat Erreur mapping fichier tuuid={} sans fuuid", fichier.tuuid);
-                    continue;
-                }
-            };
-
-            let resultat = resultat_par_fuuid.get(fuuid.as_str()).expect("resultat");
-            // let fichier_resultat = ResultatDocumentRecherche::new(fichier, *resultat)?;
-            let fichier_resultat = match ResultatDocumentRecherche::new_fichier(fichier, *resultat) {
-                Ok(fichier_resultat) => fichier_resultat,
-                Err(e) => {
-                    warn!("mapper_fichiers_resultat Erreur mapping fichier fuuid={}: {:?}", fuuid, e);
-                    continue  // Skip le mapping
-                }
-            };
-            let tuuid = fichier_resultat.tuuid.clone();
-            match fichiers.get_mut(&tuuid) {
-                Some(mut inner) => { inner.push(fichier_resultat); },
-                None => { fichiers.insert(tuuid, vec![fichier_resultat]); }
-            }
-
-        }
-
-        fichiers
-    };
-
-    // Charger les details "courants" pour les fichiers
-    {
-        let tuuids: Vec<String> = fichiers_par_tuuid.keys().map(|k| k.clone()).collect();
-        let filtre = doc! { CHAMP_TUUID: {"$in": tuuids} };
-        let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-        let mut curseur = collection.find(filtre, None).await?;
-        while let Some(c) = curseur.next().await {
-            let fichier: FichierDetail = convertir_bson_deserializable(c?)?;
-            let tuuid = &fichier.tuuid;
-            if let Some(mut fichier_resultat) = fichiers_par_tuuid.get_mut(tuuid) {
-                for f in fichier_resultat {
-                    f.nom = fichier.nom.clone();
-                    f.titre = fichier.titre.clone();
-                    f.description = fichier.description.clone();
-                    f.date_creation = fichier.date_creation.clone();
-                    f.date_modification = fichier.derniere_modification.clone();
-                }
-            }
-        }
-    };
-
-    // Generer liste de fichiers en reponse, garder l'ordre des fuuid
-    let mut fichiers_par_fuuid: HashMap<String, ResultatDocumentRecherche> = HashMap::new();
-    for (_, vec_fichiers) in fichiers_par_tuuid.into_iter() {
-        for f in vec_fichiers {
-            fichiers_par_fuuid.insert(f.fuuid.clone(), f);
-        }
-    }
-
-    let mut liste_reponse = Vec::new();
-    for fuuid in &fuuids {
-        if let Some(f) = fichiers_par_fuuid.remove(fuuid) {
-            liste_reponse.push(f);
-        }
-    }
-
-    Ok(liste_reponse)
-}
+// async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHitsDetail>, user_id: Option<String>)
+//     -> Result<Vec<ResultatDocumentRecherche>, CommonError>
+//     where M: MongoDao
+// {
+//     // Generer liste de tous les fichiers par version
+//     let (resultat_par_fuuid, fuuids) = {
+//         let mut map = HashMap::new();
+//         let mut fuuids = Vec::new();
+//         for r in &resultats {
+//             map.insert(r.id_.as_str(), r);
+//             fuuids.push(r.id_.clone());
+//         }
+//         (map, fuuids)
+//     };
+//
+//     debug!("requete.mapper_fichiers_resultat resultat par fuuid : {:?}", resultat_par_fuuid);
+//
+//     let mut fichiers_par_tuuid = {
+//         let mut filtre = doc! { CHAMP_FUUIDS: {"$in": &fuuids} };
+//         if user_id.is_some() {
+//             filtre.insert(String::from("user_id"), user_id.expect("user_id"));
+//         }
+//         let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+//         let mut curseur = collection.find(filtre, None).await?;
+//
+//         let mut fichiers: HashMap<String, Vec<ResultatDocumentRecherche>> = HashMap::new();
+//         while let Some(c) = curseur.next().await {
+//             // let fichier: DBFichierVersionDetail = convertir_bson_deserializable(c?)?;
+//             let fcurseur = c?;
+//             let fichier = mapper_fichier_db(fcurseur)?;
+//
+//             if fichier.fuuid_v_courante.is_none() {
+//                 warn!("Fichier tuuid={} sans fuuid_v_courante", fichier.tuuid);
+//                 continue  // Skip le mapping
+//             }
+//
+//             let fuuid = match fichier.fuuid_v_courante.as_ref() {
+//                 Some(f) => f.to_owned(),
+//                 None => {
+//                     warn!("mapper_fichiers_resultat Erreur mapping fichier tuuid={} sans fuuid", fichier.tuuid);
+//                     continue;
+//                 }
+//             };
+//
+//             let resultat = resultat_par_fuuid.get(fuuid.as_str()).expect("resultat");
+//             // let fichier_resultat = ResultatDocumentRecherche::new(fichier, *resultat)?;
+//             let fichier_resultat = match ResultatDocumentRecherche::new_fichier(fichier, *resultat) {
+//                 Ok(fichier_resultat) => fichier_resultat,
+//                 Err(e) => {
+//                     warn!("mapper_fichiers_resultat Erreur mapping fichier fuuid={}: {:?}", fuuid, e);
+//                     continue  // Skip le mapping
+//                 }
+//             };
+//             let tuuid = fichier_resultat.tuuid.clone();
+//             match fichiers.get_mut(&tuuid) {
+//                 Some(mut inner) => { inner.push(fichier_resultat); },
+//                 None => { fichiers.insert(tuuid, vec![fichier_resultat]); }
+//             }
+//
+//         }
+//
+//         fichiers
+//     };
+//
+//     // Charger les details "courants" pour les fichiers
+//     {
+//         let tuuids: Vec<String> = fichiers_par_tuuid.keys().map(|k| k.clone()).collect();
+//         let filtre = doc! { CHAMP_TUUID: {"$in": tuuids} };
+//         let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+//         let mut curseur = collection.find(filtre, None).await?;
+//         while let Some(c) = curseur.next().await {
+//             let fichier: FichierDetail = convertir_bson_deserializable(c?)?;
+//             let tuuid = &fichier.tuuid;
+//             if let Some(mut fichier_resultat) = fichiers_par_tuuid.get_mut(tuuid) {
+//                 for f in fichier_resultat {
+//                     f.nom = fichier.nom.clone();
+//                     f.titre = fichier.titre.clone();
+//                     f.description = fichier.description.clone();
+//                     f.date_creation = fichier.date_creation.clone();
+//                     f.date_modification = fichier.derniere_modification.clone();
+//                 }
+//             }
+//         }
+//     };
+//
+//     // Generer liste de fichiers en reponse, garder l'ordre des fuuid
+//     let mut fichiers_par_fuuid: HashMap<String, ResultatDocumentRecherche> = HashMap::new();
+//     for (_, vec_fichiers) in fichiers_par_tuuid.into_iter() {
+//         for f in vec_fichiers {
+//             fichiers_par_fuuid.insert(f.fuuid.clone(), f);
+//         }
+//     }
+//
+//     let mut liste_reponse = Vec::new();
+//     for fuuid in &fuuids {
+//         if let Some(f) = fichiers_par_fuuid.remove(fuuid) {
+//             liste_reponse.push(f);
+//         }
+//     }
+//
+//     Ok(liste_reponse)
+// }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ResultatDocumentRecherche {
@@ -1525,101 +1525,101 @@ struct ResultatDocumentRecherche {
     score: f32,
 }
 
-impl ResultatDocumentRecherche {
-    fn new(value: DBFichierVersionDetail, resultat: &ResultatHitsDetail) -> Result<Self, CommonError> {
-
-        let (thumb_hachage_bytes, thumb_data) = match value.images {
-            Some(mut images) => {
-                match images.remove("thumb") {
-                    Some(inner) => {
-                        (Some(inner.hachage), inner.data_chiffre)
-                    },
-                    None => (None, None)
-                }
-            },
-            None => (None, None)
-        };
-
-        Ok(ResultatDocumentRecherche {
-            tuuid: value.tuuid.expect("tuuid"),
-            fuuid: value.fuuid.expect("fuuid"),
-            nom: value.nom.clone(),
-            supprime: None,
-            archive: None,
-            nom_version: value.nom,
-            taille: value.taille as u64,
-            mimetype: value.mimetype,
-            date_creation: None,
-            date_modification: None,
-            date_version: value.date_fichier,
-            titre: None,
-            description: None,
-
-            version_courante: None,
-
-            // Thumbnail
-            thumb_hachage_bytes,
-            thumb_data,
-
-            // Info recherche
-            score: resultat.score,
-        })
-    }
-
-    fn new_fichier(value: FichierDetail, resultat: &ResultatHitsDetail) -> Result<Self, CommonError> {
-
-        let (thumb_hachage_bytes, thumb_data, mimetype, taille) = match &value.version_courante {
-            Some(v) => {
-                let taille = v.taille as u64;
-                let mimetype = v.mimetype.to_owned();
-                match &v.images {
-                    Some(images) => {
-                        match images.get("thumb") {
-                            Some(inner) => {
-                                (Some(inner.hachage.clone()), inner.data_chiffre.clone(), mimetype, taille)
-                            },
-                            None => (None, None, mimetype, taille)
-                        }
-                    },
-                    None => (None, None, mimetype, taille)
-                }
-            },
-            None => (None, None, String::from("application/data"), 0)
-        };
-
-        let fuuid = match value.fuuid_v_courante { Some(t) => t, None => Err(format!("Resultat sans tuuid"))? };
-
-        let date_version = match value.derniere_modification {
-            Some(d) => d,
-            None => Err(format!("Resultat sans date de derniere_modification"))?
-        };
-
-        Ok(ResultatDocumentRecherche {
-            tuuid: value.tuuid,
-            fuuid,
-            nom: value.nom.clone(),
-            supprime: value.supprime,
-            archive: value.archive,
-            nom_version: value.nom,
-            taille,
-            mimetype,
-            date_creation: value.date_creation,
-            date_modification: Some(date_version.clone()),
-            date_version: Some(date_version),
-            titre: value.titre,
-            description: value.description,
-
-            version_courante: value.version_courante,
-
-            // Thumbnail
-            thumb_hachage_bytes,
-            thumb_data,
-
-            // Info recherche
-            score: resultat.score,
-        })
-    }
-}
+// impl ResultatDocumentRecherche {
+//     fn new(value: DBFichierVersionDetail, resultat: &ResultatHitsDetail) -> Result<Self, CommonError> {
+//
+//         let (thumb_hachage_bytes, thumb_data) = match value.images {
+//             Some(mut images) => {
+//                 match images.remove("thumb") {
+//                     Some(inner) => {
+//                         (Some(inner.hachage), inner.data_chiffre)
+//                     },
+//                     None => (None, None)
+//                 }
+//             },
+//             None => (None, None)
+//         };
+//
+//         Ok(ResultatDocumentRecherche {
+//             tuuid: value.tuuid.expect("tuuid"),
+//             fuuid: value.fuuid.expect("fuuid"),
+//             nom: value.nom.clone(),
+//             supprime: None,
+//             archive: None,
+//             nom_version: value.nom,
+//             taille: value.taille as u64,
+//             mimetype: value.mimetype,
+//             date_creation: None,
+//             date_modification: None,
+//             date_version: value.date_fichier,
+//             titre: None,
+//             description: None,
+//
+//             version_courante: None,
+//
+//             // Thumbnail
+//             thumb_hachage_bytes,
+//             thumb_data,
+//
+//             // Info recherche
+//             score: resultat.score,
+//         })
+//     }
+//
+//     fn new_fichier(value: FichierDetail, resultat: &ResultatHitsDetail) -> Result<Self, CommonError> {
+//
+//         let (thumb_hachage_bytes, thumb_data, mimetype, taille) = match &value.version_courante {
+//             Some(v) => {
+//                 let taille = v.taille as u64;
+//                 let mimetype = v.mimetype.to_owned();
+//                 match &v.images {
+//                     Some(images) => {
+//                         match images.get("thumb") {
+//                             Some(inner) => {
+//                                 (Some(inner.hachage.clone()), inner.data_chiffre.clone(), mimetype, taille)
+//                             },
+//                             None => (None, None, mimetype, taille)
+//                         }
+//                     },
+//                     None => (None, None, mimetype, taille)
+//                 }
+//             },
+//             None => (None, None, String::from("application/data"), 0)
+//         };
+//
+//         let fuuid = match value.fuuid_v_courante { Some(t) => t, None => Err(format!("Resultat sans tuuid"))? };
+//
+//         let date_version = match value.derniere_modification {
+//             Some(d) => d,
+//             None => Err(format!("Resultat sans date de derniere_modification"))?
+//         };
+//
+//         Ok(ResultatDocumentRecherche {
+//             tuuid: value.tuuid,
+//             fuuid,
+//             nom: value.nom.clone(),
+//             supprime: value.supprime,
+//             archive: value.archive,
+//             nom_version: value.nom,
+//             taille,
+//             mimetype,
+//             date_creation: value.date_creation,
+//             date_modification: Some(date_version.clone()),
+//             date_version: Some(date_version),
+//             titre: value.titre,
+//             description: value.description,
+//
+//             version_courante: value.version_courante,
+//
+//             // Thumbnail
+//             thumb_hachage_bytes,
+//             thumb_data,
+//
+//             // Info recherche
+//             score: resultat.score,
+//         })
+//     }
+// }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RequeteDocumentsParTuuids {

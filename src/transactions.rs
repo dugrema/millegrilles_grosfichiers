@@ -1071,138 +1071,139 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
     -> Result<(), CommonError>
     where M: MongoDao, U: AsRef<str>, C: AsRef<str>, T: ToString, S: AsRef<str>, D: AsRef<str>
 {
-    let uuid_transaction = uuid_transaction.as_ref();
-    let user_id = user_id.as_ref();
-    let cuuid = cuuid.as_ref();
-    let user_id_destination = match user_id_destination.as_ref() {
-        Some(inner) => inner.as_ref(),
-        None => user_id
-    };
-    let mut tuuids_remaining: Vec<CopieTuuidVersCuuid> = tuuids.iter().map(|t| {
-        CopieTuuidVersCuuid { tuuid_original: t.to_string(), cuuid_destination: cuuid.to_owned() }
-    }).collect();
-
-    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let collection_nodes = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
-        NOM_COLLECTION_FICHIERS_REP)?;
-
-    loop {
-        let fichier_rep_tuuid = match tuuids_remaining.pop() {
-            Some(inner) => inner,
-            None => { break; }  // Termine
-        };
-
-        let filtre = doc! {
-            CHAMP_TUUID: &fichier_rep_tuuid.tuuid_original,
-            CHAMP_USER_ID: user_id,
-        };
-        let mut curseur = collection_nodes.find(filtre, None).await?;
-        if curseur.advance().await? {
-            let mut fichier_rep = curseur.deserialize_current()?;
-            let type_node = TypeNode::try_from(fichier_rep.type_node)?;
-            let tuuid_src = fichier_rep.tuuid.to_owned();
-
-            debug!("dupliquer_structure_repertoires Copier fichier_rep {} vers {}", fichier_rep_tuuid.tuuid_original, fichier_rep_tuuid.cuuid_destination);
-
-            // Creer nouveau tuuid unique pour le fichier/repertoire a dupliquer
-            let nouveau_tuuid_str = format!("{}/{}/{}", uuid_transaction, &fichier_rep_tuuid.cuuid_destination, fichier_rep.tuuid);
-            let nouveau_tuuid_multihash = hacher_bytes(nouveau_tuuid_str.into_bytes().as_slice(), Some(Code::Blake2s256), Some(Base::Base16Lower));
-            let nouveau_tuuid = (&nouveau_tuuid_multihash[9..]).to_string();
-            debug!("dupliquer_structure_repertoires Nouveau tuuid : {:?}", nouveau_tuuid);
-
-            // Remplacer le tuuid
-            fichier_rep.tuuid = nouveau_tuuid.as_str();
-
-            // Recuperer le path du cuuid destination, remplacer path_cuuids
-            let path_cuuids_option = match get_path_cuuid(middleware, &fichier_rep_tuuid.cuuid_destination, session).await {
-                Ok(inner) => inner,
-                Err(e) => Err(format!("transactions.dupliquer_structure_repertoires get_path_cuuid : {:?}", e))?
-            };
-
-            match path_cuuids_option.as_ref() {
-                Some(inner) => {
-                    fichier_rep.path_cuuids = Some(inner.iter().map(|s| s.as_str()).collect());
-                },
-                None => {
-                    fichier_rep.path_cuuids = None;
-                }
-            };
-
-            // collection.insert_one_with_session(doc_repertoire, None).await?;
-            let filtre = doc! {
-                CHAMP_TUUID: &fichier_rep.tuuid, CHAMP_USER_ID: &user_id_destination,
-                // CHAMP_SUPPRIME: false, CHAMP_SUPPRIME_INDIRECT: false,
-            };
-            let mut set_ops = convertir_to_bson(&fichier_rep)?;
-            set_ops.insert(CHAMP_CREATION, Utc::now());
-            if user_id_destination != user_id {
-                // Changer le user_id (copie de repertoire partage)
-                set_ops.insert(CHAMP_USER_ID, user_id_destination);
-            }
-
-            let ops = doc! {
-                "$set": {CHAMP_FLAG_INDEX: false},
-                "$setOnInsert": set_ops,
-                "$currentDate": { CHAMP_MODIFICATION: true }
-            };
-            let options = UpdateOptions::builder().upsert(true).build();
-            let result = collection_nodes.update_one_with_session(filtre, ops, options, session).await?;
-            if result.upserted_id.is_none() {
-                info!("dupliquer_structure_repertoires Erreur, aucune valeur upserted pour tuuid {}", tuuid_src);
-            }
-
-            match type_node {
-                TypeNode::Fichier => {
-                    if user_id_destination != user_id {
-                        // Copier les versions des fichiers vers le user_id destination
-                        let filtre = doc!{ CHAMP_TUUID: &tuuid_src, CHAMP_USER_ID: &user_id };
-                        let collection_versions = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(
-                            NOM_COLLECTION_VERSIONS)?;
-                        let mut curseur = collection_versions.find_with_session(filtre, None, session).await?;
-                        if curseur.advance(session).await? {
-                            let mut row = curseur.deserialize_current()?;
-                            row.user_id = user_id_destination;
-                            row.tuuid = nouveau_tuuid.as_str();
-
-                            let filtre = doc! {
-                                // Utiliser le fuuid pour eviter duplication dans la destination
-                                CHAMP_FUUID: &row.fuuid,
-                                CHAMP_USER_ID: user_id_destination
-                            };
-                            let mut set_ops = convertir_to_bson(row)?;
-                            set_ops.insert(CHAMP_CREATION, Utc::now());
-
-                            let ops = doc!{
-                                "$setOnInsert": set_ops,
-                                "$currentDate": {CHAMP_MODIFICATION: true}
-                            };
-                            let options = UpdateOptions::builder().upsert(true).build();
-                            collection_versions.update_one_with_session(filtre, ops, options, session).await?;
-                        } else {
-                            warn!{"dupliquer_structure_repertoires Version fichier src tuuid {} introuvable, skip", tuuid_src}
-                        }
-                    }
-                },
-                TypeNode::Collection | TypeNode::Repertoire => {
-                    // Trouver les sous-repertoires, traiter individuellement
-                    let filtre_ajout_cuuid = doc! { format!("{}.0", CHAMP_PATH_CUUIDS): &tuuid_src };
-                    debug!("dupliquer_structure_repertoires filtre_ajout_cuuid : {:?}", filtre_ajout_cuuid);
-                    let mut curseur = collection_nodes.find_with_session(filtre_ajout_cuuid, None, session).await?;
-                    while curseur.advance(session).await? {
-                        let sous_document = curseur.deserialize_current()?;
-                        let copie_tuuid = CopieTuuidVersCuuid {
-                            tuuid_original: sous_document.tuuid.to_owned(),
-                            cuuid_destination: nouveau_tuuid.clone()
-                        };
-                        debug!("dupliquer_structure_repertoires Parcourir sous-fichier/rep {:?}", copie_tuuid);
-                        tuuids_remaining.push(copie_tuuid);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
+    todo!("obsolete?")
+    // let uuid_transaction = uuid_transaction.as_ref();
+    // let user_id = user_id.as_ref();
+    // let cuuid = cuuid.as_ref();
+    // let user_id_destination = match user_id_destination.as_ref() {
+    //     Some(inner) => inner.as_ref(),
+    //     None => user_id
+    // };
+    // let mut tuuids_remaining: Vec<CopieTuuidVersCuuid> = tuuids.iter().map(|t| {
+    //     CopieTuuidVersCuuid { tuuid_original: t.to_string(), cuuid_destination: cuuid.to_owned() }
+    // }).collect();
+    //
+    // // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    // let collection_nodes = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
+    //     NOM_COLLECTION_FICHIERS_REP)?;
+    //
+    // loop {
+    //     let fichier_rep_tuuid = match tuuids_remaining.pop() {
+    //         Some(inner) => inner,
+    //         None => { break; }  // Termine
+    //     };
+    //
+    //     let filtre = doc! {
+    //         CHAMP_TUUID: &fichier_rep_tuuid.tuuid_original,
+    //         CHAMP_USER_ID: user_id,
+    //     };
+    //     let mut curseur = collection_nodes.find(filtre, None).await?;
+    //     if curseur.advance().await? {
+    //         let mut fichier_rep = curseur.deserialize_current()?;
+    //         let type_node = TypeNode::try_from(fichier_rep.type_node)?;
+    //         let tuuid_src = fichier_rep.tuuid.to_owned();
+    //
+    //         debug!("dupliquer_structure_repertoires Copier fichier_rep {} vers {}", fichier_rep_tuuid.tuuid_original, fichier_rep_tuuid.cuuid_destination);
+    //
+    //         // Creer nouveau tuuid unique pour le fichier/repertoire a dupliquer
+    //         let nouveau_tuuid_str = format!("{}/{}/{}", uuid_transaction, &fichier_rep_tuuid.cuuid_destination, fichier_rep.tuuid);
+    //         let nouveau_tuuid_multihash = hacher_bytes(nouveau_tuuid_str.into_bytes().as_slice(), Some(Code::Blake2s256), Some(Base::Base16Lower));
+    //         let nouveau_tuuid = (&nouveau_tuuid_multihash[9..]).to_string();
+    //         debug!("dupliquer_structure_repertoires Nouveau tuuid : {:?}", nouveau_tuuid);
+    //
+    //         // Remplacer le tuuid
+    //         fichier_rep.tuuid = nouveau_tuuid.as_str();
+    //
+    //         // Recuperer le path du cuuid destination, remplacer path_cuuids
+    //         let path_cuuids_option = match get_path_cuuid(middleware, &fichier_rep_tuuid.cuuid_destination, session).await {
+    //             Ok(inner) => inner,
+    //             Err(e) => Err(format!("transactions.dupliquer_structure_repertoires get_path_cuuid : {:?}", e))?
+    //         };
+    //
+    //         match path_cuuids_option.as_ref() {
+    //             Some(inner) => {
+    //                 fichier_rep.path_cuuids = Some(inner.iter().map(|s| s.as_str()).collect());
+    //             },
+    //             None => {
+    //                 fichier_rep.path_cuuids = None;
+    //             }
+    //         };
+    //
+    //         // collection.insert_one_with_session(doc_repertoire, None).await?;
+    //         let filtre = doc! {
+    //             CHAMP_TUUID: &fichier_rep.tuuid, CHAMP_USER_ID: &user_id_destination,
+    //             // CHAMP_SUPPRIME: false, CHAMP_SUPPRIME_INDIRECT: false,
+    //         };
+    //         let mut set_ops = convertir_to_bson(&fichier_rep)?;
+    //         set_ops.insert(CHAMP_CREATION, Utc::now());
+    //         if user_id_destination != user_id {
+    //             // Changer le user_id (copie de repertoire partage)
+    //             set_ops.insert(CHAMP_USER_ID, user_id_destination);
+    //         }
+    //
+    //         let ops = doc! {
+    //             "$set": {CHAMP_FLAG_INDEX: false},
+    //             "$setOnInsert": set_ops,
+    //             "$currentDate": { CHAMP_MODIFICATION: true }
+    //         };
+    //         let options = UpdateOptions::builder().upsert(true).build();
+    //         let result = collection_nodes.update_one_with_session(filtre, ops, options, session).await?;
+    //         if result.upserted_id.is_none() {
+    //             info!("dupliquer_structure_repertoires Erreur, aucune valeur upserted pour tuuid {}", tuuid_src);
+    //         }
+    //
+    //         match type_node {
+    //             TypeNode::Fichier => {
+    //                 if user_id_destination != user_id {
+    //                     // Copier les versions des fichiers vers le user_id destination
+    //                     let filtre = doc!{ CHAMP_TUUID: &tuuid_src, CHAMP_USER_ID: &user_id };
+    //                     let collection_versions = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(
+    //                         NOM_COLLECTION_VERSIONS)?;
+    //                     let mut curseur = collection_versions.find_with_session(filtre, None, session).await?;
+    //                     if curseur.advance(session).await? {
+    //                         let mut row = curseur.deserialize_current()?;
+    //                         row.user_id = user_id_destination;
+    //                         row.tuuid = nouveau_tuuid.as_str();
+    //
+    //                         let filtre = doc! {
+    //                             // Utiliser le fuuid pour eviter duplication dans la destination
+    //                             CHAMP_FUUID: &row.fuuid,
+    //                             CHAMP_USER_ID: user_id_destination
+    //                         };
+    //                         let mut set_ops = convertir_to_bson(row)?;
+    //                         set_ops.insert(CHAMP_CREATION, Utc::now());
+    //
+    //                         let ops = doc!{
+    //                             "$setOnInsert": set_ops,
+    //                             "$currentDate": {CHAMP_MODIFICATION: true}
+    //                         };
+    //                         let options = UpdateOptions::builder().upsert(true).build();
+    //                         collection_versions.update_one_with_session(filtre, ops, options, session).await?;
+    //                     } else {
+    //                         warn!{"dupliquer_structure_repertoires Version fichier src tuuid {} introuvable, skip", tuuid_src}
+    //                     }
+    //                 }
+    //             },
+    //             TypeNode::Collection | TypeNode::Repertoire => {
+    //                 // Trouver les sous-repertoires, traiter individuellement
+    //                 let filtre_ajout_cuuid = doc! { format!("{}.0", CHAMP_PATH_CUUIDS): &tuuid_src };
+    //                 debug!("dupliquer_structure_repertoires filtre_ajout_cuuid : {:?}", filtre_ajout_cuuid);
+    //                 let mut curseur = collection_nodes.find_with_session(filtre_ajout_cuuid, None, session).await?;
+    //                 while curseur.advance(session).await? {
+    //                     let sous_document = curseur.deserialize_current()?;
+    //                     let copie_tuuid = CopieTuuidVersCuuid {
+    //                         tuuid_original: sous_document.tuuid.to_owned(),
+    //                         cuuid_destination: nouveau_tuuid.clone()
+    //                     };
+    //                     debug!("dupliquer_structure_repertoires Parcourir sous-fichier/rep {:?}", copie_tuuid);
+    //                     tuuids_remaining.push(copie_tuuid);
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+    //
+    // Ok(())
 }
 
 /// Recalcule les path de cuuids de tous les sous-repertoires et fichiers sous un cuuid
@@ -1896,7 +1897,7 @@ async fn transaction_associer_conversions<M>(middleware: &M, transaction: Transa
             user_id,
             creation: Utc::now(),
             derniere_modification: Utc::now(),
-            mimetype: transaction_mappee.mimetype,
+            // mimetype: transaction_mappee.mimetype,
             height: transaction_mappee.height,
             width: transaction_mappee.width,
             duration: transaction_mappee.duration,
@@ -1909,7 +1910,7 @@ async fn transaction_associer_conversions<M>(middleware: &M, transaction: Transa
         };
 
         let mut set_ops = doc!{
-            "mimetype": media_row.mimetype,
+            // "mimetype": media_row.mimetype,
             "height": media_row.height,
             "width": media_row.width,
             "duration": media_row.duration,
@@ -2069,8 +2070,14 @@ async fn transaction_decrire_fichier<M>(middleware: &M, transaction: Transaction
         set_ops.insert("metadata", metadata_bson);
     }
 
-    if let Some(mimetype) = transaction_mappee.mimetype {
-        set_ops.insert("mimetype", &mimetype);
+    if let Some(mimetype) = transaction_mappee.mimetype.as_ref() {
+        set_ops.insert("mimetype", mimetype);
+
+        // Update versions
+        let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        let filtre = doc!{"tuuids": tuuid};
+        let ops = doc!{"$set": {"mimetype": mimetype}, "$currentDate": {CHAMP_MODIFICATION: true}};
+        collection_versions.update_many_with_session(filtre, ops, None, session).await?;
     }
 
     // Creer job indexation
@@ -2647,61 +2654,62 @@ pub struct ResultatVerifierOrphelins {
     pub fuuids_a_conserver: Vec<String>
 }
 
-pub async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &TransactionSupprimerOrphelins, session: &mut ClientSession)
-    -> Result<ResultatVerifierOrphelins, CommonError>
-    where M: MongoDao
-{
-    let mut versions_supprimees = HashMap::new();
-    let mut fuuids_a_conserver = Vec::new();
-
-    let fuuids_commande = {
-        let mut set_fuuids = HashSet::new();
-        for fuuid in &commande.fuuids { set_fuuids.insert(fuuid.as_str()); }
-        set_fuuids
-    };
-
-    // S'assurer qu'au moins un fuuid peut etre supprime.
-    // Extraire les fuuids qui doivent etre conserves
-    let filtre = doc! {
-        CHAMP_FUUIDS: {"$in": &commande.fuuids},
-    };
-    let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(
-        NOM_COLLECTION_VERSIONS)?;
-    debug!("trouver_orphelins_supprimer Filtre requete orphelins : {:?}", filtre);
-    let mut curseur = collection.find_with_session(filtre, None, session).await?;
-    while curseur.advance(session).await? {
-        let doc_mappe = curseur.deserialize_current()?;
-        let fuuids_version = &doc_mappe.fuuids;
-        let fuuid_fichier = doc_mappe.fuuid;
-        let supprime = doc_mappe.supprime;
-
-        if supprime {
-            // Verifier si l'original est l'orphelin a supprimer
-            if fuuids_commande.contains(fuuid_fichier) {
-                if !versions_supprimees.contains_key(fuuid_fichier) {
-                    // S'assurer de ne pas faire d'override si le fuuid est deja present avec false
-                    versions_supprimees.insert(fuuid_fichier.to_string(), true);
-                }
-            }
-        } else {
-            if fuuids_commande.contains(fuuid_fichier) {
-                // Override, s'assurer de ne pas supprimer le fichier si au moins 1 usager le conserve
-                versions_supprimees.insert(fuuid_fichier.to_string(), false);
-            }
-
-            // Pas supprime localement, ajouter tous les fuuids qui sont identifies comme orphelins
-            for fuuid in fuuids_version {
-                if fuuids_commande.contains(*fuuid) {
-                    fuuids_a_conserver.push(fuuid.to_string());
-                }
-            }
-        }
-    }
-
-    debug!("trouver_orphelins_supprimer Versions supprimees : {:?}, fuuids a conserver : {:?}", versions_supprimees, fuuids_a_conserver);
-    let resultat = ResultatVerifierOrphelins { versions_supprimees, fuuids_a_conserver };
-    Ok(resultat)
-}
+// pub async fn trouver_orphelins_supprimer<M>(middleware: &M, commande: &TransactionSupprimerOrphelins, session: &mut ClientSession)
+//     -> Result<ResultatVerifierOrphelins, CommonError>
+//     where M: MongoDao
+// {
+//     let mut versions_supprimees = HashMap::new();
+//     let mut fuuids_a_conserver = Vec::new();
+//
+//     let fuuids_commande = {
+//         let mut set_fuuids = HashSet::new();
+//         for fuuid in &commande.fuuids { set_fuuids.insert(fuuid.as_str()); }
+//         set_fuuids
+//     };
+//
+//     // S'assurer qu'au moins un fuuid peut etre supprime.
+//     // Extraire les fuuids qui doivent etre conserves
+//     let filtre = doc! {
+//         CHAMP_FUUIDS: {"$in": &commande.fuuids},
+//     };
+//     let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(
+//         NOM_COLLECTION_VERSIONS)?;
+//     debug!("trouver_orphelins_supprimer Filtre requete orphelins : {:?}", filtre);
+//     let mut curseur = collection.find_with_session(filtre, None, session).await?;
+//     while curseur.advance(session).await? {
+//         let doc_mappe = curseur.deserialize_current()?;
+//         // let fuuids_version = &doc_mappe.fuuids;
+//         let fuuid_fichier = doc_mappe.fuuid;
+//         // let supprime = doc_mappe.supprime;
+//         let supprime = doc_mappe.tuuids.is_empty();
+//
+//         if supprime {
+//             // Verifier si l'original est l'orphelin a supprimer
+//             if fuuids_commande.contains(fuuid_fichier) {
+//                 if !versions_supprimees.contains_key(fuuid_fichier) {
+//                     // S'assurer de ne pas faire d'override si le fuuid est deja present avec false
+//                     versions_supprimees.insert(fuuid_fichier.to_string(), true);
+//                 }
+//             }
+//         } else {
+//             if fuuids_commande.contains(fuuid_fichier) {
+//                 // Override, s'assurer de ne pas supprimer le fichier si au moins 1 usager le conserve
+//                 versions_supprimees.insert(fuuid_fichier.to_string(), false);
+//             }
+//
+//             // Pas supprime localement, ajouter tous les fuuids qui sont identifies comme orphelins
+//             for fuuid in fuuids_version {
+//                 if fuuids_commande.contains(*fuuid) {
+//                     fuuids_a_conserver.push(fuuid.to_string());
+//                 }
+//             }
+//         }
+//     }
+//
+//     debug!("trouver_orphelins_supprimer Versions supprimees : {:?}, fuuids a conserver : {:?}", versions_supprimees, fuuids_a_conserver);
+//     let resultat = ResultatVerifierOrphelins { versions_supprimees, fuuids_a_conserver };
+//     Ok(resultat)
+// }
 
 async fn transaction_supprimer_orphelins<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
@@ -2720,39 +2728,40 @@ async fn traiter_transaction_supprimer_orphelins<M>(middleware: &M, transaction:
     where
         M: GenerateurMessages + MongoDao
 {
-    let resultat = trouver_orphelins_supprimer(middleware, &transaction, session).await?;
-
-    let collection_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    for (fuuid, supprimer) in resultat.versions_supprimees {
-        if supprimer {
-            debug!("traiter_transaction_supprimer_orphelins Supprimer fuuid {}", fuuid);
-            let filtre_rep = doc! { CHAMP_FUUIDS_VERSIONS: &fuuid };
-            let ops = doc! {
-                "$pull": { CHAMP_FUUIDS_VERSIONS: &fuuid },
-                "$currentDate": { CHAMP_MODIFICATION: true }
-            };
-            collection_rep.update_many_with_session(filtre_rep, ops, None, session).await?;
-
-            let filtre_version = doc! { CHAMP_FUUID: &fuuid, CHAMP_SUPPRIME: true };
-            collection_versions.delete_many_with_session(filtre_version, None, session).await?;
-        }
-    }
-
-    if middleware.get_mode_regeneration() {
-        session.commit_transaction().await?;
-        start_transaction_regeneration(session).await?;
-    }
-
-    // Nettoyage fichiers sans versions
-    let filtre_rep_vide = doc! {
-        CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
-        format!("{}.0", CHAMP_FUUIDS_VERSIONS): {"$exists": false}
-    };
-    collection_rep.delete_many_with_session(filtre_rep_vide, None, session).await?;
-
-    let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };
-    Ok(Some(middleware.build_reponse(reponse)?.0))
+    todo!("fix me")
+    // let resultat = trouver_orphelins_supprimer(middleware, &transaction, session).await?;
+    //
+    // let collection_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    // let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    // for (fuuid, supprimer) in resultat.versions_supprimees {
+    //     if supprimer {
+    //         debug!("traiter_transaction_supprimer_orphelins Supprimer fuuid {}", fuuid);
+    //         let filtre_rep = doc! { CHAMP_FUUIDS_VERSIONS: &fuuid };
+    //         let ops = doc! {
+    //             "$pull": { CHAMP_FUUIDS_VERSIONS: &fuuid },
+    //             "$currentDate": { CHAMP_MODIFICATION: true }
+    //         };
+    //         collection_rep.update_many_with_session(filtre_rep, ops, None, session).await?;
+    //
+    //         let filtre_version = doc! { CHAMP_FUUID: &fuuid, CHAMP_SUPPRIME: true };
+    //         collection_versions.delete_many_with_session(filtre_version, None, session).await?;
+    //     }
+    // }
+    //
+    // if middleware.get_mode_regeneration() {
+    //     session.commit_transaction().await?;
+    //     start_transaction_regeneration(session).await?;
+    // }
+    //
+    // // Nettoyage fichiers sans versions
+    // let filtre_rep_vide = doc! {
+    //     CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
+    //     format!("{}.0", CHAMP_FUUIDS_VERSIONS): {"$exists": false}
+    // };
+    // collection_rep.delete_many_with_session(filtre_rep_vide, None, session).await?;
+    //
+    // let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };
+    // Ok(Some(middleware.build_reponse(reponse)?.0))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -3095,7 +3104,7 @@ async fn copy_media_file<M>(middleware: &M, session: &mut ClientSession, user_id
 
         let mut set_on_insert = doc! {
             CHAMP_CREATION: Utc::now(),
-            "mimetype": row.mimetype,
+            // "mimetype": row.mimetype,
             "height": row.height,
             "width": row.width,
             "duration": row.duration,
