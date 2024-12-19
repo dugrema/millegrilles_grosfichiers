@@ -2728,40 +2728,37 @@ async fn traiter_transaction_supprimer_orphelins<M>(middleware: &M, transaction:
     where
         M: GenerateurMessages + MongoDao
 {
-    todo!("fix me")
-    // let resultat = trouver_orphelins_supprimer(middleware, &transaction, session).await?;
-    //
-    // let collection_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    // let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    // for (fuuid, supprimer) in resultat.versions_supprimees {
-    //     if supprimer {
-    //         debug!("traiter_transaction_supprimer_orphelins Supprimer fuuid {}", fuuid);
-    //         let filtre_rep = doc! { CHAMP_FUUIDS_VERSIONS: &fuuid };
-    //         let ops = doc! {
-    //             "$pull": { CHAMP_FUUIDS_VERSIONS: &fuuid },
-    //             "$currentDate": { CHAMP_MODIFICATION: true }
-    //         };
-    //         collection_rep.update_many_with_session(filtre_rep, ops, None, session).await?;
-    //
-    //         let filtre_version = doc! { CHAMP_FUUID: &fuuid, CHAMP_SUPPRIME: true };
-    //         collection_versions.delete_many_with_session(filtre_version, None, session).await?;
-    //     }
-    // }
-    //
-    // if middleware.get_mode_regeneration() {
-    //     session.commit_transaction().await?;
-    //     start_transaction_regeneration(session).await?;
-    // }
-    //
-    // // Nettoyage fichiers sans versions
-    // let filtre_rep_vide = doc! {
-    //     CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
-    //     format!("{}.0", CHAMP_FUUIDS_VERSIONS): {"$exists": false}
-    // };
-    // collection_rep.delete_many_with_session(filtre_rep_vide, None, session).await?;
-    //
-    // let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };
-    // Ok(Some(middleware.build_reponse(reponse)?.0))
+    let collection_reps = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let collection_media = middleware.get_collection(NOM_COLLECTION_MEDIA)?;
+
+    // Delete all matching media
+    let filtre_versions = doc!{"fuuid": {"$in": &transaction.fuuids}};
+    collection_media.delete_many_with_session(filtre_versions, None, session).await?;
+
+    // Delete all matching versions
+    let filtre_versions = doc!{"fuuid": {"$in": &transaction.fuuids}};
+    collection_versions.delete_many_with_session(filtre_versions, None, session).await?;
+
+    // Remove versions from all filereps
+    let filtre_reps = doc!{"fuuids_versions": {"$in": &transaction.fuuids}};
+    let ops_reps = doc! {
+        "$pullAll": {"fuuids_versions": &transaction.fuuids},
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    collection_reps.update_many_with_session(filtre_reps, ops_reps, None, session).await?;
+
+    // Final cleanup for all filereps that are deleted and with no fileversions left.
+    let filtre_delete_reps = doc!{"supprime": true, "fuuids_versions.0": {"exists": false}, "type_node": TypeNode::Fichier.to_str()};
+    collection_reps.delete_many_with_session(filtre_delete_reps, None, session).await?;
+
+    if middleware.get_mode_regeneration() {
+        session.commit_transaction().await?;
+        start_transaction_regeneration(session).await?;
+    }
+
+    let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: vec![] };
+    Ok(Some(middleware.build_reponse(reponse)?.0))
 }
 
 #[derive(Serialize, Deserialize)]

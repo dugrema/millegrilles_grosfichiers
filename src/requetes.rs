@@ -677,7 +677,7 @@ async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValide, gest
         None => user_id.to_owned()
     };
 
-    todo!()  // Check if this is used in media queries
+    todo!("obsolete?")  // Check if this is used in media queries
     // let resultat = verifier_acces_usager(middleware, &user_id, &requete.fuuids).await?;
     //
     // let acces_tous = resultat.len() == requete.fuuids.len();

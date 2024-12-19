@@ -1677,7 +1677,7 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
 {
     let collection_reps = middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
     let collection_version = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
-    let filtre_version = doc!{"supprime": false, flag_job: false, "visites.nouveau": {"$exists": false}};
+    let filtre_version = doc!{flag_job: false, "tuuids.0": {"$exists": true}, "visites.nouveau": {"$exists": false}};
     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
     let mut curseur = collection_version.find_with_session(filtre_version, None, session).await?;
     let mut fuuids = Vec::new();
@@ -1759,10 +1759,10 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
 pub async fn creer_jobs_manquantes_fichiersrep<M>(middleware: &M, nom_collection: &str, flag_job: &str, session: &mut ClientSession) -> Result<(), CommonError>
 where M: MongoDao
 {
-    let collection_version = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
-    let filtre_version = doc!{"supprime": false, "supprime_indirect": false, flag_job: false};
+    let collection_reps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+    let filtre_reps = doc!{"supprime": false, "supprime_indirect": false, flag_job: false};
     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
-    let mut curseur = collection_version.find_with_session(filtre_version, None, session).await?;
+    let mut curseur = collection_reps.find_with_session(filtre_reps, None, session).await?;
     while curseur.advance(session).await? {
         let row = curseur.deserialize_current()?;
         let tuuid = &row.tuuid;

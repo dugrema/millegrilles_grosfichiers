@@ -51,7 +51,7 @@ async fn calculer_quotas_fichiers_usagers<M>(middleware: &M, session: &mut Clien
 where M: MongoDao
 {
     let pipeline = vec! [
-        doc!{"$match": {"supprime": false}},
+        doc!{"$match": {"tuuids.0": {"$exists": true}}},
         doc!{"$group": {
             "_id": "$user_id",
             "bytes_total_versions": {"$sum": "$taille"},
@@ -143,7 +143,7 @@ where M: GenerateurMessages + MongoDao
 
     let filtre = doc!{
         "visites.nouveau": {"$gte": expiration_secs},
-        "supprime": false,
+        "tuuids.0": {"$exists": true},
     };
 
     let collection_versions = middleware.get_collection_typed::<FuuidRow>(NOM_COLLECTION_VERSIONS)?;
