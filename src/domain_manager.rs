@@ -676,7 +676,8 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     }
 
     // Recalculer les quotas a toutes les 3 heures
-    if hours % 3 == 1 && minutes == 14 {
+    if hours % 3 == 1 && minutes == 14
+    {
         info!("calculer_quotas STARTING");
         if let Err(e) = calculer_quotas(middleware).await {
             error!("calculer_quotas Error: {:?}", e);

@@ -52,8 +52,23 @@ where M: MongoDao
 {
     let pipeline = vec! [
         doc!{"$match": {"tuuids.0": {"$exists": true}}}, // Check if at least one tuuid is linked (means not deleted)
+        doc! { "$project": {"tuuids": 1, CHAMP_TAILLE: 1} },
+        doc! { "$lookup": {
+            // Lookup the rep table to get the user ids.
+            "from": NOM_COLLECTION_FICHIERS_REP,
+            "localField": CHAMP_TUUIDS,
+            "foreignField": CHAMP_TUUID,
+            "pipeline": [
+                // Check that the file is not deleted even tough the tuuids array should not contain deleted files.
+                {"$match": {CHAMP_SUPPRIME: false}},
+                {"$group": {"_id": "$user_id"}},
+            ],
+            "as": "users",
+        }},
+        doc! { "$unwind": {"path": "$users"} },  // Expand the users array to get a single user_id per row
+        doc! { "$project": {"users": 1, CHAMP_TAILLE: 1} },
         doc!{"$group": {
-            "_id": "$user_id",
+            "_id": "$users._id",
             "bytes_total_versions": {"$sum": "$taille"},
             "nombre_total_versions": {"$count": {}},
         }},
