@@ -482,32 +482,33 @@ async fn entretien_retirer_supprimes_sans_visites_session<M>(middleware: &M, ges
     -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
-    debug!("entretien_retirer_supprimes_sans_visites Debut");
-
-    let filtre = doc! {
-        CHAMP_SUPPRIME: true,
-        "$or": [
-            {CHAMP_VISITES: doc!{}},
-            {CHAMP_VISITES: {"$exists": false}}
-        ]
-    };
-    let fuuids_supprimes = {
-        let mut fuuids_supprimes = Vec::new();
-        let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
-        let options = FindOptions::builder().limit(1000).build();
-        let mut curseur = collection.find_with_session(filtre, options, session).await?;
-        while curseur.advance(session).await? {
-            let row = curseur.deserialize_current()?;
-            fuuids_supprimes.push(row.fuuid.to_owned());
-        }
-        fuuids_supprimes
-    };
-
-    debug!("entretien_retirer_supprimes_sans_visites Nouvelle transaction orphelins : {:?}", fuuids_supprimes);
-    let transaction = TransactionSupprimerOrphelins { fuuids: fuuids_supprimes };
-
-    sauvegarder_traiter_transaction_serializable_v2(
-        middleware, &transaction, gestionnaire, session, DOMAINE_NOM, TRANSACTION_SUPPRIMER_ORPHELINS).await?;
+    warn!("entretien_retirer_supprimes_sans_visites_session Disabled");
+    // debug!("entretien_retirer_supprimes_sans_visites Debut");
+    //
+    // let filtre = doc! {
+    //     CHAMP_SUPPRIME: true,  // TODO : fix for new approach tuuids.0
+    //     "$or": [
+    //         {CHAMP_VISITES: doc!{}},
+    //         {CHAMP_VISITES: {"$exists": false}}
+    //     ]
+    // };
+    // let fuuids_supprimes = {
+    //     let mut fuuids_supprimes = Vec::new();
+    //     let collection = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
+    //     let options = FindOptions::builder().limit(1000).build();
+    //     let mut curseur = collection.find_with_session(filtre, options, session).await?;
+    //     while curseur.advance(session).await? {
+    //         let row = curseur.deserialize_current()?;
+    //         fuuids_supprimes.push(row.fuuid.to_owned());
+    //     }
+    //     fuuids_supprimes
+    // };
+    //
+    // debug!("entretien_retirer_supprimes_sans_visites Nouvelle transaction orphelins : {:?}", fuuids_supprimes);
+    // let transaction = TransactionSupprimerOrphelins { fuuids: fuuids_supprimes };
+    //
+    // sauvegarder_traiter_transaction_serializable_v2(
+    //     middleware, &transaction, gestionnaire, session, DOMAINE_NOM, TRANSACTION_SUPPRIMER_ORPHELINS).await?;
 
     Ok(())
 }

@@ -1736,22 +1736,24 @@ async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_
     let mut nodes_restants = Vec::new();
 
     // Charger liste initiale de nodes
-    let collection_nodes = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_reps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
     {
         let filtre = doc! {
             CHAMP_TUUID: { "$in": tuuids },
             CHAMP_USER_ID: user_id
         };
-        let mut curseur = collection_nodes.find_with_session(filtre, None, session).await?;
+        let mut curseur = collection_reps.find_with_session(filtre, None, session).await?;
         while curseur.advance(session).await? {
             let row = curseur.deserialize_current()?;
             nodes_restants.push(row);
         }
     }
 
+    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+
     // Parcourir les nodes. Recuperer recursivement les Repertoires avec supprime_indirect: true.
     let mut tuuids_a_recuperer = Vec::new();
-    let mut fuuids_a_recuperer = Vec::new();
+    // let mut fuuids_a_recuperer = Vec::new();
     loop {
         let node_courant = match nodes_restants.pop() {
             Some(inner) => inner,
@@ -1763,7 +1765,15 @@ async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_
         match type_node {
             TypeNode::Fichier => {
                 if let Some(fuuids) = node_courant.fuuids_versions {
-                    fuuids_a_recuperer.extend(fuuids);
+                    // fuuids_a_recuperer.extend(fuuids);
+                    debug!("recuperer_tuuids Recuperer {} fuuids", fuuids.len());
+                    let filtre = doc! {CHAMP_FUUID: {"$in": fuuids}};
+                    let ops = doc! {
+                        // "$set": { CHAMP_SUPPRIME: false },
+                        "$addToSet": {"tuuids": &node_courant.tuuid},
+                        "$currentDate": {CHAMP_MODIFICATION: true}
+                    };
+                    collection_versions.update_many_with_session(filtre, ops, None, session).await?;
                 }
             },
             TypeNode::Collection | TypeNode::Repertoire => {
@@ -1773,7 +1783,7 @@ async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_
                     "path_cuuids.0": &node_courant.tuuid,
                     CHAMP_SUPPRIME_INDIRECT: true
                 };
-                let mut curseur = collection_nodes.find_with_session(filtre, None, session).await?;
+                let mut curseur = collection_reps.find_with_session(filtre, None, session).await?;
                 while curseur.advance(session).await? {
                     let row = curseur.deserialize_current()?;
                     nodes_restants.push(row);
@@ -1788,21 +1798,10 @@ async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_
         debug!("recuperer_tuuids Recuperer {} tuuids", tuuids_a_recuperer.len());
         let filtre = doc! { CHAMP_USER_ID: user_id, CHAMP_TUUID: {"$in": tuuids_a_recuperer}};
         let ops = doc! {
-            "$set": {CHAMP_SUPPRIME: false, CHAMP_SUPPRIME_INDIRECT: false, CHAMP_ARCHIVE: false },
+            "$set": {CHAMP_SUPPRIME: false, CHAMP_SUPPRIME_INDIRECT: false },
             "$currentDate": { CHAMP_MODIFICATION: true }
         };
-        collection_nodes.update_many_with_session(filtre, ops, None, session).await?;
-    }
-
-    {
-        debug!("recuperer_tuuids Recuperer {} fuuids", fuuids_a_recuperer.len());
-        let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-        let filtre = doc! { CHAMP_USER_ID: user_id, CHAMP_FUUID: {"$in": fuuids_a_recuperer}};
-        let ops = doc! {
-            "$set": { CHAMP_SUPPRIME: false },
-            "$currentDate": { CHAMP_MODIFICATION: true }
-        };
-        collection.update_many_with_session(filtre, ops, None, session).await?;
+        collection_reps.update_many_with_session(filtre, ops, None, session).await?;
     }
 
     Ok(())
