@@ -259,6 +259,13 @@ where M: GenerateurMessages + MongoDao
         let reponse = verifier_visites_topologies(middleware, &visits).await?;
         if let Some(visites) = reponse.visits {
             debug!("verifier_visites_expirees Visite {} fuuids", visites.len());
+
+            // Touch the reps to allow client updates
+            let filtre = doc!{"fuuids_versions": {"$in": visites.iter().map(|x|x.fuuid.as_str()).collect::<Vec<_>>()}};
+            let ops = doc!{"$currentDate": {CHAMP_MODIFICATION: true}};
+            let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+            collection.update_one_with_session(filtre, ops, None, session).await?;
+
             for item in visites {
                 sauvegarder_visites(middleware, item.fuuid.as_str(), &item.visits, session).await?;
                 visits_set.remove(item.fuuid.as_str());
