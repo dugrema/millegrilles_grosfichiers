@@ -391,11 +391,6 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
     where M: GenerateurMessages + MongoDao, V: ToString
 {
     let filtre = doc! { "fuuid": fuuid };
-    // let projection = doc! {
-    //     "fuuid": 1, "mimetype": 1, "cle_id": 1, "format": 1, "nonce": 1,
-    //     CHAMP_FLAG_MEDIA_TRAITE: 1, CHAMP_FLAG_VIDEO_TRAITE: 1,
-    // };
-    // let options = FindOptions::builder().projection(projection).build();
     let collection_reps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
     let collection_versions = middleware.get_collection_typed::<NodeFichierVersionRow>(NOM_COLLECTION_VERSIONS)?;
     let filehost_ids = filehost_ids.into_iter().map(|f|f.to_string()).collect();

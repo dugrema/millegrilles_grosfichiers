@@ -51,7 +51,7 @@ async fn calculer_quotas_fichiers_usagers<M>(middleware: &M, session: &mut Clien
 where M: MongoDao
 {
     let pipeline = vec! [
-        doc!{"$match": {"tuuids.0": {"$exists": true}}},
+        doc!{"$match": {"tuuids.0": {"$exists": true}}}, // Check if at least one tuuid is linked (means not deleted)
         doc!{"$group": {
             "_id": "$user_id",
             "bytes_total_versions": {"$sum": "$taille"},
@@ -143,7 +143,7 @@ where M: GenerateurMessages + MongoDao
 
     let filtre = doc!{
         "visites.nouveau": {"$gte": expiration_secs},
-        "tuuids.0": {"$exists": true},
+        "tuuids.0": {"$exists": true},  // Check if at least one tuuid is linked (means not deleted)
     };
 
     let collection_versions = middleware.get_collection_typed::<FuuidRow>(NOM_COLLECTION_VERSIONS)?;
@@ -205,7 +205,7 @@ where M: GenerateurMessages + MongoDao
 
     let filtre = doc!{
         CONST_FIELD_LAST_VISIT_VERIFICATION: {"$lte": expiration},
-        "supprime": false,
+        "tuuids.0": {"$exists": true},  // Check if at least one tuuid is linked (means not deleted)
     };
 
     let collection_versions = middleware.get_collection_typed::<FuuidRow>(NOM_COLLECTION_VERSIONS)?;
@@ -324,8 +324,7 @@ pub async fn sauvegarder_visites<M>(middleware: &M, fuuid: &str, visites: &HashM
     };
 
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    // Note : update many - la table de versions est unique par fuuid/user_id et fuuid/tuuid.
-    collection.update_many_with_session(filtre, ops, None, session).await?;
+    collection.update_one_with_session(filtre, ops, None, session).await?;
 
     Ok(())
 }
