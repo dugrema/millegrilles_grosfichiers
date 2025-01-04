@@ -2118,7 +2118,7 @@ async fn transaction_delete_v2<M>(middleware: &M, transaction: TransactionValide
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_supprimer_documents Consommer transaction : {}", transaction.transaction.id);
+    debug!("transaction_delete_v2 Consume transaction : {}", transaction.transaction.id);
     let transaction_content: TransactionDeleteV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
 
     let collection_fichiersrep =
@@ -2128,6 +2128,7 @@ where M: GenerateurMessages + MongoDao
 
     // Handle subdirectories first
     if let Some(subdirectories) = transaction_content.subdirectories {
+        debug!("transaction_delete_v2 Delete subdirectories: {:?}", subdirectories);
         delete_file_versions_from_directories(middleware, session, &subdirectories).await?;
 
         // Mark all the files as indirectly deleted in the rep collection
@@ -2143,6 +2144,7 @@ where M: GenerateurMessages + MongoDao
 
     // Directories being directly targeted by the delete command
     if let Some(directories) = transaction_content.directories {
+        debug!("transaction_delete_v2 Delete directories: {:?}", directories);
         delete_file_versions_from_directories(middleware, session, &directories).await?;
 
         // Mark all the files as indirectly deleted in the rep collection
@@ -2157,12 +2159,14 @@ where M: GenerateurMessages + MongoDao
     }
 
     if let Some(files) = transaction_content.files {
+        debug!("transaction_delete_v2 Delete files: {:?}", files);
         // Mark all listed files as deleted.
-        let file_filtre = doc!{ "tuuids": {"$in": &files} };
 
+        let version_filtre = doc!{ "tuuids": {"$in": &files} };
         let version_ops = doc!{"$pullAll": {"tuuids": &files}, "$currentDate": {CHAMP_MODIFICATION: true} };
-        collection_fichiersversion.update_many_with_session(file_filtre.clone(), version_ops, None, session).await?;
+        collection_fichiersversion.update_many_with_session(version_filtre.clone(), version_ops, None, session).await?;
 
+        let file_filtre = doc!{ "tuuid": {"$in": &files} };
         let rep_ops = doc!{"$set": {"supprime": true, "supprime_indirect": false}, "$currentDate": {CHAMP_MODIFICATION: true} };
         collection_fichiersrep.update_many_with_session(file_filtre, rep_ops, None, session).await?;
     }
