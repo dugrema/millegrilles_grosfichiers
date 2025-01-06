@@ -189,6 +189,7 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         REQUETE_SOUS_REPERTOIRES,
         REQUETE_RECHERCHE_INDEX,
         REQUETE_INFO_VIDEO,
+        REQUEST_SYNC_DIRECTORY,
     ];
     for req in requetes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L2Prive});

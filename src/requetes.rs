@@ -9,7 +9,7 @@ use millegrilles_common_rust::async_trait::async_trait;
 use millegrilles_common_rust::bson::{Bson, doc, Document};
 use millegrilles_common_rust::bson::serde_helpers::deserialize_chrono_datetime_from_bson_datetime;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chrono::{DateTime, Utc};
+use millegrilles_common_rust::chrono::{DateTime, NaiveDateTime, Utc};
 use millegrilles_common_rust::common_messages::{InformationDechiffrage, InformationDechiffrageV2, ReponseDechiffrage, ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
@@ -98,6 +98,8 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
             REQUETE_SOUS_REPERTOIRES => requete_sous_repertoires(middleware, message, gestionnaire).await,
             REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
             REQUETE_INFO_VIDEO => requete_info_video(middleware, message).await,
+
+            REQUEST_SYNC_DIRECTORY => request_sync_directory(middleware, message).await,
             _ => {
                 error!("Message requete/action inconnue (1): '{}'. Message dropped.", action);
                 Ok(None)
@@ -155,6 +157,8 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
             REQUETE_SOUS_REPERTOIRES => requete_sous_repertoires(middleware, message, gestionnaire).await,
             REQUETE_RECHERCHE_INDEX => requete_recherche_index(middleware, message, gestionnaire).await,
             REQUETE_INFO_VIDEO => requete_info_video(middleware, message).await,
+
+            REQUEST_SYNC_DIRECTORY => request_sync_directory(middleware, message).await,
             _ => {
                 error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", action);
                 Ok(None)
@@ -443,9 +447,17 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
 
     debug!("requete_documents_par_tuuid Filtre {:?}", serde_json::to_string(&filtre)?);
 
+    let reponse = get_complete_files(middleware, user_id, filtre, None).await?;
+
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
+}
+
+async fn get_complete_files<M>(middleware: &M, user_id: String, filtre: Document, options: Option<FindOptions>) -> Result<ReponseDocumentsParTuuid, Error>
+    where M: MongoDao
+{
     let collection_typed =
         middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
-    let mut curseur = collection_typed.find(filtre, None).await?;
+    let mut curseur = collection_typed.find(filtre, options).await?;
     let mut reponse = ReponseDocumentsParTuuid { fichiers: Vec::new() };
     let mut map_fichiers_par_fuuid: HashMap<String, ReponseFichierRepVersion> = HashMap::new();
     {
@@ -544,8 +556,7 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
             }
         }
     }
-
-    Ok(Some(middleware.build_reponse(&reponse)?.0))
+    Ok(reponse)
 }
 
 #[derive(Serialize)]
@@ -2084,7 +2095,7 @@ async fn requete_sync_collection<M>(middleware: &M, m: MessageValide, gestionnai
     }
     debug!("requete_sync_collection Filtre {:?}", filtre);
 
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let mut fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
     let complete = fichiers_confirmation.len() < limit as usize;
 
@@ -2567,6 +2578,15 @@ async fn requete_info_statistiques<M>(middleware: &M, m: MessageValide, gestionn
         }
     };
 
+    let resultat = get_directory_statistics(middleware, filtre).await?;
+    let reponse = ReponseInfoStatistiques { info: resultat };
+
+    Ok(Some(middleware.build_reponse(reponse)?.0))
+}
+
+async fn get_directory_statistics<M>(middleware: &M, filtre: Document) -> Result<Vec<ResultatStatistiquesRow>, Error>
+    where M: MongoDao
+{
     let pipeline = vec![
         doc! { "$match": filtre },
         doc! { "$project": {CHAMP_TYPE_NODE: 1, CHAMP_PATH_CUUIDS: 1, CHAMP_FUUIDS_VERSIONS: 1} },
@@ -2605,10 +2625,7 @@ async fn requete_info_statistiques<M>(middleware: &M, m: MessageValide, gestionn
         let row: ResultatStatistiquesRow = convertir_bson_deserializable(data)?;
         resultat.push(row);
     }
-
-    let reponse = ReponseInfoStatistiques { info: resultat };
-
-    Ok(Some(middleware.build_reponse(reponse)?.0))
+    Ok(resultat)
 }
 
 #[derive(Deserialize)]
@@ -3042,4 +3059,152 @@ pub async fn get_decrypted_keys<M>(middleware: &M, cle_ids: Vec<String>) -> Resu
     // }
     //
     // Ok(decrypted_key_response)
+}
+
+#[derive(Deserialize)]
+struct RequestSyncDirectory {
+    cuuid: Option<String>,
+    contact_id: Option<String>,
+    last_sync: Option<i64>,
+    skip: Option<u64>,
+    limit_count: Option<i32>,
+    limit_size: Option<i32>,
+}
+
+#[derive(Serialize)]
+struct RequestSyncDirectoryResponseFile {
+    stats: Option<Vec<ResultatStatistiquesRow>>,
+    files: Vec<ReponseFichierRepVersion>,
+    keys: Option<Vec<ResponseRequestDechiffrageV2Cle>>,
+    complete: bool,
+}
+
+pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => {
+            debug!("request_sync_directory user_id missing from certificate");
+            return Ok(Some(middleware.reponse_err(None, None, Some("User_id missing from certificate"))?))
+        }
+    };
+
+    let requete: RequestSyncDirectory = deser_message_buffer!(m.message);
+
+    // Determine if we are loading a shared directory
+    let user_id = match requete.contact_id {
+        None => user_id,
+        Some(contact_id) => {
+            // Determine the effective user_id by using the shared contact information
+            let filtre = doc!{ CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: &user_id };
+            let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
+            match collection.find_one(filtre, None).await? {
+                Some(inner) => inner.user_id,   // User_id owner of the directory
+                None => {
+                    error!("request_sync_directory Acces refuse, mauvais contact_id");
+                    return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access refused, invalid shared contact_id"))?))
+                }
+            }
+        }
+    };
+
+    // Directory filter
+    let mut filtre = match requete.cuuid {
+        Some(cuuid) => doc!{
+            "path_cuuids.0": cuuid,
+            "user_id": &user_id,
+        },
+        None => doc!{
+            "path_cuuids": {"$exists": false},
+            "user_id": &user_id,
+        }
+    };
+
+    let skip = requete.skip.unwrap_or(0);
+    let stats = if skip == 0 {
+        // This is an initial request. Fetch statistics for all files and direct sub-directories
+        let results = get_directory_statistics(middleware, filtre.clone()).await?;
+        Some(results)
+    } else {
+        None
+    };
+
+    if let Some(last_sync) = requete.last_sync {
+        let sync_date = match DateTime::from_timestamp(last_sync, 0) {
+            Some(inner) => inner,
+            None => Err("request_sync_directory Invalid sync_date")?
+        };
+        filtre.insert(CHAMP_MODIFICATION.to_string(), doc!{"$gte": sync_date});
+    }
+
+    let limit_count = requete.limit_count.unwrap_or(100);
+    let limit_size = requete.limit_size.unwrap_or(100_000);
+    let options = FindOptions::builder()
+        .skip(skip)
+        .limit(limit_count as i64)
+        .sort(doc!{CHAMP_MODIFICATION: -1})
+        .build();
+
+    let result = get_complete_files(middleware, user_id, filtre, Some(options)).await?;
+    let complete = result.fichiers.len() < limit_count as usize;
+    let mut sync_response = RequestSyncDirectoryResponseFile {stats, files: result.fichiers, keys: None, complete };
+
+    // Gather all required keys
+    // TODO: check if file creation_date < last sync, we can safely ignore those keys.
+    let mut cle_ids = HashSet::new();
+    for r in &sync_response.files {
+        if let Some(cle_id) = r.cle_id.as_ref() {
+            cle_ids.insert(cle_id);
+        }
+        if let Some(cle_id) = r.metadata.cle_id.as_ref() {
+            cle_ids.insert(cle_id);
+        }
+        if let Some(version) = r.version_courante.as_ref() {
+            if let Some(cle_id) = version.cle_id.as_ref() {
+                cle_ids.insert(cle_id);
+            }
+        }
+    }
+
+    if ! cle_ids.is_empty() {
+        // Request decrypted keys from keymaster.
+        let routage = RoutageMessageAction::builder(
+            DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, vec![Securite::L3Protege])
+            .timeout_blocking(3_000)  // Short wait
+            .build();
+        let key_request = RequeteDechiffrage {
+            domaine: DOMAINE_NOM.to_string(),
+            liste_hachage_bytes: None,
+            cle_ids: Some(cle_ids.into_iter().map(|s| s.to_string()).collect()),
+            certificat_rechiffrage: None,
+            inclure_signature: None,
+        };
+        if let Some(TypeMessage::Valide(response)) = middleware.transmettre_requete(routage, key_request).await? {
+            let message_ref = response.message.parse()?;
+            let enveloppe_privee = middleware.get_enveloppe_signature();
+            let mut reponse_dechiffrage: ReponseRequeteDechiffrageV2 = message_ref.dechiffrer(enveloppe_privee.as_ref())?;
+            if !reponse_dechiffrage.ok {
+                error!("request_sync_directory Error loading keys: {:?}", reponse_dechiffrage.err);
+                return Ok(Some(middleware.reponse_err(Some(1), None, Some("Error fetching decryption keys"))?));
+            }
+            match reponse_dechiffrage.cles.take() {
+                Some(inner) => {
+                    sync_response.keys = Some(inner);
+                },
+                None => Err("request_sync_directory No keys received")?
+            };
+        } else {
+            Err("request_sync_directory Unable to get decryption keys - wrong response type")?
+        }
+    }
+
+    if sync_response.keys.is_some() {
+        // Encrypt response, it contains decrypted keys
+        Ok(Some(middleware.build_reponse_chiffree(sync_response, m.certificat.as_ref())?.0))
+    } else {
+        // No keys, send response normally
+        Ok(Some(middleware.build_reponse(sync_response)?.0))
+    }
 }

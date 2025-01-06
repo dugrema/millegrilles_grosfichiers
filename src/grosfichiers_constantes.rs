@@ -62,6 +62,7 @@ pub const REQUETE_JWT_STREAMING: &str = "getJwtStreaming";
 pub const REQUETE_SOUS_REPERTOIRES: &str = "getSousRepertoires";
 pub const REQUETE_RECHERCHE_INDEX: &str = "rechercheIndex";
 pub const REQUETE_INFO_VIDEO: &str = "getInfoVideo";
+pub const REQUEST_SYNC_DIRECTORY: &str = "syncDirectory";
 
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
