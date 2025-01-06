@@ -3069,10 +3069,13 @@ struct RequestSyncDirectory {
     skip: Option<u64>,
     limit_count: Option<i32>,
     limit_size: Option<i32>,
+    deleted: Option<bool>,
 }
 
 #[derive(Serialize)]
 struct RequestSyncDirectoryResponseFile {
+    ok: bool,
+    cuuid: Option<String>,
     stats: Option<Vec<ResultatStatistiquesRow>>,
     files: Vec<ReponseFichierRepVersion>,
     keys: Option<Vec<ResponseRequestDechiffrageV2Cle>>,
@@ -3091,13 +3094,14 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
         }
     };
 
-    let requete: RequestSyncDirectory = deser_message_buffer!(m.message);
+    let request: RequestSyncDirectory = deser_message_buffer!(m.message);
 
     // Determine if we are loading a shared directory
-    let user_id = match requete.contact_id {
+    let user_id = match request.contact_id {
         None => user_id,
         Some(contact_id) => {
             // Determine the effective user_id by using the shared contact information
+            todo!("Include list of shared directories");
             let filtre = doc!{ CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: &user_id };
             let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
             match collection.find_one(filtre, None).await? {
@@ -3111,18 +3115,22 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     };
 
     // Directory filter
-    let mut filtre = match requete.cuuid {
+    let deleted = request.deleted.unwrap_or(false);
+    let cuuid = request.cuuid;
+    let mut filtre = match cuuid.as_ref() {
         Some(cuuid) => doc!{
             "path_cuuids.0": cuuid,
             "user_id": &user_id,
+            "supprime": deleted,
         },
         None => doc!{
             "path_cuuids": {"$exists": false},
             "user_id": &user_id,
+            "supprime": deleted,
         }
     };
 
-    let skip = requete.skip.unwrap_or(0);
+    let skip = request.skip.unwrap_or(0);
     let stats = if skip == 0 {
         // This is an initial request. Fetch statistics for all files and direct sub-directories
         let results = get_directory_statistics(middleware, filtre.clone()).await?;
@@ -3131,7 +3139,7 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
         None
     };
 
-    if let Some(last_sync) = requete.last_sync {
+    if let Some(last_sync) = request.last_sync {
         let sync_date = match DateTime::from_timestamp(last_sync, 0) {
             Some(inner) => inner,
             None => Err("request_sync_directory Invalid sync_date")?
@@ -3139,8 +3147,8 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
         filtre.insert(CHAMP_MODIFICATION.to_string(), doc!{"$gte": sync_date});
     }
 
-    let limit_count = requete.limit_count.unwrap_or(100);
-    let limit_size = requete.limit_size.unwrap_or(100_000);
+    let limit_count = request.limit_count.unwrap_or(100);
+    let limit_size = request.limit_size.unwrap_or(100_000);
     let options = FindOptions::builder()
         .skip(skip)
         .limit(limit_count as i64)
@@ -3149,7 +3157,7 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
 
     let result = get_complete_files(middleware, user_id, filtre, Some(options)).await?;
     let complete = result.fichiers.len() < limit_count as usize;
-    let mut sync_response = RequestSyncDirectoryResponseFile {stats, files: result.fichiers, keys: None, complete };
+    let mut sync_response = RequestSyncDirectoryResponseFile {ok: true, cuuid, stats, files: result.fichiers, keys: None, complete };
 
     // Gather all required keys
     // TODO: check if file creation_date < last sync, we can safely ignore those keys.
