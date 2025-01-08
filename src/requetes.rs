@@ -447,12 +447,12 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
 
     debug!("requete_documents_par_tuuid Filtre {:?}", serde_json::to_string(&filtre)?);
 
-    let reponse = get_complete_files(middleware, user_id, filtre, None).await?;
+    let reponse = get_complete_files(middleware, user_id, filtre, None, None).await?;
 
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn get_complete_files<M>(middleware: &M, user_id: String, filtre: Document, options: Option<FindOptions>) -> Result<ReponseDocumentsParTuuid, Error>
+async fn get_complete_files<M>(middleware: &M, user_id: String, filtre: Document, options: Option<FindOptions>, limit_size: Option<i32>) -> Result<(ReponseDocumentsParTuuid, bool), Error>
     where M: MongoDao
 {
     let collection_typed =
@@ -464,6 +464,7 @@ async fn get_complete_files<M>(middleware: &M, user_id: String, filtre: Document
         while let Some(r) = curseur.next().await {
             let mut row = r?;
             // row.map_date_modification();
+
             let type_node = TypeNode::try_from(row.type_node.as_str())?;
             match type_node {
                 TypeNode::Fichier => {
@@ -552,11 +553,34 @@ async fn get_complete_files<M>(middleware: &M, user_id: String, filtre: Document
                 reponse.fichiers.push(inner);  // Transferer vers la liste de reponses
             },
             None => {
-                warn!("requetes.requete_documents_par_tuuid Recu version {} qui ne match aucun element en memoire", row.fuuid);
+                warn!("get_complete_files Recu version {} qui ne match aucun element en memoire", row.fuuid);
             }
         }
     }
-    Ok(reponse)
+
+    let mut truncated = false;
+
+    // reponse.fichiers = match limit_size {
+    //     Some(limit_size) => {
+    //         // Estimate the size of each entry and truncate response if needed
+    //         let mut fichiers = Vec::new();
+    //         let mut estimated_size = 2630;  // Estimated overhead of response
+    //         for fichier in reponse.fichiers {
+    //             let serialized_str = serde_json::to_string(&fichier)?;
+    //             estimated_size += serialized_str.len();
+    //             fichiers.push(fichier);
+    //             if estimated_size > limit_size as usize {
+    //                 truncated = true;
+    //                 break
+    //             }
+    //         }
+    //         debug!("get_complete_files Estimated size: {}", estimated_size);
+    //         fichiers
+    //     },
+    //     None => reponse.fichiers
+    // };
+
+    Ok((reponse, truncated))
 }
 
 #[derive(Serialize)]
@@ -3173,8 +3197,8 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
                 Some(breadcrumb)
             }
             None => None
-        };        
-                
+        };
+
         (Some(stats), breadcrumb)
     } else {
         (None, None)
@@ -3196,11 +3220,12 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     let options = FindOptions::builder()
         .skip(skip)
         .limit(limit_count as i64)
-        .sort(doc!{CHAMP_MODIFICATION: -1})
+        // .sort(doc!{})  // Ensures unique paging
+        .sort(doc!{CHAMP_MODIFICATION: -1, "_id": 1})  // _id ensures unique paging
         .build();
 
-    let result = get_complete_files(middleware, user_id, filtre, Some(options)).await?;
-    let complete = result.fichiers.len() < limit_count as usize;
+    let (result, truncated) = get_complete_files(middleware, user_id, filtre, Some(options), Some(limit_size)).await?;
+    let complete = !truncated && result.fichiers.len() < limit_count as usize;
     let mut sync_response = RequestSyncDirectoryResponseFile {
         ok: true, cuuid, stats, files: result.fichiers, breadcrumb,
         deleted_tuuids: None, keys: None, complete,
@@ -3262,11 +3287,16 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
         }
     }
 
-    if sync_response.keys.is_some() {
-        // Encrypt response, it contains decrypted keys
-        Ok(Some(middleware.build_reponse_chiffree(sync_response, m.certificat.as_ref())?.0))
-    } else {
-        // No keys, send response normally
-        Ok(Some(middleware.build_reponse(sync_response)?.0))
-    }
+    // let response = if sync_response.keys.is_some() {
+    //     // Encrypt response, it contains decrypted keys
+    //     middleware.build_reponse_chiffree(sync_response, m.certificat.as_ref())?.0
+    // } else {
+    //     // No keys, send response normally
+    //     middleware.build_reponse(sync_response)?.0
+    // };
+
+    let response = middleware.build_reponse_chiffree(sync_response, m.certificat.as_ref())?.0;
+    debug!("request_sync_directory Response size: {}", response.buffer.len());
+
+    Ok(Some(response))
 }
