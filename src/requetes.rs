@@ -3145,19 +3145,18 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     // Directory filter
     let deleted = request.deleted.unwrap_or(false);
     let cuuid = request.cuuid.clone();
-    let mut filtre = match cuuid.as_ref() {
-        Some(cuuid) => doc!{
-            "path_cuuids.0": cuuid,
-            "user_id": &user_id,
-            "supprime": deleted,
+    
+    let mut filtre = match deleted {
+        false => match cuuid.as_ref() {
+            Some(cuuid) => doc!{"path_cuuids.0": cuuid, "user_id": &user_id, "supprime": false},
+            None => doc!{"path_cuuids": {"$exists": false}, "user_id": &user_id, "supprime": false}
         },
-        None => doc!{
-            "path_cuuids": {"$exists": false},
-            "user_id": &user_id,
-            "supprime": deleted,
+        true => match cuuid.as_ref() {
+            Some(cuuid) => doc!{"path_cuuids.0": cuuid, "user_id": &user_id, "supprime": true},
+            None => doc!{"user_id": &user_id, "supprime": true, "supprime_indirect": false}
         }
     };
-
+    
     let last_sync = match request.last_sync {
         Some(last_sync) => {
             match DateTime::from_timestamp(last_sync, 0) {
@@ -3238,7 +3237,7 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
                 }
             }
         }
-        
+
         let deleted_tuuids = match deleted_tuuids.is_empty() { true => None, false => Some(deleted_tuuids)};
         (Some(stats), breadcrumb, deleted_tuuids)
     } else {
