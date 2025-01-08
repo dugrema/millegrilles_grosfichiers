@@ -447,7 +447,9 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
 
     debug!("requete_documents_par_tuuid Filtre {:?}", serde_json::to_string(&filtre)?);
 
-    let reponse = get_complete_files(middleware, user_id, filtre, None, None).await?;
+    let (reponse, truncated) = get_complete_files(middleware, user_id, filtre, None, None).await?;
+
+    debug!("requete_documents_par_tuuid Reponse {:?}", serde_json::to_string(&reponse)?);
 
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
@@ -3156,8 +3158,18 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
         }
     };
 
+    let last_sync = match request.last_sync {
+        Some(last_sync) => {
+            match DateTime::from_timestamp(last_sync, 0) {
+                Some(inner) => Some(inner),
+                None => Err("request_sync_directory Invalid sync_date")?
+            }
+        },
+        None => None
+    };
+
     let skip = request.skip.unwrap_or(0);
-    let (stats, breadcrumb) = if skip == 0 {
+    let (stats, breadcrumb, deleted_tuuids) = if skip == 0 {
         // This is an initial request. Fetch statistics for all files and direct sub-directories
         let stats = get_directory_statistics(middleware, filtre.clone()).await?;
 
@@ -3199,20 +3211,42 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
             None => None
         };
 
-        (Some(stats), breadcrumb)
+        // Check if any tuuids were deleted since that last sync
+        let mut deleted_tuuids = Vec::new();
+        if let Some(sync_date) = last_sync.as_ref() {
+            if ! deleted {
+                let mut filtre = match cuuid.as_ref() {
+                    Some(cuuid) => doc! {
+                        "path_cuuids.0": cuuid,
+                        "user_id": &user_id,
+                        CHAMP_MODIFICATION: doc!{"$gte": sync_date},
+                        "supprime": true,
+                    },
+                    None => doc! {
+                        "path_cuuids": {"$exists": false},
+                        "user_id": &user_id,
+                        CHAMP_MODIFICATION: doc!{"$gte": sync_date},
+                        "supprime": true,
+                    }
+                };
+                let collection_reps_typed =
+                    middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+                let mut cursor_deleted = collection_reps_typed.find(filtre.clone(), None).await?;
+                while cursor_deleted.advance().await? {
+                    let row = cursor_deleted.deserialize_current()?;
+                    deleted_tuuids.push(row.tuuid);
+                }
+            }
+        }
+        
+        let deleted_tuuids = match deleted_tuuids.is_empty() { true => None, false => Some(deleted_tuuids)};
+        (Some(stats), breadcrumb, deleted_tuuids)
     } else {
-        (None, None)
+        (None, None, None)
     };
 
-    if let Some(last_sync) = request.last_sync {
-        let sync_date = match DateTime::from_timestamp(last_sync, 0) {
-            Some(inner) => inner,
-            None => Err("request_sync_directory Invalid sync_date")?
-        };
-        filtre.insert(CHAMP_MODIFICATION.to_string(), doc!{"$gte": sync_date});
-
-        // Check if any tuuids were deleted since that last sync
-        todo!()
+    if let Some(last_sync) = last_sync.as_ref() {
+        filtre.insert(CHAMP_MODIFICATION.to_string(), doc!{"$gte": last_sync});
     }
 
     let limit_count = request.limit_count.unwrap_or(100);
@@ -3228,7 +3262,7 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     let complete = !truncated && result.fichiers.len() < limit_count as usize;
     let mut sync_response = RequestSyncDirectoryResponseFile {
         ok: true, cuuid, stats, files: result.fichiers, breadcrumb,
-        deleted_tuuids: None, keys: None, complete,
+        deleted_tuuids, keys: None, complete,
     };
 
     // Gather all required keys
