@@ -523,12 +523,12 @@ pub async fn set_flag_video_traite<M,S>(middleware: &M, tuuid_in: Option<S>, fuu
     -> Result<(), CommonError>
     where M: MongoDao, S: ToString
 {
-    let tuuid = match &tuuid_in {Some(inner)=>Some(inner.to_string()), None=>None};
+    // let tuuid = match &tuuid_in {Some(inner)=>Some(inner.to_string()), None=>None};
 
-    let mut filtre_video = doc! {"fuuid": fuuid};
-    if let Some(tuuid) = tuuid.as_ref() {
-        filtre_video.insert("tuuid", tuuid);
-    }
+    let filtre_video = doc! {"fuuid": fuuid};
+    // if let Some(tuuid) = tuuid.as_ref() {
+    //     filtre_video.insert("tuuids", tuuid);
+    // }
 
     // Set flag versionFichiers
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;

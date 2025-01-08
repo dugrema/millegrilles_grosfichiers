@@ -3078,7 +3078,9 @@ struct RequestSyncDirectoryResponseFile {
     cuuid: Option<String>,
     stats: Option<Vec<ResultatStatistiquesRow>>,
     files: Vec<ReponseFichierRepVersion>,
+    breadcrumb: Option<Vec<ReponseFichierRepVersion>>,
     keys: Option<Vec<ResponseRequestDechiffrageV2Cle>>,
+    deleted_tuuids: Option<Vec<String>>,
     complete: bool,
 }
 
@@ -3116,7 +3118,7 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
 
     // Directory filter
     let deleted = request.deleted.unwrap_or(false);
-    let cuuid = request.cuuid;
+    let cuuid = request.cuuid.clone();
     let mut filtre = match cuuid.as_ref() {
         Some(cuuid) => doc!{
             "path_cuuids.0": cuuid,
@@ -3131,12 +3133,51 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     };
 
     let skip = request.skip.unwrap_or(0);
-    let stats = if skip == 0 {
+    let (stats, breadcrumb) = if skip == 0 {
         // This is an initial request. Fetch statistics for all files and direct sub-directories
-        let results = get_directory_statistics(middleware, filtre.clone()).await?;
-        Some(results)
+        let stats = get_directory_statistics(middleware, filtre.clone()).await?;
+
+        // Load breadcrumb
+        let breadcrumb = match request.cuuid.as_ref() {
+            Some(cuuid) => {
+                let collection_reps_typed =
+                    middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+                let current_dir_filtre = doc!{"tuuid": cuuid, "user_id": &user_id};
+                let current_dir = match collection_reps_typed.find_one(current_dir_filtre, None).await? {
+                    Some(inner) => inner,
+                    None => {
+                        debug!("request_sync_directory Unknown directory {:?} for user {}", request.cuuid, user_id);
+                        return Ok(Some(middleware.reponse_err(Some(404), None, Some("Unknown directory"))?))
+                    }
+                };
+
+                // Add the current directory to path
+                let path_cuuids = match current_dir.path_cuuids {
+                    Some(mut path_cuuids) => {
+                        // Add the current directory to list
+                        path_cuuids.push(cuuid.to_string());
+                        path_cuuids
+                    }
+                    None => vec![cuuid.to_string()],
+                };
+
+                // Load tuuids from path
+                let mut breadcrumb: Vec<ReponseFichierRepVersion> = Vec::new();
+                let filtre_breadcrumb = doc!{"tuuid": {"$in": path_cuuids}, "user_id": &user_id};
+                let mut cursor = collection_reps_typed.find(filtre_breadcrumb, None).await?;
+                while cursor.advance().await? {
+                    let row = cursor.deserialize_current()?;
+                    breadcrumb.push(row.into());
+                }
+
+                Some(breadcrumb)
+            }
+            None => None
+        };        
+                
+        (Some(stats), breadcrumb)
     } else {
-        None
+        (None, None)
     };
 
     if let Some(last_sync) = request.last_sync {
@@ -3145,6 +3186,9 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
             None => Err("request_sync_directory Invalid sync_date")?
         };
         filtre.insert(CHAMP_MODIFICATION.to_string(), doc!{"$gte": sync_date});
+
+        // Check if any tuuids were deleted since that last sync
+        todo!()
     }
 
     let limit_count = request.limit_count.unwrap_or(100);
@@ -3157,7 +3201,10 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
 
     let result = get_complete_files(middleware, user_id, filtre, Some(options)).await?;
     let complete = result.fichiers.len() < limit_count as usize;
-    let mut sync_response = RequestSyncDirectoryResponseFile {ok: true, cuuid, stats, files: result.fichiers, keys: None, complete };
+    let mut sync_response = RequestSyncDirectoryResponseFile {
+        ok: true, cuuid, stats, files: result.fichiers, breadcrumb,
+        deleted_tuuids: None, keys: None, complete,
+    };
 
     // Gather all required keys
     // TODO: check if file creation_date < last sync, we can safely ignore those keys.
@@ -3171,6 +3218,13 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
         }
         if let Some(version) = r.version_courante.as_ref() {
             if let Some(cle_id) = version.cle_id.as_ref() {
+                cle_ids.insert(cle_id);
+            }
+        }
+    }
+    if let Some(breadcrumbs) = sync_response.breadcrumb.as_ref() {
+        for breadcrumb in breadcrumbs {
+            if let Some(cle_id) = breadcrumb.metadata.cle_id.as_ref() {
                 cle_ids.insert(cle_id);
             }
         }
