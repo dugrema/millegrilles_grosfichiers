@@ -101,6 +101,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
 
             REQUEST_SYNC_DIRECTORY => request_sync_directory(middleware, message).await,
             REQUETE_SEARCH_INDEX_V2 => search_index_v2(middleware, message).await,
+            REQUEST_FILES_BY_TUUID => request_files_by_tuuid(middleware, message).await,
             _ => {
                 error!("Message requete/action inconnue (1): '{}'. Message dropped.", action);
                 Ok(None)
@@ -161,6 +162,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
 
             REQUEST_SYNC_DIRECTORY => request_sync_directory(middleware, message).await,
             REQUETE_SEARCH_INDEX_V2 => search_index_v2(middleware, message).await,
+            REQUEST_FILES_BY_TUUID => request_files_by_tuuid(middleware, message).await,
             _ => {
                 error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", action);
                 Ok(None)
@@ -3475,7 +3477,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     if result.ok {
         if let Some(docs) = response.search_results.docs.as_ref () {
             if docs.len() > 0 {
-                let first_batch_len = if docs.len() > 20 { 20 } else { docs.len() };
+                let first_batch_len = if docs.len() > 30 { 30 } else { docs.len() };
                 debug!("Load first {} docs", first_batch_len);
                 let first_batch = &docs[..first_batch_len];
                 let tuuids: Vec<&String> = first_batch.iter().map(|d| &d.tuuid).collect();
@@ -3509,4 +3511,73 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     }
 
     Ok(Some(middleware.build_reponse_chiffree(&response, m.certificat.as_ref())?.0))
+}
+
+#[derive(Clone, Deserialize)]
+struct RequestFilesByTuuid {
+    tuuids: Vec<String>
+}
+
+#[derive(Clone, Serialize)]
+struct RequestFilesByTuuidsResponse {
+    files: Vec<ReponseFichierRepVersion>,
+    keys: Option<Vec<ResponseRequestDechiffrageV2Cle>>,
+}
+
+async fn request_files_by_tuuid<M>(middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
+{
+    debug!("requete_documents_par_tuuid Message : {:?}", & m.type_message);
+    let request: RequestFilesByTuuid = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(format!("requetes.requete_documents_par_tuuid: User_id manquant pour message {:?}", m.type_message))?
+    };
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
+    if role_prive {
+        // Ok
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+        // Ok
+    } else {
+        Err(format!("requetes.requete_documents_par_tuuid: Commande autorisation invalide pour message {:?}", m.type_message))?
+    }
+
+    let filtre = doc! {
+        CHAMP_TUUID: {"$in": &request.tuuids},
+        CHAMP_USER_ID: &user_id,
+    };
+
+    let (files, _) = get_complete_files(middleware, filtre, None, None).await?;
+
+    let mut response = RequestFilesByTuuidsResponse {
+        files: files.fichiers,
+        keys: None,
+    };
+
+    let mut cle_ids = HashSet::new();
+    for r in &response.files {
+        if let Some(cle_id) = r.cle_id.as_ref() {
+            cle_ids.insert(cle_id);
+        }
+        if let Some(cle_id) = r.metadata.cle_id.as_ref() {
+            cle_ids.insert(cle_id);
+        }
+        if let Some(version) = r.version_courante.as_ref() {
+            if let Some(cle_id) = version.cle_id.as_ref() {
+                cle_ids.insert(cle_id);
+            }
+        }
+    }
+
+    if cle_ids.len() > 0 {
+        let keys = get_file_keys(middleware, cle_ids).await?;
+        response.keys = Some(keys);
+    }
+
+    Ok(Some(middleware.build_reponse(&response)?.0))
 }

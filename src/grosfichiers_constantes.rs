@@ -64,6 +64,7 @@ pub const REQUETE_RECHERCHE_INDEX: &str = "rechercheIndex";
 pub const REQUETE_SEARCH_INDEX_V2: &str = "searchIndexV2";
 pub const REQUETE_INFO_VIDEO: &str = "getInfoVideo";
 pub const REQUEST_SYNC_DIRECTORY: &str = "syncDirectory";
+pub const REQUEST_FILES_BY_TUUID: &str = "filesByTuuid";
 
 pub const TRANSACTION_NOUVELLE_VERSION: &str = "nouvelleVersion";
 pub const TRANSACTION_NOUVELLE_COLLECTION: &str = "nouvelleCollection";
