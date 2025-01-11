@@ -100,6 +100,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
             REQUETE_INFO_VIDEO => requete_info_video(middleware, message).await,
 
             REQUEST_SYNC_DIRECTORY => request_sync_directory(middleware, message).await,
+            REQUETE_SEARCH_INDEX_V2 => search_index_v2(middleware, message).await,
             _ => {
                 error!("Message requete/action inconnue (1): '{}'. Message dropped.", action);
                 Ok(None)
@@ -159,6 +160,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
             REQUETE_INFO_VIDEO => requete_info_video(middleware, message).await,
 
             REQUEST_SYNC_DIRECTORY => request_sync_directory(middleware, message).await,
+            REQUETE_SEARCH_INDEX_V2 => search_index_v2(middleware, message).await,
             _ => {
                 error!("Message requete/action inconnue (delegation globale): '{}'. Message dropped.", action);
                 Ok(None)
@@ -447,14 +449,15 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
 
     debug!("requete_documents_par_tuuid Filtre {:?}", serde_json::to_string(&filtre)?);
 
-    let (reponse, truncated) = get_complete_files(middleware, user_id, filtre, None, None).await?;
+    let (reponse, truncated) = get_complete_files(middleware, filtre, None, None).await?;
 
     debug!("requete_documents_par_tuuid Reponse {:?}", serde_json::to_string(&reponse)?);
 
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn get_complete_files<M>(middleware: &M, user_id: String, filtre: Document, options: Option<FindOptions>, limit_size: Option<i32>) -> Result<(ReponseDocumentsParTuuid, bool), Error>
+async fn get_complete_files<M>(middleware: &M, filtre: Document, options: Option<FindOptions>, limit_size: Option<i32>)
+    -> Result<(ReponseDocumentsParTuuid, bool), Error>
     where M: MongoDao
 {
     let collection_typed =
@@ -462,6 +465,7 @@ async fn get_complete_files<M>(middleware: &M, user_id: String, filtre: Document
     let mut curseur = collection_typed.find(filtre, options).await?;
     let mut reponse = ReponseDocumentsParTuuid { fichiers: Vec::new() };
     let mut map_fichiers_par_fuuid: HashMap<String, ReponseFichierRepVersion> = HashMap::new();
+    let mut user_ids = HashSet::new();
     {
         while let Some(r) = curseur.next().await {
             let mut row = r?;
@@ -475,6 +479,10 @@ async fn get_complete_files<M>(middleware: &M, user_id: String, filtre: Document
                         Some(inner) => inner.get(0),
                         None => None
                     };
+
+                    // Gather user_ids (used for loading media)
+                    user_ids.insert(row.user_id.clone());
+
                     if let Some(fuuid) = fuuid {
                         map_fichiers_par_fuuid.insert(fuuid.clone(), row.into());
                     } else {
@@ -493,7 +501,8 @@ async fn get_complete_files<M>(middleware: &M, user_id: String, filtre: Document
 
     // Get media information for all files
     let mut media_map = HashMap::new();
-    let filtre = doc! { CHAMP_FUUID: {"$in": &fuuids_fichiers}, CHAMP_USER_ID: &user_id};
+    let user_ids: Vec<String> = user_ids.into_iter().collect();
+    let filtre = doc! { CHAMP_FUUID: {"$in": &fuuids_fichiers}, CHAMP_USER_ID: {"$in": &user_ids}};
     let options = FindOptions::builder()
         .hint(Hint::Name(String::from("fuuid_userid")))
         .build();
@@ -2919,6 +2928,18 @@ impl TransfertRequeteRechercheIndex {
             cuuids_partages: None
         }
     }
+
+    fn new_v2<S>(user_id: S, value: RequestSearchIndexV2) -> Self
+    where S: ToString
+    {
+        Self {
+            user_id: user_id.to_string(),
+            query: value.query,
+            start: Some(0),
+            limit: value.limit_count,
+            cuuids_partages: None
+        }
+    }
 }
 
 pub async fn requete_recherche_index<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
@@ -3257,7 +3278,7 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
         .sort(doc!{CHAMP_MODIFICATION: -1, "_id": 1})  // _id ensures unique paging
         .build();
 
-    let (result, truncated) = get_complete_files(middleware, user_id, filtre, Some(options), Some(limit_size)).await?;
+    let (result, truncated) = get_complete_files(middleware, filtre, Some(options), Some(limit_size)).await?;
     let complete = !truncated && result.fichiers.len() < limit_count as usize;
     let mut sync_response = RequestSyncDirectoryResponseFile {
         ok: true, cuuid, stats, files: result.fichiers, breadcrumb,
@@ -3289,47 +3310,203 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     }
 
     if ! cle_ids.is_empty() {
-        // Request decrypted keys from keymaster.
-        let routage = RoutageMessageAction::builder(
-            DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, vec![Securite::L3Protege])
-            .timeout_blocking(3_000)  // Short wait
-            .build();
-        let key_request = RequeteDechiffrage {
-            domaine: DOMAINE_NOM.to_string(),
-            liste_hachage_bytes: None,
-            cle_ids: Some(cle_ids.into_iter().map(|s| s.to_string()).collect()),
-            certificat_rechiffrage: None,
-            inclure_signature: None,
-        };
-        if let Some(TypeMessage::Valide(response)) = middleware.transmettre_requete(routage, key_request).await? {
-            let message_ref = response.message.parse()?;
-            let enveloppe_privee = middleware.get_enveloppe_signature();
-            let mut reponse_dechiffrage: ReponseRequeteDechiffrageV2 = message_ref.dechiffrer(enveloppe_privee.as_ref())?;
-            if !reponse_dechiffrage.ok {
-                error!("request_sync_directory Error loading keys: {:?}", reponse_dechiffrage.err);
-                return Ok(Some(middleware.reponse_err(Some(1), None, Some("Error fetching decryption keys"))?));
-            }
-            match reponse_dechiffrage.cles.take() {
-                Some(inner) => {
-                    sync_response.keys = Some(inner);
-                },
-                None => Err("request_sync_directory No keys received")?
-            };
-        } else {
-            Err("request_sync_directory Unable to get decryption keys - wrong response type")?
-        }
+        let keys = get_file_keys(middleware, cle_ids).await?;
+        sync_response.keys = Some(keys);
     }
-
-    // let response = if sync_response.keys.is_some() {
-    //     // Encrypt response, it contains decrypted keys
-    //     middleware.build_reponse_chiffree(sync_response, m.certificat.as_ref())?.0
-    // } else {
-    //     // No keys, send response normally
-    //     middleware.build_reponse(sync_response)?.0
-    // };
 
     let response = middleware.build_reponse_chiffree(sync_response, m.certificat.as_ref())?.0;
     debug!("request_sync_directory Response size: {}", response.buffer.len());
 
     Ok(Some(response))
+}
+
+async fn get_file_keys<M>(middleware: &M, cle_ids: HashSet<&String>)
+    -> Result<Vec<ResponseRequestDechiffrageV2Cle>, CommonError>
+    where M: GenerateurMessages + MongoDao
+{
+    // Request decrypted keys from keymaster.
+    let routage = RoutageMessageAction::builder(
+        DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, vec![Securite::L3Protege])
+        .timeout_blocking(3_000)  // Short wait
+        .build();
+    let key_request = RequeteDechiffrage {
+        domaine: DOMAINE_NOM.to_string(),
+        liste_hachage_bytes: None,
+        cle_ids: Some(cle_ids.into_iter().map(|s| s.to_string()).collect()),
+        certificat_rechiffrage: None,
+        inclure_signature: None,
+    };
+    if let Some(TypeMessage::Valide(response)) = middleware.transmettre_requete(routage, key_request).await? {
+        let message_ref = response.message.parse()?;
+        let enveloppe_privee = middleware.get_enveloppe_signature();
+        let mut reponse_dechiffrage: ReponseRequeteDechiffrageV2 = message_ref.dechiffrer(enveloppe_privee.as_ref())?;
+        if !reponse_dechiffrage.ok {
+            error!("request_sync_directory Error loading keys: {:?}", reponse_dechiffrage.err);
+            Err("Error fetching decryption keys")?;
+        }
+        match reponse_dechiffrage.cles.take() {
+            Some(inner) => Ok(inner),
+            None => Err("request_sync_directory No keys received")?
+        }
+    } else {
+        Err("request_sync_directory Unable to get decryption keys - wrong response type")?
+    }
+}
+
+#[derive(Deserialize)]
+struct RequestSearchIndexV2 {
+    query: String,
+    limit_count: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SearchResultDocument {
+    #[serde(rename = "id")]
+    tuuid: String,
+    user_id: String,
+    fuuid: Option<String>,
+    cuuids: Option<Vec<String>>,
+    score: f64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SearchResultContent {
+    docs: Option<Vec<SearchResultDocument>>,
+    #[serde(rename = "maxScore")]
+    max_score: Option<f64>,
+    #[serde(rename = "numFound")]
+    num_found: Option<usize>,
+    #[serde(rename = "numFoundExact")]
+    num_found_exact: Option<bool>,
+    start: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct SearchResult {
+    ok: bool,
+    resultat: SearchResultContent
+}
+
+#[derive(Serialize)]
+struct RequestSearchIndexV2Response {
+    ok: bool,
+    files: Option<Vec<ReponseFichierRepVersion>>,
+    keys: Option<Vec<ResponseRequestDechiffrageV2Cle>>,
+    search_results: SearchResultContent,
+}
+
+async fn search_index_v2<M>(middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => {
+            debug!("search_index_v2 user_id missing from certificate");
+            return Ok(Some(middleware.reponse_err(Some(403), None, Some("User_id missing from certificate"))?))
+        }
+    };
+
+    let request: RequestSearchIndexV2 = deser_message_buffer!(m.message);
+
+    let mut requete_transfert = TransfertRequeteRechercheIndex::new_v2(
+        &user_id, request);
+    if requete_transfert.limit.is_none() {
+        requete_transfert.limit = Some(200);
+    }
+
+    // Charger la liste des contact_id qui correspondent a l'usager courant
+    let contacts = get_contacts_user(middleware, user_id).await?;
+
+    // Faire une requete pour obtenir tous les partages associes aux contacts
+    let contact_ids: Vec<&str> = contacts.iter().map(|c| c.contact_id.as_str()).collect();
+    let filtre = doc! {CHAMP_CONTACT_ID: {"$in": contact_ids}};
+    let collection = middleware.get_collection_typed::<RowPartagesUsager>(
+        NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
+    let mut curseur = collection.find(filtre, None).await?;
+
+    // Conserver les tuuids (cuuids partages)
+    let mut cuuids = HashSet::new();
+    while curseur.advance().await? {
+        let row = curseur.deserialize_current()?;
+        cuuids.insert(row.tuuid.to_owned());
+    }
+
+    // Convertir en vec
+    let cuuids: Vec<String> = cuuids.into_iter().collect();
+    requete_transfert.cuuids_partages = Some(cuuids);
+
+    let domaine: &str = RolesCertificats::SolrRelai.into();
+    let action = "fichiers";
+    let routage = RoutageMessageAction::builder(domaine, action, vec![Securite::L3Protege])
+        .timeout_blocking(5_000)
+        .build();
+    let result: SearchResult = match middleware.transmettre_requete(routage, &requete_transfert).await {
+        Ok(result) => match result {
+            Some(response) => match response {
+                TypeMessage::Valide(response) => {
+                    debug!("Search response: {:?}", from_utf8(&response.message.buffer)?);
+                    let response_ref = response.message.parse()?;
+                    response_ref.contenu()?.deserialize()?
+                },
+                _ => {
+                    error!("Server error during query (wrong response)");
+                    return Ok(Some(middleware.reponse_err(Some(500), None, Some("Server error during query (wrong response)"))?));
+                }
+            }
+            None => {
+                error!("Server error during query (no response)");
+                return Ok(Some(middleware.reponse_err(Some(500), None, Some("Server error during query (no response)"))?));
+            }
+        }
+        Err(e) => {
+            error!("Error running search query: {:?}", e);
+            return Ok(Some(middleware.reponse_err(Some(500), None, Some("Server error during query (timeout)"))?));
+        }
+    };
+
+    let mut response = RequestSearchIndexV2Response {
+        ok: true,
+        files: None,
+        keys: None,
+        search_results: result.resultat,
+    };
+
+    if result.ok {
+        if let Some(docs) = response.search_results.docs.as_ref () {
+            if docs.len() > 0 {
+                let first_batch_len = if docs.len() > 20 { 20 } else { docs.len() };
+                debug!("Load first {} docs", first_batch_len);
+                let first_batch = &docs[..first_batch_len];
+                let tuuids: Vec<&String> = first_batch.iter().map(|d| &d.tuuid).collect();
+                let filtre = doc!{"tuuid": {"$in": &tuuids}};
+                let (result, truncated) = get_complete_files(middleware, filtre, None, None).await?;
+                response.files = Some(result.fichiers);
+
+                let mut cle_ids = HashSet::new();
+                if let Some(files) = response.files.as_ref() {
+                    for r in files {
+                        if let Some(cle_id) = r.cle_id.as_ref() {
+                            cle_ids.insert(cle_id);
+                        }
+                        if let Some(cle_id) = r.metadata.cle_id.as_ref() {
+                            cle_ids.insert(cle_id);
+                        }
+                        if let Some(version) = r.version_courante.as_ref() {
+                            if let Some(cle_id) = version.cle_id.as_ref() {
+                                cle_ids.insert(cle_id);
+                            }
+                        }
+                    }
+                }
+
+                if cle_ids.len() > 0 {
+                    let keys = get_file_keys(middleware, cle_ids).await?;
+                    response.keys = Some(keys);
+                }
+            }
+        }
+    }
+
+    Ok(Some(middleware.build_reponse_chiffree(&response, m.certificat.as_ref())?.0))
 }

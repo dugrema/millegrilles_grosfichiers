@@ -188,6 +188,7 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         REQUETE_JWT_STREAMING,
         REQUETE_SOUS_REPERTOIRES,
         REQUETE_RECHERCHE_INDEX,
+        REQUETE_SEARCH_INDEX_V2,
         REQUETE_INFO_VIDEO,
         REQUEST_SYNC_DIRECTORY,
     ];

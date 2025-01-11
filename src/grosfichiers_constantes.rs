@@ -61,6 +61,7 @@ pub const REQUETE_STRUCTURE_REPERTOIRE: &str = "getStructureRepertoire";
 pub const REQUETE_JWT_STREAMING: &str = "getJwtStreaming";
 pub const REQUETE_SOUS_REPERTOIRES: &str = "getSousRepertoires";
 pub const REQUETE_RECHERCHE_INDEX: &str = "rechercheIndex";
+pub const REQUETE_SEARCH_INDEX_V2: &str = "searchIndexV2";
 pub const REQUETE_INFO_VIDEO: &str = "getInfoVideo";
 pub const REQUEST_SYNC_DIRECTORY: &str = "syncDirectory";
 
