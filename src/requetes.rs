@@ -3151,17 +3151,51 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     let user_id = match request.contact_id {
         None => user_id,
         Some(contact_id) => {
+            let cuuid = match request.cuuid.as_ref() {
+                Some(inner) => inner.as_str(),
+                None => {
+                    error!("request_sync_directory Access refused, no tuuid for request with contact_id");
+                    return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access refused, no tuuid for request with contact_id"))?))
+                }
+            };
+
             // Determine the effective user_id by using the shared contact information
-            todo!("Include list of shared directories");
-            let filtre = doc!{ CHAMP_CONTACT_ID: contact_id, CHAMP_CONTACT_USER_ID: &user_id };
+            let filtre = doc!{ CHAMP_CONTACT_ID: &contact_id, CHAMP_CONTACT_USER_ID: &user_id };
             let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
-            match collection.find_one(filtre, None).await? {
-                Some(inner) => inner.user_id,   // User_id owner of the directory
+            let contact_row = match collection.find_one(filtre, None).await? {
+                Some(inner) => inner,
                 None => {
                     error!("request_sync_directory Acces refuse, mauvais contact_id");
                     return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access refused, invalid shared contact_id"))?))
                 }
+            };
+
+            let collection_reps_typed =
+                middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+            let current_dir_filtre = doc!{"tuuid": cuuid, "user_id": &contact_row.user_id};
+            let directory = match collection_reps_typed.find_one(current_dir_filtre, None).await? {
+                Some(inner) => inner,
+                None => {
+                    debug!("request_sync_directory Unknown directory {:?} for user {}", cuuid, user_id);
+                    return Ok(Some(middleware.reponse_err(Some(404), None, Some("Unknown directory"))?))
+                }
+            };
+
+            let mut tuuids = vec![cuuid.to_owned()];
+            if let Some(path_cuuids) = directory.path_cuuids {
+                tuuids.extend(path_cuuids);
             }
+
+            let filtre_shares = doc!{"contact_id": contact_id, "tuuid": {"$in": tuuids}};
+            let collection_shares = middleware.get_collection_typed::<RowPartagesUsager>(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
+            let _shared_collection = match collection_shares.find_one(filtre_shares, None).await? {
+                Some(inner) => inner,
+                None => {
+                    error!("request_sync_directory Access refused, the collection is not shared (1)");
+                    return Ok(Some(middleware.reponse_err(Some(401), None, Some("Access refused, the collection is not shared"))?))
+                }
+            };
+            contact_row.user_id
         }
     };
 
@@ -3179,7 +3213,9 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
             None => doc!{"user_id": &user_id, "supprime": true, "supprime_indirect": false}
         }
     };
-    
+
+    debug!("request_sync_directory Filtre: {:?}", filtre);
+
     let last_sync = match request.last_sync {
         Some(last_sync) => {
             match DateTime::from_timestamp(last_sync, 0) {
@@ -3288,7 +3324,6 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     };
 
     // Gather all required keys
-    // TODO: check if file creation_date < last sync, we can safely ignore those keys.
     let mut cle_ids = HashSet::new();
     for r in &sync_response.files {
         if let Some(cle_id) = r.cle_id.as_ref() {
@@ -3555,9 +3590,14 @@ async fn request_files_by_tuuid<M>(middleware: &M, m: MessageValide)
     let mut user_ids = HashSet::new();
     user_ids.insert(user_id.clone());
 
-    let shares = if Some(true) == request.shared {
+    let shared = request.shared_contact_id.is_some() || request.shared == Some(true);
+
+    let shares = if shared {
         debug!("request_files_by_tuuid Allow any shared collection for user_id: {}", user_id);
-        let filtre_shared = doc!{"contact_user_id": &user_id};
+        let mut filtre_shared = doc!{"contact_user_id": &user_id};
+        if let Some(contact_id) = request.shared_contact_id {
+            filtre_shared.insert("contact_id", contact_id);
+        }
         let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
         let options = FindOptions::builder().limit(1_000).build();  // Limit to protect performance
         let mut cursor = collection.find(filtre_shared, options).await?;
