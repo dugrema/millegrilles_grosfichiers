@@ -3515,7 +3515,12 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
 
 #[derive(Clone, Deserialize)]
 struct RequestFilesByTuuid {
-    tuuids: Vec<String>
+    /// Tuuids to load
+    tuuids: Vec<String>,
+    /// Use this shared contact_id (more efficient than shared==true)
+    shared_contact_id: Option<String>,
+    /// Use true to allow loading from any shared collection
+    shared: Option<bool>,
 }
 
 #[derive(Clone, Serialize)]
@@ -3528,7 +3533,7 @@ async fn request_files_by_tuuid<M>(middleware: &M, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
-    debug!("requete_documents_par_tuuid Message : {:?}", & m.type_message);
+    debug!("request_files_by_tuuid Message : {:?}", & m.type_message);
     let request: RequestFilesByTuuid = {
         let message_ref = m.message.parse()?;
         message_ref.contenu()?.deserialize()?
@@ -3536,7 +3541,7 @@ async fn request_files_by_tuuid<M>(middleware: &M, m: MessageValide)
 
     let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
-        None => Err(format!("requetes.requete_documents_par_tuuid: User_id manquant pour message {:?}", m.type_message))?
+        None => Err(format!("requetes.request_files_by_tuuid: User_id manquant pour message {:?}", m.type_message))?
     };
     let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive {
@@ -3544,18 +3549,106 @@ async fn request_files_by_tuuid<M>(middleware: &M, m: MessageValide)
     } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
         // Ok
     } else {
-        Err(format!("requetes.requete_documents_par_tuuid: Commande autorisation invalide pour message {:?}", m.type_message))?
+        Err(format!("requetes.request_files_by_tuuid: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
+    let mut user_ids = HashSet::new();
+    user_ids.insert(user_id.clone());
+
+    let shares = if Some(true) == request.shared {
+        debug!("request_files_by_tuuid Allow any shared collection for user_id: {}", user_id);
+        let filtre_shared = doc!{"contact_user_id": &user_id};
+        let collection = middleware.get_collection_typed::<ContactRow>(NOM_COLLECTION_PARTAGE_CONTACT)?;
+        let options = FindOptions::builder().limit(1_000).build();  // Limit to protect performance
+        let mut cursor = collection.find(filtre_shared, options).await?;
+        let mut shares = Vec::new();
+        while cursor.advance().await? {
+            let row = cursor.deserialize_current()?;
+            user_ids.insert(row.user_id.clone());  // Keep user_id of the owner of the files for the filter
+            shares.push(row);
+        }
+        if shares.len() == 1000 {
+            warn!("request_files_by_tuuid Shared collection limit hit for user_id: {:?}, not all files may be loaded", user_id);
+        }
+        Some(shares)
+    } else {
+        None
+    };
+
+    let user_ids: Vec<String> = user_ids.into_iter().collect();
     let filtre = doc! {
         CHAMP_TUUID: {"$in": &request.tuuids},
-        CHAMP_USER_ID: &user_id,
+        CHAMP_USER_ID: {"$in": user_ids},
     };
+
+    debug!("request_files_by_tuuid Filter: {:?}", filtre);
 
     let (files, _) = get_complete_files(middleware, filtre, None, None).await?;
 
+    // Post-filter of the shared files (different user_id)
+    let files = match shares {
+        Some(shares) => {
+            // Group files by user_id
+            let mut updated_files = Vec::new();
+            let mut files_by_user_id: HashMap<String, Vec<ReponseFichierRepVersion>> = HashMap::new();
+            for file in files.fichiers {
+                if file.user_id.as_str() == user_id.as_str() {
+                    updated_files.push(file);  // Move file to final list (same user)
+                } else {
+                    match files_by_user_id.get_mut(&file.user_id) {
+                        Some(mut list) => {
+                            list.push(file);
+                        }
+                        None => {
+                            files_by_user_id.insert(file.user_id.clone(), vec![file]);
+                        }
+                    }
+                }
+            }
+
+            let collection_shared = middleware.get_collection_typed::<RowPartagesUsager>(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
+
+            for (user_id, files) in files_by_user_id {
+                // Load all cuuids shared by this user
+                let mut contact_ids = Vec::new();
+                for share in &shares {
+                    if share.user_id.as_str() == user_id.as_str() {
+                        contact_ids.push(share.contact_id.clone());
+                    }
+                }
+                let filtre_tuuids = doc! { CHAMP_CONTACT_ID: {"$in": contact_ids} };
+                let mut cursor = collection_shared.find(filtre_tuuids, None).await?;
+                let mut shared_tuuids = HashSet::new();
+                while cursor.advance().await? {
+                    let row = cursor.deserialize_current()?;
+                    shared_tuuids.insert(row.tuuid);
+                }
+                debug!("request_files_by_tuuid request_files_by_tuuid User_id {} shared tuuids {:?}", user_id, shared_tuuids);
+
+                for file in files {
+                    debug!("request_files_by_tuuid Check if user_id {} shared file {}, cuuids {:?}", user_id, file.tuuid, file.path_cuuids);
+                    if shared_tuuids.contains(&file.tuuid) {
+                        // Collection is shared directly. Keep it.
+                        updated_files.push(file);
+                    } else if let Some(path_cuuids) = file.path_cuuids.as_ref() {
+                        // Check if file is part of a shared collection.
+                        let mut path_cuuids_hashset: HashSet<String> = HashSet::new();
+                        path_cuuids_hashset.extend(path_cuuids.into_iter().map(|s|s.to_string()));
+                        let intersection = shared_tuuids.intersection(&path_cuuids_hashset);
+                        if intersection.count() > 0 {
+                            // File is part of a shared path for this user. Keep it.
+                            updated_files.push(file);
+                        }
+                    }
+                }
+            }
+            updated_files
+        }
+        None => files.fichiers
+    };
+
     let mut response = RequestFilesByTuuidsResponse {
-        files: files.fichiers,
+        files,
         keys: None,
     };
 
