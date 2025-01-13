@@ -3147,9 +3147,11 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
 
     let request: RequestSyncDirectory = deser_message_buffer!(m.message);
 
+    let shared_collection = request.contact_id.is_some();
+
     // Determine if we are loading a shared directory
-    let user_id = match request.contact_id {
-        None => user_id,
+    let (user_id, shared_tuuid) = match request.contact_id {
+        None => (user_id, None),
         Some(contact_id) => {
             let cuuid = match request.cuuid.as_ref() {
                 Some(inner) => inner.as_str(),
@@ -3188,14 +3190,14 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
 
             let filtre_shares = doc!{"contact_id": contact_id, "tuuid": {"$in": tuuids}};
             let collection_shares = middleware.get_collection_typed::<RowPartagesUsager>(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
-            let _shared_collection = match collection_shares.find_one(filtre_shares, None).await? {
+            let shared_collection = match collection_shares.find_one(filtre_shares, None).await? {
                 Some(inner) => inner,
                 None => {
                     error!("request_sync_directory Access refused, the collection is not shared (1)");
                     return Ok(Some(middleware.reponse_err(Some(401), None, Some("Access refused, the collection is not shared"))?))
                 }
             };
-            contact_row.user_id
+            (contact_row.user_id, Some(shared_collection.tuuid))
         }
     };
 
@@ -3248,8 +3250,26 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
                 // Add the current directory to path
                 let path_cuuids = match current_dir.path_cuuids {
                     Some(mut path_cuuids) => {
-                        // Add the current directory to list
-                        path_cuuids.push(cuuid.to_string());
+                        // Add the current directory to list (path_cuuids has reverse order)
+                        path_cuuids.insert(0, cuuid.to_string());
+
+                        if shared_collection {
+                            // Filter out parent directories that are not shared
+                            let mut shared_idx = 1;
+                            if let Some(cuuid) = shared_tuuid.as_ref() {
+                                for directory in &path_cuuids {
+                                    if directory.as_str() == cuuid.as_str() {
+                                        break;
+                                    }
+                                    shared_idx += 1;
+                                }
+                            }
+                            debug!("Cuuid {}, Truncating path_cuuids {:?} to {}", cuuid, path_cuuids, shared_idx);
+                            path_cuuids.truncate(shared_idx);
+                        }
+
+                        debug!("Breadcrumb {:?}", path_cuuids);
+
                         path_cuuids
                     }
                     None => vec![cuuid.to_string()],
