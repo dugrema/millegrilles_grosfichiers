@@ -1982,7 +1982,7 @@ where M: MongoDao + GenerateurMessages + ValidateurX509 {
             {CHAMP_CREATION: {"$lte": expiration}},
         ]
     };
-    info!("remove_impossible_jobs Collection {} action {}, Filtre: {:?}", nom_collection, action, filtre);
+    // info!("remove_impossible_jobs Collection {} action {}, Filtre: {:?}", nom_collection, action, filtre);
 
     let options = FindOptions::builder().limit(limit).build();
     let mut curseur = collection.find_with_session(filtre, options, session).await?;
