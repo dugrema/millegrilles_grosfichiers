@@ -1922,7 +1922,6 @@ async fn transaction_ajouter_contact_local<M>(middleware: &M, transaction: Trans
         Err(format!("grosfichiers.transaction_ajouter_contact_local Erreur sauvegarde contact : {:?}", e))?
     }
 
-    // Retourner le tuuid comme reponse, aucune transaction necessaire
     match middleware.reponse_ok(None, None) {
         Ok(r) => Ok(Some(r)),
         Err(_) => Err(CommonError::Str("grosfichiers.transaction_ajouter_contact_local Erreur formattage reponse"))
@@ -1950,8 +1949,14 @@ async fn transaction_supprimer_contacts<M>(middleware: &M, transaction: Transact
         CHAMP_USER_ID: &user_id,
         CHAMP_CONTACT_ID: {"$in": transaction_mappee.contact_ids},
     };
-    let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_CONTACT)?;
-    if let Err(e) = collection.delete_many_with_session(filtre, None, session).await {
+    let collection_contacts = middleware.get_collection(NOM_COLLECTION_PARTAGE_CONTACT)?;
+    if let Err(e) = collection_contacts.delete_many_with_session(filtre.clone(), None, session).await {
+        Err(format!("grosfichiers.transaction_supprimer_contacts Erreur suppression contacts : {:?}", e))?
+    }
+
+    // Remove all shared collections associated to deleted contacts
+    let collection_shared_collections = middleware.get_collection(NOM_COLLECTION_PARTAGE_COLLECTIONS)?;
+    if let Err(e) = collection_shared_collections.delete_many_with_session(filtre, None, session).await {
         Err(format!("grosfichiers.transaction_supprimer_contacts Erreur suppression contacts : {:?}", e))?
     }
 

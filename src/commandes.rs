@@ -2197,6 +2197,14 @@ struct ReponseChargerUserIdParNomUsager {
     usagers: Option<HashMap<String, Option<String>>>
 }
 
+#[derive(Serialize)]
+struct CommandeAjouterContactLocalReponse {
+    ok: bool,
+    nom_usager: String,
+    user_id: String,
+    contact_id: String
+}
+
 async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
@@ -2285,13 +2293,29 @@ async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, ges
         return Ok(Some(middleware.reponse_err(None, None, Some("Usager courant ne peut etre ajoute au contacts"))?))
     }
 
+    // Check if contact already exists
+    let collection = middleware.get_collection(NOM_COLLECTION_PARTAGE_CONTACT)?;
+    let filtre_current = doc!{CHAMP_USER_ID: &user_id, "contact_user_id": &user_contact_id};
+    if collection.find_one(filtre_current, None).await?.is_some() {
+        debug!("Share already exists for user_id: {}, contact user id: {}", user_id, user_contact_id);
+        return Ok(Some(middleware.reponse_err(Some(409), None, Some("Share already exists"))?));
+    }
+
     // Convertir en transaction
     let transaction = TransactionAjouterContactLocal { user_id, contact_user_id: user_contact_id };
 
     // Traiter la transaction
-    Ok(sauvegarder_traiter_transaction_serializable_v2(
-        middleware, &transaction, gestionnaire, session, DOMAINE_NOM, TRANSACTION_AJOUTER_CONTACT_LOCAL).await?.0)
-    // Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+    sauvegarder_traiter_transaction_serializable_v2(
+        middleware, &transaction, gestionnaire, session, DOMAINE_NOM, TRANSACTION_AJOUTER_CONTACT_LOCAL).await?;
+
+    // Respond with transaction information
+    let response = CommandeAjouterContactLocalReponse {
+        ok: true,
+        nom_usager: commande.nom_usager,
+        user_id: transaction.user_id,
+        contact_id: transaction.contact_user_id
+    };
+    Ok(Some(middleware.build_reponse(response)?.0))
 }
 
 async fn commande_supprimer_contacts<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)

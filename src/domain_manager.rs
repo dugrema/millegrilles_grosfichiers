@@ -627,6 +627,31 @@ where M: MongoDao + ConfigMessages
         Some(options_unique_media)
     ).await?;
 
+    // Unique index for contacts
+    let options_unique_contact = IndexOptions {nom_index: Some("contact_id".to_string()), unique: true};
+    let champs_index_contact = vec!(
+        ChampIndex {nom_champ: String::from("contact_id"), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_PARTAGE_CONTACT,
+        champs_index_contact,
+        Some(options_unique_contact)
+    ).await?;
+
+    // Unique index for shared collections
+    let options_unique_shared_collections = IndexOptions {nom_index: Some("user_collection".to_string()), unique: true};
+    let champs_index_shared_collections = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_USER_ID), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_PARTAGE_COLLECTIONS,
+        champs_index_shared_collections,
+        Some(options_unique_shared_collections)
+    ).await?;
+
     Ok(())
 }
 
