@@ -642,6 +642,7 @@ where M: MongoDao + ConfigMessages
     // Unique index for shared collections
     let options_unique_shared_collections = IndexOptions {nom_index: Some("user_collection".to_string()), unique: true};
     let champs_index_shared_collections = vec!(
+        ChampIndex {nom_champ: String::from("contact_id"), direction: 1},
         ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
         ChampIndex {nom_champ: String::from(CHAMP_USER_ID), direction: 1},
     );
