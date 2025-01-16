@@ -683,7 +683,7 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
         }
         info!("creer_jobs_manquantes DONE");
     }
-    if minutes % 4 == 2
+    // if minutes % 4 == 2
     {
         // Restart expired media jobs
         info!("entretien_jobs_expirees STARTING");
@@ -693,7 +693,7 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
         }
         info!("entretien_jobs_expirees DONE");
     }
-    if hours % 3 == 2 && minutes == 27
+    // if hours % 3 == 2 && minutes == 27
     {
         // Remove media/indexation jobs that will never complete
         info!("maintenance_impossible_jobs STARTING");

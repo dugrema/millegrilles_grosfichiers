@@ -525,10 +525,10 @@ pub async fn set_flag_video_traite<M,S>(middleware: &M, tuuid_in: Option<S>, fuu
 {
     // let tuuid = match &tuuid_in {Some(inner)=>Some(inner.to_string()), None=>None};
 
-    let filtre_video = doc! {"fuuid": fuuid};
-    // if let Some(tuuid) = tuuid.as_ref() {
-    //     filtre_video.insert("tuuids", tuuid);
-    // }
+    let mut filtre_video = doc! {"fuuid": fuuid};
+    if let Some(tuuid) = tuuid_in.as_ref() {
+        filtre_video.insert("tuuids", tuuid.to_string());
+    }
 
     // Set flag versionFichiers
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
