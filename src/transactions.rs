@@ -2344,6 +2344,7 @@ async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, 
                     row.path_cuuids = Some(destination.clone());
                     row.type_node = TypeNode::Repertoire.to_str();  // It is possible to copy a Collection to another one
                     row.flag_index = false;  // Need to index new path
+                    row.derniere_modification = Utc::now();
                     // Insert the directory with the updated identifiers
                     debug!("transaction_copy_v2 Copy (directories) tuuid {} to {}", directory, row.tuuid);
                     collection_reps.insert_one_with_session(row, None, session).await?;
@@ -2374,6 +2375,8 @@ async fn copy_files_to_directory<'a, M>(
     let collection_versions =
         middleware.get_collection_typed::<NodeFichierVersionRow>(NOM_COLLECTION_VERSIONS)?;
 
+    let now = Utc::now();
+
     while cursor_reps.advance(session).await? {
         let mut row = cursor_reps.deserialize_current()?;
         let original_user_id = row.user_id.clone();
@@ -2389,6 +2392,7 @@ async fn copy_files_to_directory<'a, M>(
         row.user_id = user_id.to_string();  // We may be copying from shared collections
         row.path_cuuids = Some(destination.clone());
         row.flag_index = false;  // Need to index new path
+        row.derniere_modification = now.clone();
 
         let fuuids_versions = row.fuuids_versions.clone();
 
