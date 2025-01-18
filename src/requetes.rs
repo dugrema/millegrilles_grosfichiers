@@ -3349,12 +3349,19 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
         if let Some(cle_id) = r.cle_id.as_ref() {
             cle_ids.insert(cle_id);
         }
-        if let Some(cle_id) = r.metadata.ref_hachage_bytes.as_ref() {
-            cle_ids.insert(cle_id);
-        }
+
         if let Some(cle_id) = r.metadata.cle_id.as_ref() {
             cle_ids.insert(cle_id);
+        } else if let Some(cle_id) = r.metadata.ref_hachage_bytes.as_ref() {
+            // Legacy, old field for cle_id
+            cle_ids.insert(cle_id);
+        } else if let Some(fuuids) = r.fuuids_versions.as_ref() {
+            // Legacy, use fuuid as cle_id
+            if let Some(fuuid) = fuuids.first() {
+                cle_ids.insert(fuuid);
+            }
         }
+
         if let Some(version) = r.version_courante.as_ref() {
             if let Some(cle_id) = version.cle_id.as_ref() {
                 cle_ids.insert(cle_id);
