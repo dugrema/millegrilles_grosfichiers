@@ -3349,6 +3349,9 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
         if let Some(cle_id) = r.cle_id.as_ref() {
             cle_ids.insert(cle_id);
         }
+        if let Some(cle_id) = r.metadata.ref_hachage_bytes.as_ref() {
+            cle_ids.insert(cle_id);
+        }
         if let Some(cle_id) = r.metadata.cle_id.as_ref() {
             cle_ids.insert(cle_id);
         }
