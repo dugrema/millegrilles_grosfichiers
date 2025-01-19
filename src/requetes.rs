@@ -3372,6 +3372,14 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
         for breadcrumb in breadcrumbs {
             if let Some(cle_id) = breadcrumb.metadata.cle_id.as_ref() {
                 cle_ids.insert(cle_id);
+            } else if let Some(cle_id) = breadcrumb.metadata.ref_hachage_bytes.as_ref() {
+                // Legacy, old field for cle_id
+                cle_ids.insert(cle_id);
+            } else if let Some(fuuids) = breadcrumb.fuuids_versions.as_ref() {
+                // Legacy, use fuuid as cle_id
+                if let Some(fuuid) = fuuids.first() {
+                    cle_ids.insert(fuuid);
+                }
             }
         }
     }
