@@ -3738,11 +3738,23 @@ async fn request_files_by_tuuid<M>(middleware: &M, m: MessageValide)
 
     let mut cle_ids = HashSet::new();
     for r in &response.files {
+
+        let fuuid = match r.fuuids_versions.as_ref() {
+            Some(fuuids) => fuuids.get(0),
+            None => None
+        };
+
         if let Some(cle_id) = r.cle_id.as_ref() {
             cle_ids.insert(cle_id);
         }
         if let Some(cle_id) = r.metadata.cle_id.as_ref() {
             cle_ids.insert(cle_id);
+        } else if let Some(ref_hachage_bytes) = r.metadata.ref_hachage_bytes.as_ref() {
+            // Legacy method to get key id
+            cle_ids.insert(ref_hachage_bytes);
+        } else if let Some(fuuid) = fuuid.as_ref() {
+            // Legacy method to get key id
+            cle_ids.insert(fuuid);
         }
         if let Some(version) = r.version_courante.as_ref() {
             if let Some(cle_id) = version.cle_id.as_ref() {
