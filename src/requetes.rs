@@ -472,6 +472,7 @@ async fn get_complete_files<M>(middleware: &M, filtre: Document, options: Option
         while let Some(r) = curseur.next().await {
             let mut row = r?;
             // row.map_date_modification();
+            debug!("Loading file/directory\n{:?}", row);
 
             let type_node = TypeNode::try_from(row.type_node.as_str())?;
             match type_node {
@@ -500,6 +501,7 @@ async fn get_complete_files<M>(middleware: &M, filtre: Document, options: Option
 
     // Recuperer l'information de versions de tous les fichiers
     let fuuids_fichiers: Vec<&str> = map_fichiers_par_fuuid.keys().map(|s| s.as_str()).collect();
+    // debug!("Load fuuids\n{:?}", fuuids_fichiers);
 
     // Get media information for all files
     let mut media_map = HashMap::new();
@@ -3520,22 +3522,22 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         Ok(result) => match result {
             Some(response) => match response {
                 TypeMessage::Valide(response) => {
-                    debug!("Search response: {:?}", from_utf8(&response.message.buffer)?);
+                    // debug!("Search response: {:?}", from_utf8(&response.message.buffer)?);
                     let response_ref = response.message.parse()?;
                     response_ref.contenu()?.deserialize()?
                 },
                 _ => {
-                    error!("Server error during query (wrong response)");
+                    error!("search_index_v2 Server error during query (wrong response)");
                     return Ok(Some(middleware.reponse_err(Some(500), None, Some("Server error during query (wrong response)"))?));
                 }
             }
             None => {
-                error!("Server error during query (no response)");
+                error!("search_index_v2 Server error during query (no response)");
                 return Ok(Some(middleware.reponse_err(Some(500), None, Some("Server error during query (no response)"))?));
             }
         }
         Err(e) => {
-            error!("Error running search query: {:?}", e);
+            error!("search_index_v2 Error running search query: {:?}", e);
             return Ok(Some(middleware.reponse_err(Some(500), None, Some("Server error during query (timeout)"))?));
         }
     };
@@ -3551,11 +3553,13 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         if let Some(docs) = response.search_results.docs.as_ref () {
             if docs.len() > 0 {
                 let first_batch_len = if docs.len() > 30 { 30 } else { docs.len() };
-                debug!("Load first {} docs", first_batch_len);
+                // debug!("search_index_v2 Load first {} docs", first_batch_len);
                 let first_batch = &docs[..first_batch_len];
                 let tuuids: Vec<&String> = first_batch.iter().map(|d| &d.tuuid).collect();
                 let filtre = doc!{"tuuid": {"$in": &tuuids}};
+                // debug!("search_index_v2 Filter for loading files:\n{:?}", filtre);
                 let (result, truncated) = get_complete_files(middleware, filtre, None, None).await?;
+                // debug!("Loaded {} complete files", result.fichiers.len());
                 response.files = Some(result.fichiers);
 
                 let mut cle_ids = HashSet::new();
@@ -3579,6 +3583,8 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
                     let keys = get_file_keys(middleware, cle_ids).await?;
                     response.keys = Some(keys);
                 }
+            } else {
+                debug!("search_index_v2 No results in search");
             }
         }
     }
