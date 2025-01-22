@@ -19,7 +19,7 @@ use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDa
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
-use millegrilles_common_rust::serde_json::json;
+use millegrilles_common_rust::serde_json::{json, Value};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 
 use crate::grosfichiers_constantes::*;
@@ -306,6 +306,8 @@ struct JobDetail {
     retry: Option<u16>,
     #[serde(default, skip_serializing_if="Option::is_none", serialize_with="optionepochseconds::serialize", deserialize_with="opt_chrono_datetime_as_bson_datetime::deserialize")]
     date_maj: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    params: Option<HashMap<String, Value>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
