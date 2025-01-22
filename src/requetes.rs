@@ -1847,7 +1847,7 @@ pub async fn verifier_acces_usager_media<M,S,T,V>(middleware: &M, user_id_in: S,
     debug!("verifier_acces_usager_media Requested fuuids : {:?}", fuuids);
 
     // Build list of all original fuuids for this user on requested fuuids (may be images or videos).
-    let original_fuuids = {
+    let verified_fuuids = {
         let mut original_fuuids = Vec::new();
         let filtre = doc! {"fuuids_reclames": {"$in": &fuuids}};
         let options = FindOptions::builder()
@@ -1860,16 +1860,34 @@ pub async fn verifier_acces_usager_media<M,S,T,V>(middleware: &M, user_id_in: S,
             let row = cursor.deserialize_current()?;
             original_fuuids.push(row.fuuid);
         }
-        original_fuuids
+
+        // Filter by user from fichiers_rep
+        let filtre = doc!{"fuuids_versions": {"$in": &original_fuuids}, "user_id": &user_id};
+        let collection_reps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+        let mut cursor = collection_reps.find(filtre, None).await?;
+        let mut verified_fuuids = HashSet::new();
+        while cursor.advance().await? {
+            let row = cursor.deserialize_current()?;
+            if let Some(fuuids) = row.fuuids_versions {
+                for fuuid in fuuids {
+                    if original_fuuids.contains(&fuuid) {
+                        verified_fuuids.insert(fuuid);
+                    }
+                }
+            }
+        }
+
+        verified_fuuids
     };
 
-    debug!("verifier_acces_usager_media Original fuuids = {:?}", original_fuuids);
+    debug!("verifier_acces_usager_media Original fuuids = {:?}", verified_fuuids);
 
     // Get all media available to the user for these files
     let allowable_fuuids = {
         let mut fuuids_acces = HashSet::new();
+        let fuuids_list: Vec<&String> = verified_fuuids.iter().collect();
         let filtre = doc! {
-            CHAMP_FUUID: { "$in": original_fuuids },
+            CHAMP_FUUID: { "$in": fuuids_list },
             CHAMP_USER_ID: user_id,
         };
         let collection = middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
@@ -1887,6 +1905,10 @@ pub async fn verifier_acces_usager_media<M,S,T,V>(middleware: &M, user_id_in: S,
                 fuuids_acces.extend(video.into_values().map(|x| x.fuuid_video));
             }
         }
+
+        // Include all original fuuids found in the fichiers_rep table by user.
+        fuuids_acces.extend(verified_fuuids);
+
         fuuids_acces
     };
 
