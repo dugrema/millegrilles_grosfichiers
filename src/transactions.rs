@@ -66,6 +66,7 @@ pub async fn aiguillage_transaction<M, T>(_gestionnaire: &GrosFichiersDomainMana
         TRANSACTION_DEPLACER_FICHIERS_COLLECTION => transaction_deplacer_fichiers_collection(middleware, transaction, session).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => transaction_supprimer_documents(middleware, transaction, session).await,
         TRANSACTION_RECUPERER_DOCUMENTS_V2 => transaction_recuperer_documents_v2(middleware, transaction, session).await,
+        TRANSACTION_RECYCLE_ITEMS_V3 => transaction_recycle_items_v3(middleware, transaction, session).await,
         TRANSACTION_SUPPRIMER_ORPHELINS => transaction_supprimer_orphelins(middleware, transaction, session).await,
         TRANSACTION_DELETE_V2 => transaction_delete_v2(middleware, transaction, session).await,
         TRANSACTION_MOVE_V2 => transaction_move_v2(middleware, transaction, session).await,
@@ -2475,10 +2476,101 @@ async fn copy_media_file<M,S,T>(middleware: &M, session: &mut ClientSession, use
 
 #[derive(Serialize, Deserialize)]
 pub struct TransactionRecycleItemsV3 {
+    /// Original command
+    pub command: MessageMilleGrillesOwned,
+
+    /// User Id
+    pub user_id: String,
+
     /// Files to restore.
     pub file_tuuids: Vec<String>,
 
     /// Directories to restore.
     /// All files with supprime_indirect == true in those directories will be restored.
     pub directory_tuuids: Vec<String>
+}
+
+
+async fn transaction_recycle_items_v3<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao
+{
+    debug!("transaction_recuperer_documents_v2 Consommer transaction : {}", transaction.transaction.id);
+
+    let transaction: TransactionRecycleItemsV3 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+
+    let user_id = transaction.user_id;
+
+    let collection = middleware.get_collection_typed::<NodeFichierRepBorrowed>(NOM_COLLECTION_FICHIERS_REP)?;
+
+    if transaction.file_tuuids.len() > 0 {
+        recycle_files(middleware, session, user_id.as_str(), &transaction.file_tuuids).await?;
+    }
+
+    if transaction.directory_tuuids.len() > 0 {
+        // Recover directories
+        let filtre_directory = doc!{CHAMP_TUUID: {"$in": &transaction.directory_tuuids}, CHAMP_USER_ID: &user_id};
+        let ops = doc!{
+            "$set": {CHAMP_SUPPRIME: false, CHAMP_SUPPRIME_INDIRECT: false},
+            "$currentDate": {CHAMP_MODIFICATION: true},
+        };
+        collection.update_many_with_session(filtre_directory, ops, None, session).await?;
+
+        // Recover files directly under each directory (indirectly deleted)
+        let filtre_files = doc!{
+            format!("{}.0", CHAMP_PATH_CUUIDS): {"$in": &transaction.directory_tuuids},
+            CHAMP_USER_ID: &user_id,
+            CHAMP_SUPPRIME: true,
+            CHAMP_SUPPRIME_INDIRECT: true,
+        };
+        let mut cursor = collection.find(filtre_files, None).await?;
+        let mut file_tuuids = Vec::new();
+        while cursor.advance().await? {
+            let mut row = cursor.deserialize_current()?;
+            file_tuuids.push(row.tuuid.to_string());
+        }
+
+        // Process files in batches
+        for file_batch in file_tuuids.chunks(100) {
+            recycle_files(middleware, session, user_id.as_str(), file_batch).await?;
+        }
+    }
+
+    Ok(None)
+}
+
+async fn recycle_files<M>(middleware: &M, session: &mut ClientSession, user_id: &str, files: &[String]) -> Result<(), CommonError>
+    where M: MongoDao
+{
+    let collection = middleware.get_collection_typed::<NodeFichierRepBorrowed>(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+
+    // Rebuild the link from version to file.
+    let filtre_filerep = doc!{CHAMP_TUUID: {"$in": files}, CHAMP_USER_ID: &user_id};
+    let mut cursor = collection.find_with_session(filtre_filerep.clone(), None, session).await?;
+    while cursor.advance(session).await? {
+        let mut row = cursor.deserialize_current()?;
+        if let Some(fuuids) = row.fuuids_versions {
+            let filtre = doc! {
+                CHAMP_FUUID: {"$in": fuuids},
+            };
+            let ops = doc!{
+                "$addToSet": {CHAMP_TUUIDS: row.tuuid},
+                "$currentDate": {CHAMP_MODIFICATION: true},
+            };
+            collection_versions.update_many_with_session(filtre, ops, None, session).await?;
+        }
+    }
+
+    // Mark all files as no longer deleted.
+    let ops = doc! {
+        "$set": {
+            CHAMP_SUPPRIME: false,
+            CHAMP_SUPPRIME_INDIRECT: false
+        },
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    collection.update_many_with_session(filtre_filerep, ops, None, session).await?;
+
+    Ok(())
 }

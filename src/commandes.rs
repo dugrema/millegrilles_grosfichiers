@@ -2671,9 +2671,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
                         match item.fuuids_versions {
                             Some(fuuids_versions) => {
                                 file_tuuids.push(tuuid.clone());
-                                for fuuid in fuuids_versions {
-                                    fuuids.push(fuuid);
-                                }
+                                fuuids.extend(fuuids_versions);
                             }
                             None => {
                                 let message = format!("File tuuid:{} has no fuuids", tuuid);
@@ -2722,7 +2720,9 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         let mut cursor = collection.find(filtre, None).await?;
         while cursor.advance().await? {
             let row = cursor.deserialize_current()?;
-            fuuids.push(row.tuuid);
+            if let Some(fuuids_versions) = row.fuuids_versions {
+                fuuids.extend(fuuids_versions);
+            }
         }
 
         // Issue a claim command for all fuuids to restore to CoreTopologie. Ensure none have been deleted.
@@ -2781,16 +2781,23 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         directory_tuuids.push(row.tuuid);
     }
 
-    // Create a new Recycle transaction
+    // Build the Recycle transaction
+    let mut original_command = m.message.parse_to_owned()?;
+    original_command.certificat = None;
     let transaction = TransactionRecycleItemsV3 {
+        command: original_command,
+        user_id,
         file_tuuids,
         directory_tuuids,
     };
 
     debug!("commandes.command_recycle_items_v3 Transaction\n{}", serde_json::to_string(&transaction)?);
 
-    // sauvegarder_traiter_transaction_serializable_v2(
-    //     middleware, &transaction, gestionnaire, session, DOMAINE_NOM, TRANSACTION_RECYCLE_ITEMS_V3).await?;
+    sauvegarder_traiter_transaction_serializable_v2(
+        middleware, &transaction, gestionnaire, session, DOMAINE_NOM, TRANSACTION_RECYCLE_ITEMS_V3).await?;
 
-    todo!()
+    // Emit document update events.
+    //TODO
+
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }
