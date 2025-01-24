@@ -74,6 +74,7 @@ pub const TRANSACTION_DEPLACER_FICHIERS_COLLECTION: &str = "deplacerFichiersColl
 pub const TRANSACTION_SUPPRIMER_DOCUMENTS: &str = "supprimerDocuments";
 pub const TRANSACTION_RECUPERER_DOCUMENTS: &str = "recupererDocuments";
 pub const TRANSACTION_RECUPERER_DOCUMENTS_V2: &str = "recupererDocumentsV2";
+pub const TRANSACTION_RECYCLE_ITEMS_V3: &str = "recycleItemsV3";
 pub const TRANSACTION_ARCHIVER_DOCUMENTS: &str = "archiverDocuments";
 // pub const TRANSACTION_CHANGER_FAVORIS: &str = "changerFavoris";
 pub const TRANSACTION_ASSOCIER_CONVERSIONS: &str = "associerConversions";

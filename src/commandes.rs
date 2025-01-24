@@ -33,6 +33,7 @@ use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids, verifier_acces_usager_media};
+use crate::traitement_entretien::verifier_visites_topologies;
 use crate::traitement_index::{reset_flag_indexe, sauvegarder_job_index, set_flag_index_traite};
 use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
 use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_images, sauvegarder_job_video, set_flag_image_traitee, set_flag_video_traite};
@@ -86,6 +87,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         TRANSACTION_DEPLACER_FICHIERS_COLLECTION => commande_deplacer_fichiers_collection(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_SUPPRIMER_DOCUMENTS => commande_supprimer_documents(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_RECUPERER_DOCUMENTS_V2 => commande_recuperer_documents_v2(middleware, m, gestionnaire, &mut session).await,
+        TRANSACTION_RECYCLE_ITEMS_V3 => command_recycle_items_v3(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_DECRIRE_FICHIER => commande_decrire_fichier(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_DECRIRE_COLLECTION => commande_decrire_collection(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_SUPPRIMER_VIDEO => commande_supprimer_video(middleware, m, gestionnaire, &mut session).await,
@@ -2607,4 +2609,188 @@ async fn commande_get_job_key<M>(middleware: &M, m: MessageValide, session: &mut
             Ok(Some(middleware.reponse_err(Some(1), None, Some("Unknown job"))?))
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct CommandRecycleItemsV3 {
+    tuuids: Vec<String>
+}
+
+async fn command_recycle_items_v3<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    let command: CommandRecycleItemsV3 = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
+    // Autorisation: Action usager avec compte prive ou delegation globale
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(format!("commandes.command_recycle_items_v3 User_id missing from certificate"))?
+    };
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
+    if role_prive {
+        // Ok
+    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+        // Ok
+    } else {
+        debug!("commandes.command_recycle_items_v3: Access denied {:?}", m.type_message);
+        return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access denied"))?));
+    }
+
+    // Ensure that all tuuids are delete directly (supprime_indirect == false) and that they
+    // are part of a hierarchy that is not deleted.
+    let collection = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut fuuids = Vec::new();
+    let mut file_tuuids = Vec::new();
+    let mut directory_tuuids = Vec::new();
+    for tuuid in command.tuuids {
+        let filtre = doc!{CHAMP_TUUID: &tuuid, CHAMP_USER_ID: &user_id};
+        match collection.find_one_with_session(filtre, None, session).await? {
+            Some(item) => {
+                // To recycle a file/directory, it must have been deleted directly (supprime == true, supprime_indirect == false)
+                if !(item.supprime == true && item.supprime_indirect == false) {
+                    let message = format!("Item tuuid:{} not in proper state to recycle", tuuid);
+                    debug!("commandes.command_recycle_items_v3 {}", message);
+                    return Ok(Some(middleware.reponse_err(Some(1), None, Some(message.as_str()))?));
+                }
+
+                let type_node = match TypeNode::try_from(item.type_node.as_str()) {
+                    Ok(inner) => inner,
+                    Err(e) => {
+                        let message = format!("Item tuuid:{} not a supported node type", item.type_node);
+                        debug!("commandes.command_recycle_items_v3 {}", message);
+                        return Ok(Some(middleware.reponse_err(Some(2), None, Some(message.as_str()))?));
+                    }
+                };
+
+                match type_node {
+                    TypeNode::Fichier => {
+                        match item.fuuids_versions {
+                            Some(fuuids_versions) => {
+                                file_tuuids.push(tuuid.clone());
+                                for fuuid in fuuids_versions {
+                                    fuuids.push(fuuid);
+                                }
+                            }
+                            None => {
+                                let message = format!("File tuuid:{} has no fuuids", tuuid);
+                                debug!("commandes.command_recycle_items_v3 {}", message);
+                                return Ok(Some(middleware.reponse_err(Some(3), None, Some(message.as_str()))?));
+                            }
+                        }
+                    }
+                    _ => {directory_tuuids.push(tuuid.clone());}
+                }
+
+                // To recycle a file/directory, its hierarchy must not be deleted.
+                if let Some(cuuids) = item.path_cuuids {
+                    let filtre = doc!{
+                        CHAMP_TUUID: {"$in": cuuids}, CHAMP_USER_ID: &user_id
+                    };
+                    let mut cursor = collection.find(filtre, None).await?;
+                    while cursor.advance().await? {
+                        let row = cursor.deserialize_current()?;
+                        if row.supprime {
+                            let message = format!("File tuuid:{} is under a deleted path", tuuid);
+                            debug!("commandes.command_recycle_items_v3 {}", message);
+                            return Ok(Some(middleware.reponse_err(Some(4), None, Some(message.as_str()))?));
+                        }
+                    }
+                };
+            },
+            None => {
+                let message = format!("Item tuuid:{} not found", tuuid);
+                debug!("commandes.command_recycle_items_v3 {}", message);
+                return Ok(Some(middleware.reponse_err(Some(5), None, Some(message.as_str()))?));
+            }
+        }
+    }
+
+    // Make a list of all fuuids indirectly deleted under directories to restore.
+    {
+        let type_node_fichier: &str = TypeNode::Fichier.into();
+        let filtre = doc!{
+            CHAMP_PATH_CUUIDS: {"$in": &directory_tuuids},
+            CHAMP_USER_ID: &user_id,
+            CHAMP_TYPE_NODE: type_node_fichier,
+            CHAMP_SUPPRIME: true,
+            CHAMP_SUPPRIME_INDIRECT: true,
+        };
+        let mut cursor = collection.find(filtre, None).await?;
+        while cursor.advance().await? {
+            let row = cursor.deserialize_current()?;
+            fuuids.push(row.tuuid);
+        }
+
+        // Issue a claim command for all fuuids to restore to CoreTopologie. Ensure none have been deleted.
+        for fuuid_batch in fuuids.chunks(100) {
+            debug!("Check batch of fuuids to restore: {:?}", fuuid_batch);
+            match verifier_visites_topologies(middleware, fuuid_batch).await {
+                Ok(response) => {
+                    if response.ok != true {
+                        let message = format!("Error verifying presence of files - server error");
+                        error!("commandes.command_recycle_items_v3 {}: {:?}", message, response.err);
+                        return Ok(Some(middleware.reponse_err(Some(6), None, Some(message.as_str()))?));
+                    }
+                    // Claim completed. This will prevent the files from being deleted for a while.
+                    // Check that all files were found. Fail if at least 1 file was already permanently deleted.
+                    debug!("Batch size: {}", fuuid_batch.len());
+                    if let Some(v) = response.visits {
+                        debug!("Response visits: {}", v.len());
+                        if v.len() < fuuid_batch.len() {
+                            let message = format!("Error verifying presence of files (A) - some files have been permanently deleted");
+                            error!("commandes.command_recycle_items_v3 {}: {:?}", message, response.err);
+                            return Ok(Some(middleware.reponse_err(Some(7), None, Some(message.as_str()))?));
+                        }
+                    }
+                    if let Some(unknown) = response.unknown {
+                        debug!("Response unknown: {}", unknown.len());
+                        if unknown.len() > 0 {
+                            let message = format!("Error verifying presence of files (B) - some files have been permanently deleted");
+                            error!("commandes.command_recycle_items_v3 {}: {:?}", message, response.err);
+                            return Ok(Some(middleware.reponse_err(Some(8), None, Some(message.as_str()))?));
+                        }
+                    }
+                }
+                Err(e) => {
+                    let message = format!("Error verifying presence of files - timeout or other issue");
+                    error!("commandes.command_recycle_items_v3 {}: {:?}", message, e);
+                    return Ok(Some(middleware.reponse_err(Some(9), None, Some(message.as_str()))?));
+                }
+            }
+        }
+
+    }
+
+    // List all subdirectories with supprime_indirect == true.
+    let type_node_directory: &str = TypeNode::Repertoire.into();
+    let type_node_collection: &str = TypeNode::Collection.into();
+    let filtre = doc!{
+        CHAMP_PATH_CUUIDS: {"$in": &directory_tuuids},
+        CHAMP_TYPE_NODE: {"$in": vec![type_node_directory, type_node_collection]},
+        CHAMP_USER_ID: &user_id,
+        CHAMP_SUPPRIME: true,
+        CHAMP_SUPPRIME_INDIRECT: true,
+    };
+    let mut cursor = collection.find(filtre, None).await?;
+    while cursor.advance().await? {
+        let row = cursor.deserialize_current()?;
+        directory_tuuids.push(row.tuuid);
+    }
+
+    // Create a new Recycle transaction
+    let transaction = TransactionRecycleItemsV3 {
+        file_tuuids,
+        directory_tuuids,
+    };
+
+    debug!("commandes.command_recycle_items_v3 Transaction\n{}", serde_json::to_string(&transaction)?);
+
+    // sauvegarder_traiter_transaction_serializable_v2(
+    //     middleware, &transaction, gestionnaire, session, DOMAINE_NOM, TRANSACTION_RECYCLE_ITEMS_V3).await?;
+
+    todo!()
 }

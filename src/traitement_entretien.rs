@@ -300,27 +300,29 @@ where M: GenerateurMessages + MongoDao
 
 #[derive(Serialize)]
 struct RequeteFuuidsVisites<'a> {
-    fuuids: &'a Vec<String>
+    fuuids: &'a Vec<&'a str>
 }
 
 #[derive(Deserialize)]
-struct RowFuuidVisit {
-    fuuid: String,
-    visits: HashMap<String, i64>,
+pub struct RowFuuidVisit {
+    pub fuuid: String,
+    pub visits: HashMap<String, i64>,
 }
 
 #[derive(Deserialize)]
-struct RequeteGetVisitesFuuidsResponse {
-    ok: bool,
-    err: Option<String>,
-    visits: Option<Vec<RowFuuidVisit>>,
-    unknown: Option<Vec<String>>
+pub struct RequeteGetVisitesFuuidsResponse {
+    pub ok: bool,
+    pub err: Option<String>,
+    pub visits: Option<Vec<RowFuuidVisit>>,
+    pub unknown: Option<Vec<String>>
 }
 
-async fn verifier_visites_topologies<M>(middleware: &M, fuuids: &Vec<String>) -> Result<RequeteGetVisitesFuuidsResponse, CommonError>
-    where M: GenerateurMessages
+pub async fn verifier_visites_topologies<M,S,I>(middleware: &M, fuuids: I) -> Result<RequeteGetVisitesFuuidsResponse, CommonError>
+    where M: GenerateurMessages, S: AsRef<str>, I: IntoIterator<Item=S>
 {
-    let requete = RequeteFuuidsVisites { fuuids };
+    let fuuids_1 = fuuids.into_iter().collect::<Vec<_>>();  // Copy S reference for ownership
+    let fuuids_2 = fuuids_1.iter().map(|f| f.as_ref()).collect::<Vec<_>>(); // Extract &str
+    let requete = RequeteFuuidsVisites { fuuids: &fuuids_2 };
 
     let routage = RoutageMessageAction::builder(
         DOMAINE_TOPOLOGIE, "claimAndFilehostVisits", vec![Securite::L3Protege]).build();

@@ -2472,3 +2472,13 @@ async fn copy_media_file<M,S,T>(middleware: &M, session: &mut ClientSession, use
     }
     Ok(())
 }
+
+#[derive(Serialize, Deserialize)]
+pub struct TransactionRecycleItemsV3 {
+    /// Files to restore.
+    pub file_tuuids: Vec<String>,
+
+    /// Directories to restore.
+    /// All files with supprime_indirect == true in those directories will be restored.
+    pub directory_tuuids: Vec<String>
+}
