@@ -143,6 +143,7 @@ pub struct TransactionAjouterFichiersCollection {
     pub cuuid: String,                  // Collection qui recoit les documents
     pub inclure_tuuids: Vec<String>,    // Fichiers/rep a ajouter a la collection
     pub contact_id: Option<String>,     // Permission de copie a partir d'un partage
+    pub include_deleted: Option<bool>,  // Allows copying from trash to new section
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -782,7 +783,8 @@ struct CopieTuuidVersCuuid {
 
 /// Duplique la structure des repertoires listes dans tuuids.
 /// Les fichiers des sous-repertoires sont linkes (pas copies).
-async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_transaction: U, cuuid: C, tuuids: &Vec<T>, user_id: S, user_id_destination: Option<D>, session: &mut ClientSession)
+async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(
+    middleware: &M, uuid_transaction: U, cuuid: C, tuuids: &Vec<T>, user_id: S, user_id_destination: Option<D>, session: &mut ClientSession)
     -> Result<(), CommonError>
     where M: MongoDao, U: AsRef<str>, C: AsRef<str>, T: ToString, S: AsRef<str>, D: AsRef<str>
 {
@@ -830,6 +832,10 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
             // Remplacer le tuuid
             fichier_rep.tuuid = nouveau_tuuid.as_str();
 
+            // Set as not deleted
+            fichier_rep.supprime = false;
+            fichier_rep.supprime_indirect = false;
+
             // Recuperer le path du cuuid destination, remplacer path_cuuids
             let path_cuuids_option = match get_path_cuuid(middleware, &fichier_rep_tuuid.cuuid_destination, session).await {
                 Ok(inner) => inner,
@@ -851,6 +857,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
                 // CHAMP_SUPPRIME: false, CHAMP_SUPPRIME_INDIRECT: false,
             };
             let mut set_ops = convertir_to_bson(&fichier_rep)?;
+            // Ensure the file/directory is not deleted in the destination (allows copying from Trash)
             set_ops.insert(CHAMP_CREATION, Utc::now());
             if user_id_destination != user_id {
                 // Changer le user_id (copie de repertoire partage)
@@ -862,6 +869,7 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
                 "$setOnInsert": set_ops,
                 "$currentDate": { CHAMP_MODIFICATION: true }
             };
+            debug!("dupliquer_structure_repertoires Upsert entry: {:?}", ops);
             let options = UpdateOptions::builder().upsert(true).build();
             let result = collection_reps.update_one_with_session(filtre, ops, options, session).await?;
             if result.upserted_id.is_none() {
@@ -883,7 +891,13 @@ async fn dupliquer_structure_repertoires<M,U,C,T,S,D>(middleware: &M, uuid_trans
                 },
                 TypeNode::Collection | TypeNode::Repertoire => {
                     // Trouver les sous-repertoires, traiter individuellement
-                    let filtre_ajout_cuuid = doc! { format!("{}.0", CHAMP_PATH_CUUIDS): &tuuid_src };
+                    let filtre_ajout_cuuid = doc! {
+                        format!("{}.0", CHAMP_PATH_CUUIDS): &tuuid_src,
+                        "$or": [
+                            {CHAMP_SUPPRIME: false},
+                            {CHAMP_SUPPRIME_INDIRECT: true},  // Implies indirectly deleted. Used to copy out of Trash.
+                        ],
+                    };
                     debug!("dupliquer_structure_repertoires filtre_ajout_cuuid : {:?}", filtre_ajout_cuuid);
                     let mut curseur = collection_reps.find_with_session(filtre_ajout_cuuid, None, session).await?;
                     while curseur.advance(session).await? {
@@ -2283,6 +2297,7 @@ pub struct TransactionCopyV2 {
     pub directories: Option<Vec<TransactionMoveV2Directory>>,
     pub files: Option<Vec<String>>,
     pub user_id: String,
+    pub include_deleted: Option<bool>,
     // pub source_user_id: Option<String>,
 }
 
@@ -2299,6 +2314,7 @@ async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, 
 {
     let transaction_content: TransactionCopyV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
     let user_id = &transaction_content.user_id;
+    let include_deleted = transaction_content.include_deleted.unwrap_or(false);
 
     let collection_reps =
         middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
@@ -2337,15 +2353,21 @@ async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, 
                 // Copy the directory entry
                 let filtre = doc!{"tuuid": &directory};
                 let mut cursor_reps = collection_reps.find_with_session(filtre.clone(), None, session).await?;
-                let new_directory_tuuid = new_cuuid_map.get(&directory).expect("get new cuuid");
+                let new_tuuid = new_cuuid_map.get(&directory).expect("get new tuuid");
                 if cursor_reps.advance(session).await? {
                     let mut row = cursor_reps.deserialize_current()?;
-                    row.tuuid = new_directory_tuuid.clone();
+                    row.tuuid = new_tuuid.clone();
                     row.user_id = user_id.clone();  // In case this is a copy from shared collections
                     row.path_cuuids = Some(destination.clone());
                     row.type_node = TypeNode::Repertoire.to_str();  // It is possible to copy a Collection to another one
                     row.flag_index = false;  // Need to index new path
-                    row.derniere_modification = Utc::now();
+                    row.date_creation = Utc::now();
+                    row.derniere_modification = row.date_creation.clone();
+
+                    // Remove deleted flags if present. Allows copying out of Trash.
+                    row.supprime = false;
+                    row.supprime_indirect = false;
+
                     // Insert the directory with the updated identifiers
                     debug!("transaction_copy_v2 Copy (directories) tuuid {} to {}", directory, row.tuuid);
                     collection_reps.insert_one_with_session(row, None, session).await?;
@@ -2355,8 +2377,21 @@ async fn transaction_copy_v2<M>(middleware: &M, transaction: TransactionValide, 
                 }
 
                 // Copy all files
-                destination.insert(0, new_directory_tuuid.as_str());  // Prepend parent directory for files
-                let filtre = doc!{"path_cuuids.0": &directory, "type_node": TypeNode::Fichier.to_str(), "supprime": false};
+                destination.insert(0, new_tuuid.as_str());  // Prepend parent directory for files
+                let mut filtre = doc!{
+                    "path_cuuids.0": &directory,
+                    "type_node": TypeNode::Fichier.to_str(),
+                };
+                if include_deleted {
+                    // Include files that have been indirectly deleted (deleted with the directory)
+                    filtre.insert("$or", vec![
+                        doc!{CHAMP_SUPPRIME: false},
+                        doc!{CHAMP_SUPPRIME_INDIRECT: true},
+                    ]);
+                } else {
+                    // Exclude all deleted files
+                    filtre.insert("supprime", false);
+                }
                 let cursor_reps = collection_reps.find_with_session(filtre.clone(), None, session).await?;
                 copy_files_to_directory(middleware, session, user_id.as_str(), cursor_reps, &destination, &transaction_id_bytes).await?;
             }
@@ -2393,7 +2428,12 @@ async fn copy_files_to_directory<'a, M>(
         row.user_id = user_id.to_string();  // We may be copying from shared collections
         row.path_cuuids = Some(destination.clone());
         row.flag_index = false;  // Need to index new path
+        row.date_creation = now.clone();
         row.derniere_modification = now.clone();
+
+        // Remove deleted flags. Allows copying out of the Trash area.
+        row.supprime = false;
+        row.supprime_indirect = false;
 
         let fuuids_versions = row.fuuids_versions.clone();
 

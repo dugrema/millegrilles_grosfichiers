@@ -642,7 +642,7 @@ struct ParseSelectionDirectoriesResult {
 
 async fn parse_selection_directories<M>(
     middleware: &M, user_id: &str, destination_cuuid: &String, tuuids: &Vec<String>, session: &mut ClientSession,
-    keep_deleted: bool
+    keep_deleted: bool, include_indirectly_deleted: bool,
 )
     -> Result<ParseSelectionDirectoriesResult, CommonError>
     where M: MongoDao
@@ -718,7 +718,17 @@ async fn parse_selection_directories<M>(
         "path_cuuids": {"$in": &cuuids},
         "type_node": TypeNode::Repertoire.to_str()
     };
-    if ! keep_deleted {
+    if keep_deleted {
+        // No filter to add - just keep all files whether they are deleted or not
+    } else if include_indirectly_deleted {
+        // Ignore files that were directly deleted (supprime == true && supprime_indirect == false)
+        // This is used to copy files out from the Trash area
+        filtre.insert("$or", vec![
+            doc!{"supprime": false},
+            doc!{"supprime_indirect": true},  // Implies supprime == true
+        ]);
+    } else {
+        // keep_deleted is false
         filtre.insert("supprime", false);
     }
     let mut cursor = collection_fichierrep.find_with_session(filtre, None, session).await?;
@@ -895,6 +905,8 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
         message_ref.contenu()?.deserialize()?
     };
 
+    let include_deleted = commande.include_deleted.unwrap_or(false);
+
     // let commande: TransactionAjouterFichiersCollection = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_ajouter_fichiers_collection versions parsed : {:?}", commande);
 
@@ -970,9 +982,9 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
     }
 
     let result = parse_selection_directories(
-        middleware, user_id_source.as_str(), &commande.cuuid, &commande.inclure_tuuids, session, false).await?;
+        middleware, user_id_source.as_str(), &commande.cuuid, &commande.inclure_tuuids, session, false, include_deleted).await?;
 
-    // Check that the destination is not under the source (moving under itself breask the graph)
+    // Check that the destination is not under the source (moving under itself breaks the graph)
     if let Some(directory_moves) = result.directories.as_ref() {
         for directory_move in directory_moves {
             for directory in &directory_move.directories {
@@ -1000,7 +1012,7 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
         directories: result.directories,
         files: result.files,
         user_id,
-        // source_user_id,
+        include_deleted: commande.include_deleted,
     };
 
     debug!("commande_ajouter_fichiers_collection Transaction\n{}", serde_json::to_string(&transaction)?);
@@ -1076,7 +1088,7 @@ async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageVali
     }
 
     let result = parse_selection_directories(
-        middleware, user_id.as_str(), &commande.cuuid_destination, &commande.inclure_tuuids, session, true).await?;
+        middleware, user_id.as_str(), &commande.cuuid_destination, &commande.inclure_tuuids, session, true, true).await?;
 
     // Check that the destination is not under the source (moving under itself breask the graph)
     if let Some(directory_moves) = result.directories.as_ref() {
