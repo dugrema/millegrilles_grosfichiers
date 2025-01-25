@@ -366,10 +366,15 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, g
     // Verifier si on a un certificat delegation globale
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.certificat.get_user_id()?;
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => {
+            Err(format!("grosfichiers.consommer_commande: User_id missing from certificate"))?
+        }
+    };
     let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
-    if role_prive && user_id.is_some() {
-        let user_id_str = user_id.as_ref().expect("user_id");
+    if role_prive {
+        let user_id_str = user_id.as_str();
         let cuuid = commande.cuuid.as_ref();
         let resultat = verifier_autorisation_usager(middleware, user_id_str, None::<&Vec<String>>, cuuid).await?;
         if let Some(erreur) = resultat.erreur {
@@ -409,8 +414,8 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, g
     // Declencher indexation
     let tuuid = &message_owned.id;
     let metadata = commande.metadata;
-    if user_id.is_some() && metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
-        let user_id = user_id.as_ref().expect("user_id");
+    if metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
+        let user_id = user_id.as_str();
         let cle_id = metadata.cle_id.expect("cle_id");
         let format = metadata.format.expect("format");
         let nonce = metadata.nonce.expect("nonce");
@@ -420,23 +425,15 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, g
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid, session).await?;
+    emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid, &user_id, session).await?;
     {
         // let mut evenement_contenu = EvenementContenuCollection::new();
         let mut evenement_contenu = match cuuid.as_ref() {
-            Some(cuuid) => Ok(EvenementContenuCollection::new(cuuid.clone())),
-            None => match user_id {
-                Some(inner) => Ok(EvenementContenuCollection::new(inner.clone())),
-                None => Err(format!("cuuid et user_id sont None, erreur event emettre_evenement_contenu_collection"))
-            }
+            Some(cuuid) => EvenementContenuCollection::new(cuuid.clone()),
+            None => EvenementContenuCollection::new(user_id.clone())
         };
-        match evenement_contenu {
-            Ok(mut inner) => {
-                inner.collections_ajoutees = Some(vec![tuuid.clone()]);
-                emettre_evenement_contenu_collection(middleware, gestionnaire, inner).await?;
-            },
-            Err(e) => error!("transaction_nouvelle_collection {}", e)
-        }
+        evenement_contenu.collections_ajoutees = Some(vec![tuuid.clone()]);
+        emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
     }
 
     Ok(result)
@@ -1202,12 +1199,16 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
     };
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.certificat.get_user_id()?;
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => {
+            return Ok(Some(middleware.reponse_err(Some(401), None, Some("User_id not included in certificate"))?))
+        }
+    };
     let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
-    if role_prive && user_id.is_some() {
-        let user_id_str = user_id.as_ref().expect("user_id");
+    if role_prive {
         let tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
-        let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
+        let resultat = verifier_autorisation_usager(middleware, user_id.as_str(), Some(&tuuids), None::<String>).await?;
         if let Some(erreur) = resultat.erreur {
             return Ok(Some(erreur.try_into()?))
         }
@@ -1227,11 +1228,9 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
     let mut tuuids_by_cuuid: HashMap<String, Vec<String>> = HashMap::new();
     while cursor.advance(session).await? {
         let row = cursor.deserialize_current()?;
-        if let Some(user_id) = user_id.as_ref() {
-            if row.user_id != user_id.as_str() {
-                warn!("commande_supprimer_documents Deleting file with wrong user_id, SKIPPING");
-                continue
-            }
+        if row.user_id != user_id.as_str() {
+            warn!("commande_supprimer_documents Deleting file with wrong user_id, SKIPPING");
+            continue
         }
         if row.type_node == TypeNode::Fichier.to_str() {
             files.push(row.tuuid.to_owned());
@@ -1243,9 +1242,9 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
         let cuuid = match row.path_cuuids {
             Some(path_cuuids) => match path_cuuids.get(0) {
                 Some(cuuid) => *cuuid,
-                None => "root",
+                None => user_id.as_str(),
             },
-            None => "root"
+            None => user_id.as_str()
         };
         match tuuids_by_cuuid.get_mut(cuuid) {
             Some(tuuids) => tuuids.push(row.tuuid.to_owned()),
@@ -1266,11 +1265,9 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
     let mut cursor = collection_fichierrep.find_with_session(filtre, None, session).await?;
     while cursor.advance(session).await? {
         let row = cursor.deserialize_current()?;
-        if let Some(user_id) = user_id.as_ref() {
-            if row.user_id != user_id.as_str() {
-                warn!("commande_supprimer_documents Deleting directory with wrong user_id, SKIPPING");
-                continue
-            }
+        if row.user_id != user_id.as_str() {
+            warn!("commande_supprimer_documents Deleting directory with wrong user_id, SKIPPING");
+            continue
         }
         subdirectories.push(row.tuuid.to_owned());
 
@@ -1278,9 +1275,9 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
         let cuuid = match row.path_cuuids {
             Some(path_cuuids) => match path_cuuids.get(0) {
                 Some(cuuid) => *cuuid,
-                None => "root",
+                None => user_id.as_str(),
             },
-            None => "root"
+            None => user_id.as_str()
         };
         match tuuids_by_cuuid.get_mut(cuuid) {
             Some(tuuids) => tuuids.push(row.tuuid.to_owned()),
@@ -1299,18 +1296,16 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
     let mut cursor = collection_fichierrep.find_with_session(filtre, None, session).await?;
     while cursor.advance(session).await? {
         let row = cursor.deserialize_current()?;
-        if let Some(user_id) = user_id.as_ref() {
-            if row.user_id != user_id.as_str() {
-                warn!("commande_supprimer_documents Deleting directory with wrong user_id, SKIPPING");
-                continue
-            }
+        if row.user_id != user_id.as_str() {
+            warn!("commande_supprimer_documents Deleting directory with wrong user_id, SKIPPING");
+            continue
         }
         let cuuid = match row.path_cuuids {
             Some(path_cuuids) => match path_cuuids.get(0) {
                 Some(cuuid) => *cuuid,
-                None => "root",
+                None => user_id.as_str(),
             },
-            None => "root"
+            None => user_id.as_str()
         };
         match tuuids_by_cuuid.get_mut(cuuid) {
             Some(tuuids) => tuuids.push(row.tuuid.to_owned()),
@@ -1338,7 +1333,7 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
                 0 => None,
                 _ => Some(files)
             },
-            user_id,
+            user_id: Some(user_id.clone()),
         };
 
         sauvegarder_traiter_transaction_serializable_v2(
@@ -1592,10 +1587,13 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestio
     };
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.certificat.get_user_id()?;
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(format!("grosfichiers.consommer_commande: User_id not provided in certificate"))?
+    };
     let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
-    if role_prive && user_id.is_some() {
-        let user_id_str = user_id.as_ref().expect("user_id");
+    if role_prive {
+        let user_id_str = user_id.as_str();
         let tuuids = vec![commande.tuuid.clone()];
         let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
         if let Some(erreur) = resultat.erreur {
@@ -1613,8 +1611,8 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestio
     // Declencher indexation
     let tuuid = &commande.tuuid;
     if let Some(metadata) = commande.metadata {
-        if user_id.is_some() && metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
-            let user_id = user_id.as_ref().expect("user_id");
+        if metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
+            let user_id = user_id.as_str();
             let cle_id = metadata.cle_id.expect("cle_id");
             let format = metadata.format.expect("format");
             let nonce = metadata.nonce.expect("nonce");
@@ -1634,13 +1632,11 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestio
                 match convertir_bson_deserializable::<FichierDetail>(d) {
                     Ok(fichier) => {
                         if let Some(favoris) = fichier.favoris {
-                            if let Some(u) = user_id {
-                                if favoris {
-                                    let mut evenement = EvenementContenuCollection::new(u);
-                                    // evenement.cuuid = Some(u);
-                                    evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
-                                    emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
-                                }
+                            if favoris {
+                                let mut evenement = EvenementContenuCollection::new(user_id.clone());
+                                // evenement.cuuid = Some(u);
+                                evenement.collections_modifiees = Some(vec![tuuid.to_owned()]);
+                                emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
                             }
                         }
                         if let Some(path_cuuids) = fichier.path_cuuids {
@@ -1659,7 +1655,7 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestio
     }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
-    emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid, session).await?;
+    emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid, user_id, session).await?;
 
     Ok(result)
 }
@@ -2780,23 +2776,49 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         let mut cursor = collection.find_with_session(filtre, None, session).await?;
         while cursor.advance(session).await? {
             let row = cursor.deserialize_current()?;
-            if let Some(mut path_cuuids) = row.path_cuuids {
-                if let Some(cuuid) = path_cuuids.first() {
-                    let list = match files_by_cuuid.get_mut(cuuid) {
-                        Some(list) => list,
-                        None => {
-                            files_by_cuuid.insert(cuuid.to_owned(), Vec::new());
-                            files_by_cuuid.get_mut(cuuid).unwrap()
-                        },
-                    };
-                    list.push(row.tuuid);
+            let cuuid = match row.path_cuuids {
+                Some(mut path_cuuids) => {
+                    match path_cuuids.first() {
+                        Some(inner) => inner.to_owned(),
+                        None => user_id.clone(),
+                    }
                 }
-            }
+                None => user_id.clone()
+            };
+            let list = match files_by_cuuid.get_mut(&cuuid) {
+                Some(list) => list,
+                None => {
+                    files_by_cuuid.insert(cuuid.clone(), Vec::new());
+                    files_by_cuuid.get_mut(&cuuid).unwrap()
+                },
+            };
+            list.push(row.tuuid);
         }
 
         for (cuuid, files) in files_by_cuuid {
             let mut evenement = EvenementContenuCollection::new(cuuid);
             evenement.fichiers_ajoutes = Some(files);
+            emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
+        }
+    }
+
+    if transaction.directory_tuuids.len() > 0 {
+        // List all immediate files/subdirectories
+        let filtre = doc! {
+            CHAMP_TUUID: {"$in": &transaction.directory_tuuids},
+            format!("{}.0", CHAMP_PATH_CUUIDS): {"$exists": false},
+            CHAMP_USER_ID: &user_id,
+            CHAMP_SUPPRIME: false,
+        };
+        let mut tuuids_collection = Vec::new();
+        let mut cursor = collection.find_with_session(filtre, None, session).await?;
+        while cursor.advance(session).await? {
+            let row = cursor.deserialize_current()?;
+            tuuids_collection.push(row.tuuid);
+        }
+        if tuuids_collection.len() > 0 {
+            let mut evenement = EvenementContenuCollection::new(user_id.clone());
+            evenement.collections_modifiees = Some(tuuids_collection);
             emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
         }
     }
@@ -2827,7 +2849,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         evenement.collections_ajoutees = Some(collections_ajoutees);
 
         // Update the directory itself (deleted flags)
-        emettre_evenement_maj_collection(middleware, gestionnaire, cuuid, session).await?;
+        emettre_evenement_maj_collection(middleware, gestionnaire, cuuid, &user_id, session).await?;
 
         // Update content (files and sub-directories)
         emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;

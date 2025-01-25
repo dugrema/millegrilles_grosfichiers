@@ -877,12 +877,15 @@ where
     Ok(())
 }
 
-pub async fn emettre_evenement_maj_collection<M, S>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, tuuid: S, session: &mut ClientSession) -> Result<(), CommonError>
+pub async fn emettre_evenement_maj_collection<M, S, U>(
+    middleware: &M, gestionnaire: &GrosFichiersDomainManager, tuuid: S, user_id: U, session: &mut ClientSession) -> Result<(), CommonError>
 where
     M: GenerateurMessages + MongoDao,
-    S: AsRef<str>
+    S: AsRef<str>,
+    U: AsRef<str>
 {
     let tuuid_str = tuuid.as_ref();
+    let user_id_str = user_id.as_ref();
     debug!("grosfichiers.emettre_evenement_maj_collection Emettre evenement maj pour collection {}", tuuid_str);
 
     // Charger fichier
@@ -908,6 +911,10 @@ where
                     // Emettre evenement de mise a jour de la collection parent.
                     let mut evenement_modif = EvenementContenuCollection::new(cuuid.clone());
                     // evenement_modif.cuuid = Some(cuuid.clone());
+                    evenement_modif.collections_modifiees = Some(vec![tuuid_str.to_string()]);
+                    emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_modif).await?;
+                } else {
+                    let mut evenement_modif = EvenementContenuCollection::new(user_id_str.to_owned());
                     evenement_modif.collections_modifiees = Some(vec![tuuid_str.to_string()]);
                     emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_modif).await?;
                 }
