@@ -2707,9 +2707,12 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         }
     }
 
+    let type_node_fichier: &str = TypeNode::Fichier.into();
+    let type_node_directory: &str = TypeNode::Repertoire.into();
+    let type_node_collection: &str = TypeNode::Collection.into();
+
     // Make a list of all fuuids indirectly deleted under directories to restore.
     {
-        let type_node_fichier: &str = TypeNode::Fichier.into();
         let filtre = doc!{
             CHAMP_PATH_CUUIDS: {"$in": &directory_tuuids},
             CHAMP_USER_ID: &user_id,
@@ -2766,8 +2769,6 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     }
 
     // List all subdirectories with supprime_indirect == true.
-    let type_node_directory: &str = TypeNode::Repertoire.into();
-    let type_node_collection: &str = TypeNode::Collection.into();
     let filtre = doc!{
         CHAMP_PATH_CUUIDS: {"$in": &directory_tuuids},
         CHAMP_TYPE_NODE: {"$in": vec![type_node_directory, type_node_collection]},
@@ -2786,18 +2787,85 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     original_command.certificat = None;
     let transaction = TransactionRecycleItemsV3 {
         command: original_command,
-        user_id,
+        user_id: user_id.clone(),
         file_tuuids,
         directory_tuuids,
     };
 
-    debug!("commandes.command_recycle_items_v3 Transaction\n{}", serde_json::to_string(&transaction)?);
+    debug!("command_recycle_items_v3 Transaction\n{}", serde_json::to_string(&transaction)?);
 
     sauvegarder_traiter_transaction_serializable_v2(
         middleware, &transaction, gestionnaire, session, DOMAINE_NOM, TRANSACTION_RECYCLE_ITEMS_V3).await?;
 
-    // Emit document update events.
-    //TODO
+    // Commit, DB work is done. Only external events left to do (not a big deal if they fail).
+    session.commit_transaction().await?;
+    start_transaction_regular(session).await?;
+
+    debug!("command_recycle_items_v3 Post transaction cleanup");
+    // Emit recycle events for each file by cuuid.
+    {
+        let mut files_by_cuuid = HashMap::new();
+        let filtre = doc! {
+            CHAMP_TUUID: {"$in": &transaction.file_tuuids},
+            CHAMP_USER_ID: &user_id,
+            CHAMP_SUPPRIME: false,
+            CHAMP_TYPE_NODE: type_node_fichier,
+        };
+        let mut cursor = collection.find_with_session(filtre, None, session).await?;
+        while cursor.advance(session).await? {
+            let row = cursor.deserialize_current()?;
+            if let Some(mut path_cuuids) = row.path_cuuids {
+                if let Some(cuuid) = path_cuuids.first() {
+                    let list = match files_by_cuuid.get_mut(cuuid) {
+                        Some(list) => list,
+                        None => {
+                            files_by_cuuid.insert(cuuid.to_owned(), Vec::new());
+                            files_by_cuuid.get_mut(cuuid).unwrap()
+                        },
+                    };
+                    list.push(row.tuuid);
+                }
+            }
+        }
+
+        for (cuuid, files) in files_by_cuuid {
+            let mut evenement = EvenementContenuCollection::new(cuuid);
+            evenement.fichiers_ajoutes = Some(files);
+            emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
+        }
+    }
+
+    // Emit event for each recycled directory
+    for cuuid in transaction.directory_tuuids.into_iter() {
+        let mut evenement = EvenementContenuCollection::new(cuuid.clone());
+        let mut fichiers_ajoutes = Vec::new();
+        let mut collections_ajoutees = Vec::new();
+
+        // List all immediate files/subdirectories
+        let filtre = doc!{
+            format!("{}.0", CHAMP_PATH_CUUIDS): &cuuid,
+            CHAMP_USER_ID: &user_id,
+            CHAMP_SUPPRIME: false,
+        };
+        let mut cursor = collection.find_with_session(filtre, None, session).await?;
+        while cursor.advance(session).await? {
+            let row = cursor.deserialize_current()?;
+            let type_node = TypeNode::try_from(row.type_node.as_str())?;
+            match type_node {
+                TypeNode::Fichier => fichiers_ajoutes.push(row.tuuid),
+                _ => collections_ajoutees.push(row.tuuid),
+            }
+        }
+
+        evenement.fichiers_ajoutes = Some(fichiers_ajoutes);
+        evenement.collections_ajoutees = Some(collections_ajoutees);
+
+        // Update the directory itself (deleted flags)
+        emettre_evenement_maj_collection(middleware, gestionnaire, cuuid, session).await?;
+
+        // Update content (files and sub-directories)
+        emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
+    }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
