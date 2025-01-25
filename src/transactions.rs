@@ -2231,7 +2231,9 @@ async fn delete_file_versions_from_directories<M>(middleware: &M, session: &mut 
 
 #[derive(Serialize, Deserialize)]
 pub struct TransactionMoveV2Directory {
+    /// Reverse hierarchy of destination (cuuids)
     pub path: Vec<String>,
+    /// List of individual cuuids to move
     pub directories: Vec<String>,
 }
 

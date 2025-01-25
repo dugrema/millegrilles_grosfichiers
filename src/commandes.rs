@@ -27,6 +27,7 @@ use millegrilles_common_rust::messages_generiques::ReponseCommande;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
+use millegrilles_common_rust::redis::Client;
 use crate::data_structs::MediaOwnedRow;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, evenement_fichiers_syncpret, EvenementContenuCollection};
@@ -962,10 +963,7 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
             middleware, &contact.user_id, &commande.inclure_tuuids).await?;
 
         if resultat.len() != commande.inclure_tuuids.len() {
-            // let reponse = json!({"ok": false, "err": "Acces refuse"});
-            // return Ok(Some(middleware.formatter_reponse(&reponse, None)?));
             return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse"))?))
-
         }
     } else if role_prive {
         let user_id_str = user_id.as_str();
@@ -996,15 +994,24 @@ async fn commande_ajouter_fichiers_collection<M>(middleware: &M, m: MessageValid
         }
     }
 
+    if include_deleted {
+        if let Some(files) = result.files.as_ref() {
+            claim_files(middleware, session, user_id.as_str(), files).await?;
+        }
+
+        if let Some(directory_moves) = result.directories.as_ref() {
+            // Check that all files to copy still exist;
+            let mut cuuids = Vec::new();
+            for directory in directory_moves {
+                cuuids.extend(directory.directories.clone());
+            }
+            claim_files_under_cuuids(middleware, session, &user_id, &cuuids).await?;
+        }
+    }
+
     // Build the transaction
     let mut original_command = m.message.parse_to_owned()?;
     original_command.certificat = None;
-
-    let source_user_id = if user_id_source == user_id {
-        None
-    } else {
-        Some(user_id_source)
-    };
 
     let transaction = TransactionCopyV2 {
         command: original_command,
@@ -2724,61 +2731,8 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     let type_node_collection: &str = TypeNode::Collection.into();
 
     // Make a list of all fuuids indirectly deleted under directories to restore.
-    {
-        let filtre = doc!{
-            CHAMP_PATH_CUUIDS: {"$in": &directory_tuuids},
-            CHAMP_USER_ID: &user_id,
-            CHAMP_TYPE_NODE: type_node_fichier,
-            CHAMP_SUPPRIME: true,
-            CHAMP_SUPPRIME_INDIRECT: true,
-        };
-        let mut cursor = collection.find(filtre, None).await?;
-        while cursor.advance().await? {
-            let row = cursor.deserialize_current()?;
-            if let Some(fuuids_versions) = row.fuuids_versions {
-                fuuids.extend(fuuids_versions);
-            }
-        }
-
-        // Issue a claim command for all fuuids to restore to CoreTopologie. Ensure none have been deleted.
-        for fuuid_batch in fuuids.chunks(100) {
-            debug!("Check batch of fuuids to restore: {:?}", fuuid_batch);
-            match verifier_visites_topologies(middleware, fuuid_batch).await {
-                Ok(response) => {
-                    if response.ok != true {
-                        let message = format!("Error verifying presence of files - server error");
-                        error!("commandes.command_recycle_items_v3 {}: {:?}", message, response.err);
-                        return Ok(Some(middleware.reponse_err(Some(6), None, Some(message.as_str()))?));
-                    }
-                    // Claim completed. This will prevent the files from being deleted for a while.
-                    // Check that all files were found. Fail if at least 1 file was already permanently deleted.
-                    debug!("Batch size: {}", fuuid_batch.len());
-                    if let Some(v) = response.visits {
-                        debug!("Response visits: {}", v.len());
-                        if v.len() < fuuid_batch.len() {
-                            let message = format!("Error verifying presence of files (A) - some files have been permanently deleted");
-                            error!("commandes.command_recycle_items_v3 {}: {:?}", message, response.err);
-                            return Ok(Some(middleware.reponse_err(Some(7), None, Some(message.as_str()))?));
-                        }
-                    }
-                    if let Some(unknown) = response.unknown {
-                        debug!("Response unknown: {}", unknown.len());
-                        if unknown.len() > 0 {
-                            let message = format!("Error verifying presence of files (B) - some files have been permanently deleted");
-                            error!("commandes.command_recycle_items_v3 {}: {:?}", message, response.err);
-                            return Ok(Some(middleware.reponse_err(Some(8), None, Some(message.as_str()))?));
-                        }
-                    }
-                }
-                Err(e) => {
-                    let message = format!("Error verifying presence of files - timeout or other issue");
-                    error!("commandes.command_recycle_items_v3 {}: {:?}", message, e);
-                    return Ok(Some(middleware.reponse_err(Some(9), None, Some(message.as_str()))?));
-                }
-            }
-        }
-
-    }
+    let fuuids_claims = claim_files_under_cuuids(middleware, session, &user_id, &directory_tuuids).await?;
+    fuuids.extend(fuuids_claims);
 
     // List all subdirectories with supprime_indirect == true.
     let filtre = doc!{
@@ -2880,4 +2834,98 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
+}
+
+async fn claim_files_under_cuuids<M,S>(middleware: &M, session: &mut ClientSession, user_id: &String, directory_tuuids: &[S])
+    -> Result<Vec<String>, CommonError>
+    where M: GenerateurMessages + MongoDao, S: AsRef<str>
+{
+    let directory_tuuids: Vec<&str> = directory_tuuids.iter().map(|s| s.as_ref()).collect();
+    let type_node_fichier: &str = TypeNode::Fichier.to_str();
+
+    let mut fuuids = HashSet::new();
+
+    let collection =
+        middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+
+    let filtre = doc! {
+        CHAMP_PATH_CUUIDS: {"$in": &directory_tuuids},
+        CHAMP_USER_ID: &user_id,
+        CHAMP_TYPE_NODE: type_node_fichier,
+        CHAMP_SUPPRIME: true,
+        CHAMP_SUPPRIME_INDIRECT: true,
+    };
+    let mut cursor = collection.find_with_session(filtre, None, session).await?;
+    while cursor.advance(session).await? {
+        let row = cursor.deserialize_current()?;
+        if let Some(fuuids_versions) = row.fuuids_versions {
+            fuuids.extend(fuuids_versions);
+        }
+    }
+
+    // Issue a claim command for all fuuids to restore to CoreTopologie. Ensure none have been deleted.
+    let fuuids: Vec<String> = fuuids.into_iter().collect();
+    for fuuid_batch in fuuids.chunks(100) {
+        debug!("Check batch of fuuids to restore: {:?}", fuuid_batch);
+        claim_files_by_fuuids(middleware, fuuid_batch).await?;
+    }
+
+    Ok(fuuids)
+}
+
+async fn claim_files<M>(middleware: &M, session: &mut ClientSession, user_id: &str, tuuid_batch: &[String]) -> Result<(), Error>
+    where M: GenerateurMessages + MongoDao
+{
+    let mut fuuids = HashSet::new();
+
+    let collection =
+        middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+
+    let filtre = doc! {
+        CHAMP_TUUID: {"$in": &tuuid_batch},
+        CHAMP_USER_ID: user_id,
+    };
+    let mut cursor = collection.find_with_session(filtre, None, session).await?;
+    while cursor.advance(session).await? {
+        let row = cursor.deserialize_current()?;
+        if let Some(fuuids_versions) = row.fuuids_versions {
+            fuuids.extend(fuuids_versions);
+        }
+    }
+
+    let fuuids: Vec<String> = fuuids.into_iter().collect();
+    claim_files_by_fuuids(middleware, &fuuids).await?;
+
+    Ok(())
+}
+
+async fn claim_files_by_fuuids<M>(middleware: &M, fuuid_batch: &[String]) -> Result<(), Error>
+    where M: GenerateurMessages + MongoDao
+{
+    match verifier_visites_topologies(middleware, fuuid_batch).await {
+        Ok(response) => {
+            if response.ok != true {
+                Err(format!("commandes.command_recycle_items_v3 Error verifying presence of files - server error: {:?}", response.err))?
+            }
+            // Claim completed. This will prevent the files from being deleted for a while.
+            // Check that all files were found. Fail if at least 1 file was already permanently deleted.
+            debug!("Batch size: {}", fuuid_batch.len());
+            if let Some(v) = response.visits {
+                debug!("Response visits: {}", v.len());
+                if v.len() < fuuid_batch.len() {
+                    Err(format!("commandes.command_recycle_items_v3 Error verifying presence of files (A) - some files have been permanently deleted: {:?}", response.err))?
+                }
+            }
+            if let Some(unknown) = response.unknown {
+                debug!("Response unknown: {}", unknown.len());
+                if unknown.len() > 0 {
+                    Err(format!("commandes.command_recycle_items_v3 Error verifying presence of files (B) - some files have been permanently deleted: {:?}", response.err))?;
+                }
+            }
+        }
+        Err(e) => {
+            Err(format!("commandes.command_recycle_items_v3 Error verifying presence of files - timeout or other issue: {:?}", e))?;
+        }
+    }
+    Ok(())
 }
