@@ -18,7 +18,7 @@ use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, Gestionn
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction_serializable, sauvegarder_traiter_transaction_serializable_v2};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, start_transaction_regular, MongoDao};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, start_transaction_regeneration, start_transaction_regular, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
@@ -51,13 +51,26 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
 
     // Reset tables rep et versions
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    collection.update_many_with_session(filtre.clone(), ops.clone(), None, session).await?;
+    // collection.update_many_with_session(filtre.clone(), ops.clone(), None, session).await?;
+    collection.update_many(filtre.clone(), ops.clone(), None).await?;
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    collection.update_many_with_session(filtre.clone(), ops, None, session).await?;
+    // collection.update_many_with_session(filtre.clone(), ops, None, session).await?;
+    collection.update_many(filtre.clone(), ops, None).await?;
+
+    // Commit and start a new transaction to pick up changes
+    session.commit_transaction().await?;
+    // Restart transaction after to get access to all data just modified
+    start_transaction_regular(session).await?;
 
     // Index - tables VERSION et FICHIER_REP
+    debug!("Create batch of files to index after reset");
     creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX, session).await?;
     creer_jobs_manquantes_fichiersrep(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX, session).await?;
+
+    // Commit and start a new transaction to pick up changes
+    session.commit_transaction().await?;
+    // Restart transaction after to get access to all data just modified
+    start_transaction_regular(session).await?;
 
     // Reset le serveur d'indexation
     let routage = RoutageMessageAction::builder("solrrelai", "reindexerConsignation", vec![Securite::L3Protege])
