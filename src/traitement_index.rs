@@ -25,6 +25,7 @@ use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::mongodb::ClientSession;
+use millegrilles_common_rust::tokio::time::timeout;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job, JobTrigger, creer_jobs_manquantes_queue, creer_jobs_manquantes_fichiersrep, reactiver_jobs};
@@ -42,6 +43,9 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
 {
     debug!("reset_flag_indexe Reset flags pour tous les fichiers");
 
+    // Commit transaction or it will timeout. Changing all documents.
+    session.commit_transaction().await?;
+
     let filtre = doc! {};
     let ops = doc! {
         "$set": { CHAMP_FLAG_INDEX: false },
@@ -57,8 +61,6 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
     // collection.update_many_with_session(filtre.clone(), ops, None, session).await?;
     collection.update_many(filtre.clone(), ops, None).await?;
 
-    // Commit and start a new transaction to pick up changes
-    session.commit_transaction().await?;
     // Restart transaction after to get access to all data just modified
     start_transaction_regular(session).await?;
 
@@ -67,13 +69,12 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
     creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX, session).await?;
     creer_jobs_manquantes_fichiersrep(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX, session).await?;
 
-    // Commit and start a new transaction to pick up changes
+    // Commit changes.
     session.commit_transaction().await?;
-    // Restart transaction after to get access to all data just modified
-    start_transaction_regular(session).await?;
 
     // Reset le serveur d'indexation
     let routage = RoutageMessageAction::builder("solrrelai", "reindexerConsignation", vec![Securite::L3Protege])
+        .timeout_blocking(5_000)
         .build();
     let result = match middleware.transmettre_commande(routage, json!({})).await? {
         Some(inner) => verifier_reponse_ok(&inner),
@@ -81,11 +82,17 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
     };
 
     if ! result {
-        return Ok(Some(middleware.reponse_err(Some(1), None, Some("Error resetting indexing server"))?))
+        warn!("Timeout/error resetting indexing server, will start new index batch anyway");
+        // return Ok(Some(middleware.reponse_err(Some(1), None, Some("Error resetting indexing server"))?))
     }
 
+    // Restart transaction after to get access to all data just modified
+    start_transaction_regular(session).await?;
+
     // Start reindexing.
-    reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 0, 5000, "solrrelai", "processIndex", true, session).await?;
+    debug!("Create first batch of files to index after reset");
+    reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 0, 250, "solrrelai", "processIndex", true, session).await?;
+    debug!("First batch created, reindexing started");
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }

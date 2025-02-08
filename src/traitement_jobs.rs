@@ -1679,26 +1679,34 @@ where M: MongoDao + GenerateurMessages
 pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, flag_job: &str, session: &mut ClientSession) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages
 {
+    // Avoid session, this is a batch operation
+    session.commit_transaction().await?;
+
     let collection_reps = middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
     let collection_version = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
     let filtre_version = doc!{flag_job: false, "tuuids.0": {"$exists": true}, "visites.nouveau": {"$exists": false}};
     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
-    let mut curseur = collection_version.find_with_session(filtre_version, None, session).await?;
+    // let mut curseur = collection_version.find_with_session(filtre_version, None, session).await?;
+    let mut curseur = collection_version.find(filtre_version, None).await?;
     let mut fuuids = Vec::new();
-    while curseur.advance(session).await? {
+    // while curseur.advance(session).await? {
+    while curseur.advance().await? {
         let row = curseur.deserialize_current()?;
         let fuuid = row.fuuid;
         // let tuuid = row.tuuid;
 
         // Verifier si une job existe pour ce fuuid. Ignorer fichiers en cours d'upload (nouveau).
         let filtre_job = doc! {"fuuid": fuuid};
-        let count = collection_jobs.count_documents_with_session(filtre_job, None, session).await?;
+        // let count = collection_jobs.count_documents_with_session(filtre_job, None, session).await?;
+        let count = collection_jobs.count_documents(filtre_job, None).await?;
 
         if count == 0 {
             debug!("creer_jobs_manquantes_queue Creer job {} manquante pour fuuid {}", flag_job, fuuid);
             let filtre_reps = doc!{"fuuids_versions": fuuid};
-            let mut cursor_reps = collection_reps.find_with_session(filtre_reps, None, session).await?;
-            while cursor_reps.advance(session).await? {
+            // let mut cursor_reps = collection_reps.find_with_session(filtre_reps, None, session).await?;
+            let mut cursor_reps = collection_reps.find(filtre_reps, None).await?;
+            // while cursor_reps.advance(session).await? {
+            while cursor_reps.advance().await? {
                 let row_reps = cursor_reps.deserialize_current()?;
                 let tuuid = row_reps.tuuid.as_str();
                 let user_id = row_reps.user_id.as_str();
@@ -1732,7 +1740,8 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
                     } else if flag_job == CHAMP_FLAG_INDEX {
                         job.user_id = Some(user_id.to_string());
                     }
-                    collection_jobs.insert_one_with_session(job, None, session).await?;
+                    // collection_jobs.insert_one_with_session(job, None, session).await?;
+                    collection_jobs.insert_one(job, None).await?;
                     fuuids.push(fuuid.to_owned());
                 } else {
                     // Old format. The keymaster has the key where cle_id == fuuid.
@@ -1749,13 +1758,17 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
                             let nonce = key.nonce.expect("nonce");
                             let visites: Vec<&String> = vec![];
                             let job = BackgroundJob::new_index(tuuid, Some(fuuid), user_id, mimetype, &visites, cle_id, format, nonce);
-                            collection_jobs.insert_one_with_session(job, None, session).await?;
+                            // collection_jobs.insert_one_with_session(job, None, session).await?;
+                            collection_jobs.insert_one(job, None).await?;
                         }
                     }
                 }
             }
         }
     }
+
+    // Restart session for wrap-up of the call
+    start_transaction_regular(session).await?;
 
     Ok(())
 }
