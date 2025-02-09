@@ -61,15 +61,15 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
     // collection.update_many_with_session(filtre.clone(), ops, None, session).await?;
     collection.update_many(filtre.clone(), ops, None).await?;
 
-    // Restart transaction after to get access to all data just modified
-    start_transaction_regular(session).await?;
-
-    // Index - tables VERSION et FICHIER_REP
-    debug!("Create batch of files to index after reset");
-    create_missing_jobs_indexing(middleware).await?;
-
-    // Commit changes.
-    session.commit_transaction().await?;
+    // // Restart transaction after to get access to all data just modified
+    // start_transaction_regular(session).await?;
+    //
+    // // Index - tables VERSION et FICHIER_REP
+    // debug!("Create batch of files to index after reset");
+    // create_missing_jobs_indexing(middleware).await?;
+    //
+    // // Commit changes.
+    // session.commit_transaction().await?;
 
     // Reset le serveur d'indexation
     let routage = RoutageMessageAction::builder("solrrelai", "reindexerConsignation", vec![Securite::L3Protege])
@@ -88,10 +88,10 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
     // Restart transaction after to get access to all data just modified
     start_transaction_regular(session).await?;
 
-    // Start reindexing.
-    debug!("Create first batch of files to index after reset");
-    reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 0, 2000, "solrrelai", "processIndex", true, session).await?;
-    debug!("First batch created, reindexing started");
+    // // Start reindexing.
+    // debug!("Create first batch of files to index after reset");
+    // reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 0, 2000, "solrrelai", "processIndex", true, session).await?;
+    // debug!("First batch created, reindexing started");
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
