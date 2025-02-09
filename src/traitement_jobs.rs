@@ -1682,7 +1682,7 @@ pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), Commo
     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(NOM_COLLECTION_INDEXATION_JOBS)?;
 
     // Remove all file indexing jobs with empty filehosts ([]). They will get recreated. Ignore directories (fuuid is null).
-    let filtre_empty = doc!{"filehosts.0": {"$exists": false}, "fuuid": {"$exists": true}};
+    let filtre_empty = doc!{"filehost_ids.0": {"$exists": false}, "fuuid": {"$exists": true}};
     collection_jobs.delete_many(filtre_empty, None).await?;
 
     // let filtre = doc! {CHAMP_SUPPRIME: false, CHAMP_FLAG_INDEX: false};
