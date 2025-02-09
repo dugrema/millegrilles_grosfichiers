@@ -90,7 +90,7 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
 
     // Start reindexing.
     debug!("Create first batch of files to index after reset");
-    reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 0, 250, "solrrelai", "processIndex", true, session).await?;
+    reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 0, 2000, "solrrelai", "processIndex", true, session).await?;
     debug!("First batch created, reindexing started");
 
     Ok(Some(middleware.reponse_ok(None, None)?))
