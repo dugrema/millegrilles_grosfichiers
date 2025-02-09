@@ -28,7 +28,7 @@ use crate::requetes::consommer_requete;
 use crate::evenements::{consommer_evenement, HandlerEvenements};
 use crate::traitement_entretien::{calculer_quotas, reclamer_fichiers};
 use crate::traitement_index::IndexationJobHandler;
-use crate::traitement_jobs::{creer_jobs_manquantes, entretien_jobs_expirees, maintenance_impossible_jobs};
+use crate::traitement_jobs::{create_missing_jobs_indexing, creer_jobs_manquantes, entretien_jobs_expirees, maintenance_impossible_jobs};
 // use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
 use crate::transactions::aiguillage_transaction;
 
@@ -687,6 +687,12 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     }
     if minutes % 4 == 2
     {
+        info!("Creating missing indexing jobs - BEGIN");
+        if let Err(e) = create_missing_jobs_indexing(middleware).await {
+            info!("create_missing_jobs_indexing Error: {:?}", e);
+        }
+        info!("Creating missing indexing jobs - END");
+
         // Restart expired media jobs
         info!("entretien_jobs_expirees STARTING");
         let fetch_filehosts = minutes == 2;  // Once an hour

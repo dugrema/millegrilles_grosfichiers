@@ -1664,13 +1664,129 @@ where M: MongoDao + GenerateurMessages
     if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_VIDEO_JOBS, CHAMP_FLAG_VIDEO_TRAITE, session).await {
         error!("creer_jobs_manquantes Erreur creation jobs manquantes videos: {:?}", e);
     }
+    Ok(())
+}
 
-    // Index - visiter tables VERSION et FICHIER_REP
-    if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX, session).await {
-        error!("creer_jobs_manquantes Erreur creation jobs manquantes index: {:?}", e);
+#[derive(Deserialize, Debug)]
+struct MissingJobMapping {
+    fichierrep: NodeFichierRepOwned,
+    versions: Vec<NodeFichierVersionOwned>,
+    jobs: Vec<BackgroundJob>,
+}
+
+/// Create missing jobs for all entries not already indexed.
+pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), CommonError>
+    where M: MongoDao + GenerateurMessages
+{
+    let collection_reps = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(NOM_COLLECTION_INDEXATION_JOBS)?;
+
+    // Remove all file indexing jobs with empty filehosts ([]). They will get recreated. Ignore directories (fuuid is null).
+    let filtre_empty = doc!{"filehosts.0": {"$exists": false}, "fuuid": {"$exists": true}};
+    collection_jobs.delete_many(filtre_empty, None).await?;
+
+    // let filtre = doc! {CHAMP_SUPPRIME: false, CHAMP_FLAG_INDEX: false};
+    let pipeline = vec![
+        doc! { "$match": {CHAMP_SUPPRIME: false, CHAMP_FLAG_INDEX: false} },
+        doc! { "$replaceRoot": {"newRoot": {"_id": "$tuuid", "fichierrep": "$$ROOT"}}},
+        doc! { "$lookup": {
+            "from": NOM_COLLECTION_INDEXATION_JOBS,
+            "localField": "fichierrep.tuuid",
+            "foreignField": "tuuid",
+            "as": "jobs",
+        }},
+        // Filter out files that already have a job
+        doc! { "$match": {"jobs.0": {"$exists": false} } },
+        // Get version when present
+        doc! { "$lookup": {
+            "from": NOM_COLLECTION_VERSIONS,
+            "localField": "fichierrep.fuuids_versions",
+            "foreignField": "fuuid",
+            "as": "versions",
+        }},
+    ];
+    debug!("Pipeline: {:?}", pipeline);
+
+    let mut batch = Vec::with_capacity(50);
+    let mut cursor = collection_reps.aggregate(pipeline, None).await?;
+    while cursor.advance().await? {
+        let row = cursor.deserialize_current()?;
+        let mut row: MissingJobMapping = convertir_bson_deserializable(row)?;
+        // debug!("Mapping job: {:?}", row);
+        let row_reps = row.fichierrep;
+        let row_version = row.versions.first();
+
+        let tuuid = row_reps.tuuid.as_str();
+        let user_id = row_reps.user_id.as_str();
+
+        match row_version {
+            Some(fichier_version) => {
+                let fuuid = fichier_version.fuuid.as_str();
+                let mimetype = match row_reps.mimetype {
+                    Some(inner) => inner,
+                    None => fichier_version.mimetype.to_owned()
+                };
+
+                let visites: Vec<&String> = fichier_version.visites.keys().collect();
+                // Ensure the "nouveau" visit is not counted
+                let visites = visites.into_iter().filter(|v| v.as_str() != "nouveau").collect();
+
+                // File
+                if fichier_version.cle_id.is_some() && fichier_version.format.is_some() && fichier_version.nonce.is_some() {
+                    // Current format
+                    let cle_id = fichier_version.cle_id.as_ref().expect("cle_id").to_owned();
+                    let format: &str = fichier_version.format.clone().expect("format").into();
+                    let nonce = fichier_version.nonce.as_ref().expect("nonce").to_owned();
+
+                    let mut job = BackgroundJob::new(tuuid, fuuid, mimetype, &visites, cle_id, format, nonce);
+                    job.user_id = Some(user_id.to_string());
+                    batch.push(job);
+                } else {
+                    // Old format. The keymaster has the key where cle_id == fuuid.
+                    let cle_id = fuuid;
+
+                    // Values for format and header (nonce) are available directly from the key.
+                    let mut key_information = get_decrypted_keys(middleware, vec![cle_id.to_owned()]).await?;
+                    if key_information.len() == 1 {
+                        let key = key_information.pop().expect("pop key_information");
+                        if key.format.is_some() && key.nonce.is_some() {
+                            debug!("Cle_id {} information recovered successfully from keymaster", cle_id);
+                            let format: &str = key.format.expect("format").into();
+                            let nonce = key.nonce.expect("nonce");
+                            let job = BackgroundJob::new_index(tuuid, Some(fuuid), user_id, mimetype, &visites, cle_id, format, nonce);
+                            batch.push(job);
+                        }
+                    }
+                }
+            }
+            None => {
+                // Directory/Collection
+                let metadata = row_reps.metadata;
+                if metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
+                    let cle_id = metadata.cle_id.expect("cle_id");
+                    let format = metadata.format.expect("format");
+                    let nonce = metadata.nonce.expect("nonce");
+                    let mimetype = row_reps.mimetype.unwrap_or_else(|| "application/octet-stream".to_string());
+                    let visites: Vec<&String> = vec![];
+                    let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, mimetype, &visites, cle_id, format, nonce);
+                    batch.push(job);
+                }
+            }
+        }
+
+        if batch.len() > 50 {
+            // Save batch to database
+            debug!("Saving batch of index jobs");
+            collection_jobs.insert_many(&batch, None).await?;
+            batch.clear();
+        }
     }
-    if let Err(e) = creer_jobs_manquantes_fichiersrep(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX, session).await {
-        error!("creer_jobs_manquantes Erreur creation jobs manquantes index: {:?}", e);
+
+    if batch.len() > 0 {
+        // Save batch to database
+        debug!("Saving last batch of {} index jobs", batch.len());
+        collection_jobs.insert_many(batch, None).await?;
+        batch = Vec::new();
     }
 
     Ok(())
@@ -1769,40 +1885,6 @@ pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str
 
     // Restart session for wrap-up of the call
     start_transaction_regular(session).await?;
-
-    Ok(())
-}
-
-pub async fn creer_jobs_manquantes_fichiersrep<M>(middleware: &M, nom_collection: &str, flag_job: &str, session: &mut ClientSession) -> Result<(), CommonError>
-where M: MongoDao
-{
-    let collection_reps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
-    let filtre_reps = doc!{"supprime": false, "supprime_indirect": false, flag_job: false};
-    let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
-    let mut curseur = collection_reps.find_with_session(filtre_reps, None, session).await?;
-    while curseur.advance(session).await? {
-        let row = curseur.deserialize_current()?;
-        let tuuid = &row.tuuid;
-        let user_id = &row.user_id;
-
-        // Verifier si une job existe pour ce tuuid/fuuid
-        let filtre_job = doc! {"tuuid": tuuid};
-        let count = collection_jobs.count_documents_with_session(filtre_job, None, session).await?;
-
-        if count == 0 {
-            debug!("creer_jobs_manquantes_queue Creer job {} manquante pour tuuid {}", flag_job, tuuid);
-            let metadata = row.metadata;
-            if metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
-                let cle_id = metadata.cle_id.expect("cle_id");
-                let format = metadata.format.expect("format");
-                let nonce = metadata.nonce.expect("nonce");
-                let mimetype = row.mimetype.unwrap_or_else(|| "application/octet-stream".to_string());
-                let visites: Vec<&String> = vec![];
-                let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, mimetype, &visites, cle_id, format, nonce);
-                collection_jobs.insert_one(job, None).await?;
-            }
-        }
-    }
 
     Ok(())
 }

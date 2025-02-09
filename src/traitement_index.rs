@@ -28,7 +28,7 @@ use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::tokio::time::timeout;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
-use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job, JobTrigger, creer_jobs_manquantes_queue, creer_jobs_manquantes_fichiersrep, reactiver_jobs};
+use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job, JobTrigger, reactiver_jobs, create_missing_jobs_indexing};
 use crate::transactions::{NodeFichierRepBorrowed, NodeFichierRepOwned, NodeFichierVersionOwned, TransactionSupprimerOrphelins};
 
 const EVENEMENT_INDEXATION_DISPONIBLE: &str = "jobIndexationDisponible";
@@ -66,8 +66,7 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
 
     // Index - tables VERSION et FICHIER_REP
     debug!("Create batch of files to index after reset");
-    creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX, session).await?;
-    creer_jobs_manquantes_fichiersrep(middleware, NOM_COLLECTION_INDEXATION_JOBS, CHAMP_FLAG_INDEX, session).await?;
+    create_missing_jobs_indexing(middleware).await?;
 
     // Commit changes.
     session.commit_transaction().await?;
