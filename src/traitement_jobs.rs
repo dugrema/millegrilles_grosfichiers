@@ -1636,39 +1636,23 @@ pub async fn sauvegarder_job<'a, M>(middleware: &M, job: &BackgroundJob, trigger
     Ok(updated_job)
 }
 
-pub async fn creer_jobs_manquantes<M>(middleware: &M) -> Result<(), CommonError>
+pub async fn create_missing_jobs<M>(middleware: &M) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages
 {
-    let mut session = middleware.get_session().await?;
-    start_transaction_regular(&mut session).await?;
-
-    match creer_jobs_manquantes_session(middleware, &mut session).await {
-        Ok(()) => {
-            session.commit_transaction().await?;
-            Ok(())
-        },
-        Err(e) => {
-            // error!("creer_jobs_manquantes_session Error: {:?}", e);
-            session.abort_transaction().await?;
-            Err(e)
-        }
+    if let Err(e) = create_missing_jobs_indexing(middleware).await {
+        error!("create_missing_jobs Erreur creation jobs manquantes indexing: {:?}", e);
     }
-}
-
-async fn creer_jobs_manquantes_session<M>(middleware: &M, session: &mut ClientSession) -> Result<(), CommonError>
-where M: MongoDao + GenerateurMessages
-{
-    if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_IMAGES_JOBS, CHAMP_FLAG_MEDIA_TRAITE, session).await {
-        error!("creer_jobs_manquantes Erreur creation jobs manquantes images: {:?}", e);
+    if let Err(e) = create_missing_jobs_media(middleware, NOM_COLLECTION_IMAGES_JOBS, CHAMP_FLAG_MEDIA_TRAITE).await {
+        error!("create_missing_jobs Erreur creation jobs manquantes images: {:?}", e);
     }
-    if let Err(e) = creer_jobs_manquantes_queue(middleware, NOM_COLLECTION_VIDEO_JOBS, CHAMP_FLAG_VIDEO_TRAITE, session).await {
-        error!("creer_jobs_manquantes Erreur creation jobs manquantes videos: {:?}", e);
+    if let Err(e) = create_missing_jobs_media(middleware, NOM_COLLECTION_VIDEO_JOBS, CHAMP_FLAG_VIDEO_TRAITE).await {
+        error!("create_missing_jobs Erreur creation jobs manquantes videos: {:?}", e);
     }
     Ok(())
 }
 
 #[derive(Deserialize, Debug)]
-struct MissingJobMapping {
+struct MissingJobIndexMapping {
     fichierrep: NodeFichierRepOwned,
     versions: Vec<NodeFichierVersionOwned>,
     jobs: Vec<BackgroundJob>,
@@ -1685,7 +1669,6 @@ pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), Commo
     let filtre_empty = doc!{"filehost_ids.0": {"$exists": false}, "fuuid": {"$exists": true}};
     collection_jobs.delete_many(filtre_empty, None).await?;
 
-    // let filtre = doc! {CHAMP_SUPPRIME: false, CHAMP_FLAG_INDEX: false};
     let pipeline = vec![
         doc! { "$match": {CHAMP_SUPPRIME: false, CHAMP_FLAG_INDEX: false} },
         doc! { "$replaceRoot": {"newRoot": {"_id": "$tuuid", "fichierrep": "$$ROOT"}}},
@@ -1705,13 +1688,13 @@ pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), Commo
             "as": "versions",
         }},
     ];
-    debug!("Pipeline: {:?}", pipeline);
+    debug!("create_missing_jobs_indexing Pipeline: {:?}", pipeline);
 
     let mut batch = Vec::with_capacity(50);
     let mut cursor = collection_reps.aggregate(pipeline, None).await?;
     while cursor.advance().await? {
         let row = cursor.deserialize_current()?;
-        let mut row: MissingJobMapping = convertir_bson_deserializable(row)?;
+        let mut row: MissingJobIndexMapping = convertir_bson_deserializable(row)?;
         // debug!("Mapping job: {:?}", row);
         let row_reps = row.fichierrep;
         let row_version = row.versions.first();
@@ -1721,6 +1704,7 @@ pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), Commo
 
         match row_version {
             Some(fichier_version) => {
+                // This is a file with associated content
                 let fuuid = fichier_version.fuuid.as_str();
                 let mimetype = match row_reps.mimetype {
                     Some(inner) => inner,
@@ -1733,7 +1717,7 @@ pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), Commo
 
                 // File
                 if fichier_version.cle_id.is_some() && fichier_version.format.is_some() && fichier_version.nonce.is_some() {
-                    // Current format
+                    // Current format with cle_id directly available
                     let cle_id = fichier_version.cle_id.as_ref().expect("cle_id").to_owned();
                     let format: &str = fichier_version.format.clone().expect("format").into();
                     let nonce = fichier_version.nonce.as_ref().expect("nonce").to_owned();
@@ -1774,7 +1758,7 @@ pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), Commo
             }
         }
 
-        if batch.len() > 50 {
+        if batch.len() >= 50 {
             // Save batch to database
             debug!("Saving batch of index jobs");
             collection_jobs.insert_many(&batch, None).await?;
@@ -1783,7 +1767,7 @@ pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), Commo
     }
 
     if batch.len() > 0 {
-        // Save batch to database
+        // Save last batch to database
         debug!("Saving last batch of {} index jobs", batch.len());
         collection_jobs.insert_many(batch, None).await?;
         batch = Vec::new();
@@ -1792,102 +1776,238 @@ pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), Commo
     Ok(())
 }
 
-pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, flag_job: &str, session: &mut ClientSession) -> Result<(), CommonError>
-    where M: MongoDao + GenerateurMessages
+#[derive(Deserialize, Debug)]
+struct MissingMediaJobMapping {
+    version: NodeFichierVersionOwned,
+    fichierreps: Vec<NodeFichierRepOwned>,
+    jobs: Vec<BackgroundJob>,
+}
+
+pub async fn create_missing_jobs_media<M>(middleware: &M, jobs_collection_name: &str, flag_job: &str) -> Result<(), CommonError>
+where M: MongoDao + GenerateurMessages
 {
-    // Avoid session, this is a batch operation
-    session.commit_transaction().await?;
+    let collection_version = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(jobs_collection_name)?;
 
-    let collection_reps = middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
-    let collection_version = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
-    let filtre_version = doc!{flag_job: false, "tuuids.0": {"$exists": true}, "visites.nouveau": {"$exists": false}};
-    let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
-    // let mut curseur = collection_version.find_with_session(filtre_version, None, session).await?;
-    let mut curseur = collection_version.find(filtre_version, None).await?;
-    let mut fuuids = Vec::new();
-    // while curseur.advance(session).await? {
-    while curseur.advance().await? {
-        let row = curseur.deserialize_current()?;
-        let fuuid = row.fuuid;
-        // let tuuid = row.tuuid;
+    // Remove all file indexing jobs with empty filehosts ([]). They will get recreated.
+    let filtre_empty = doc! {"filehost_ids.0": {"$exists": false}};
+    collection_jobs.delete_many(filtre_empty, None).await?;
 
-        // Verifier si une job existe pour ce fuuid. Ignorer fichiers en cours d'upload (nouveau).
-        let filtre_job = doc! {"fuuid": fuuid};
-        // let count = collection_jobs.count_documents_with_session(filtre_job, None, session).await?;
-        let count = collection_jobs.count_documents(filtre_job, None).await?;
+    let pipeline = vec![
+        // Find file versions that are not processed and not deleted (at least 1 tuuid).
+        doc! { "$match": {flag_job: false, format!("{}.0", CHAMP_TUUIDS): {"$exists": true}} },
+        // Restructure to keep version structure intact for mapping
+        doc! { "$replaceRoot": {"newRoot": {"_id": "$fuuid", "version": "$$ROOT"}}},
+        doc! { "$lookup": {
+            "from": jobs_collection_name,
+            "localField": "version.fuuid",
+            "foreignField": "fuuid",
+            "as": "jobs",
+        }},
+        // Filter out files that already have a job
+        doc! { "$match": {"jobs.0": {"$exists": false} } },
+        // Get fichiersrep when present
+        doc! { "$lookup": {
+            "from": NOM_COLLECTION_FICHIERS_REP,
+            "localField": "version.fuuid",
+            "foreignField": "fuuids_versions",
+            "as": "fichierreps",
+        }},
+    ];
+    debug!("create_missing_jobs_media Pipeline: {:?}", pipeline);
 
-        if count == 0 {
-            debug!("creer_jobs_manquantes_queue Creer job {} manquante pour fuuid {}", flag_job, fuuid);
-            let filtre_reps = doc!{"fuuids_versions": fuuid};
-            // let mut cursor_reps = collection_reps.find_with_session(filtre_reps, None, session).await?;
-            let mut cursor_reps = collection_reps.find(filtre_reps, None).await?;
-            // while cursor_reps.advance(session).await? {
-            while cursor_reps.advance().await? {
-                let row_reps = cursor_reps.deserialize_current()?;
-                let tuuid = row_reps.tuuid.as_str();
-                let user_id = row_reps.user_id.as_str();
+    let mut batch = Vec::with_capacity(50);
+    let mut cursor = collection_version.aggregate(pipeline, None).await?;
+    while cursor.advance().await? {
+        let row = cursor.deserialize_current()?;
+        let row: MissingMediaJobMapping = convertir_bson_deserializable(row)?;
+        let fichier_version = row.version;
 
-                if row.cle_id.is_some() && row.format.is_some() && row.nonce.is_some() {
-                    let cle_id = row.cle_id.expect("cle_id");
-                    let format: &str = row.format.clone().expect("format").into();
-                    let nonce = row.nonce.expect("nonce");
-                    let visites: Vec<&String> = row.visites.keys().collect();
+        let fuuid = fichier_version.fuuid.as_str();
 
-                    let mut job = BackgroundJob::new(tuuid, fuuid, row.mimetype, &visites, cle_id, format, nonce);
-                    if flag_job == CHAMP_FLAG_VIDEO_TRAITE {
-                        // Champs supplementaires pour video
-                        let params_initial = BackgroundJobParams {
-                            defaults: Some(true),
-                            thumbnails: Some(true),
-                            mimetype: None,
-                            codec_video: None,
-                            codec_audio: None,
-                            resolution_video: None,
-                            quality_video: None,
-                            bitrate_video: None,
-                            bitrate_audio: None,
-                            preset: None,
-                            audio_stream_idx: None,
-                            subtitle_stream_idx: None,
-                        };
-                        job.params = Some(params_initial);
+        let visites: Vec<&String> = fichier_version.visites.keys().collect();
+        // Ensure the "nouveau" visit is not counted
+        let visites = visites.into_iter().filter(|v| v.as_str() != "nouveau").collect();
 
-                        job.user_id = Some(user_id.to_string());
-                    } else if flag_job == CHAMP_FLAG_INDEX {
-                        job.user_id = Some(user_id.to_string());
+        for fichier_rep in row.fichierreps {
+            let tuuid = fichier_rep.tuuid.as_str();
+            let user_id = fichier_rep.user_id.as_str();
+
+            let mimetype = match fichier_rep.mimetype {
+                Some(inner) => inner,
+                None => fichier_version.mimetype.clone()
+            };
+
+            let mut job = if fichier_version.cle_id.is_some() && fichier_version.format.is_some() && fichier_version.nonce.is_some() {
+                // Current format with cle_id directly available
+                let cle_id = fichier_version.cle_id.as_ref().expect("cle_id").to_owned();
+                let format: &str = fichier_version.format.clone().expect("format").into();
+                let nonce = fichier_version.nonce.as_ref().expect("nonce").to_owned();
+
+                let mut job = BackgroundJob::new(tuuid, fuuid, mimetype, &visites, cle_id, format, nonce);
+                job.user_id = Some(user_id.to_string());
+                job
+            } else {
+                // Old format. The keymaster has the key where cle_id == fuuid.
+                let cle_id = fuuid;
+
+                // Values for format and header (nonce) are available directly from the key.
+                let mut key_information = get_decrypted_keys(middleware, vec![cle_id.to_owned()]).await?;
+                if key_information.len() == 1 {
+                    let key = key_information.pop().expect("pop key_information");
+                    if key.format.is_some() && key.nonce.is_some() {
+                        debug!("Cle_id {} information recovered successfully from keymaster", cle_id);
+                        let format: &str = key.format.expect("format").into();
+                        let nonce = key.nonce.expect("nonce");
+                        let job = BackgroundJob::new(tuuid, fuuid, mimetype, &visites, cle_id, format, nonce);
+                        job
+                    } else {
+                        warn!("Key information missing from keymaster for fuuid: {}", fuuid);
+                        continue
                     }
-                    // collection_jobs.insert_one_with_session(job, None, session).await?;
-                    collection_jobs.insert_one(job, None).await?;
-                    fuuids.push(fuuid.to_owned());
                 } else {
-                    // Old format. The keymaster has the key where cle_id == fuuid.
-                    let cle_id = fuuid;
-                    let mimetype = row.mimetype;
-
-                    // Values for format and header (nonce) are available directly from the key.
-                    let mut key_information = get_decrypted_keys(middleware, vec![cle_id.to_owned()]).await?;
-                    if key_information.len() == 1 {
-                        let key = key_information.pop().expect("pop key_information");
-                        if key.format.is_some() && key.nonce.is_some() {
-                            debug!("Cle_id {} information recovered successfully from keymaster", cle_id);
-                            let format: &str = key.format.expect("format").into();
-                            let nonce = key.nonce.expect("nonce");
-                            let visites: Vec<&String> = vec![];
-                            let job = BackgroundJob::new_index(tuuid, Some(fuuid), user_id, mimetype, &visites, cle_id, format, nonce);
-                            // collection_jobs.insert_one_with_session(job, None, session).await?;
-                            collection_jobs.insert_one(job, None).await?;
-                        }
-                    }
+                    warn!("Key information missing from keymaster for fuuid: {}", fuuid);
+                    continue
                 }
+            };
+
+            if flag_job == CHAMP_FLAG_VIDEO_TRAITE {
+                // Champs supplementaires pour video
+                let params_initial = BackgroundJobParams {
+                    defaults: Some(true),
+                    thumbnails: Some(true),
+                    mimetype: None,
+                    codec_video: None,
+                    codec_audio: None,
+                    resolution_video: None,
+                    quality_video: None,
+                    bitrate_video: None,
+                    bitrate_audio: None,
+                    preset: None,
+                    audio_stream_idx: None,
+                    subtitle_stream_idx: None,
+                };
+                job.params = Some(params_initial);
             }
+            job.user_id = Some(user_id.to_string());
+
+            batch.push(job);
+
+            if batch.len() >= 50 {
+                // Save batch to database
+                debug!("Saving batch of media jobs");
+                collection_jobs.insert_many(&batch, None).await?;
+                batch.clear();
+            }
+        }
+
+        if batch.len() > 0 {
+            // Save batch to database
+            debug!("Saving last batch of media jobs");
+            collection_jobs.insert_many(&batch, None).await?;
+            batch.clear();
         }
     }
 
-    // Restart session for wrap-up of the call
-    start_transaction_regular(session).await?;
-
     Ok(())
 }
+
+// pub async fn creer_jobs_manquantes_queue<M>(middleware: &M, nom_collection: &str, flag_job: &str, session: &mut ClientSession) -> Result<(), CommonError>
+//     where M: MongoDao + GenerateurMessages
+// {
+//     // Avoid session, this is a batch operation
+//     session.commit_transaction().await?;
+//
+//     let collection_reps = middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
+//     let collection_version = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
+//     let filtre_version = doc!{flag_job: false, "tuuids.0": {"$exists": true}, "visites.nouveau": {"$exists": false}};
+//     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(nom_collection)?;
+//     // let mut curseur = collection_version.find_with_session(filtre_version, None, session).await?;
+//     let mut curseur = collection_version.find(filtre_version, None).await?;
+//     let mut fuuids = Vec::new();
+//     // while curseur.advance(session).await? {
+//     while curseur.advance().await? {
+//         let row = curseur.deserialize_current()?;
+//         let fuuid = row.fuuid;
+//         // let tuuid = row.tuuid;
+//
+//         // Verifier si une job existe pour ce fuuid. Ignorer fichiers en cours d'upload (nouveau).
+//         let filtre_job = doc! {"fuuid": fuuid};
+//         // let count = collection_jobs.count_documents_with_session(filtre_job, None, session).await?;
+//         let count = collection_jobs.count_documents(filtre_job, None).await?;
+//
+//         if count == 0 {
+//             debug!("creer_jobs_manquantes_queue Creer job {} manquante pour fuuid {}", flag_job, fuuid);
+//             let filtre_reps = doc!{"fuuids_versions": fuuid};
+//             // let mut cursor_reps = collection_reps.find_with_session(filtre_reps, None, session).await?;
+//             let mut cursor_reps = collection_reps.find(filtre_reps, None).await?;
+//             // while cursor_reps.advance(session).await? {
+//             while cursor_reps.advance().await? {
+//                 let row_reps = cursor_reps.deserialize_current()?;
+//                 let tuuid = row_reps.tuuid.as_str();
+//                 let user_id = row_reps.user_id.as_str();
+//
+//                 if row.cle_id.is_some() && row.format.is_some() && row.nonce.is_some() {
+//                     let cle_id = row.cle_id.expect("cle_id");
+//                     let format: &str = row.format.clone().expect("format").into();
+//                     let nonce = row.nonce.expect("nonce");
+//                     let visites: Vec<&String> = row.visites.keys().collect();
+//
+//                     let mut job = BackgroundJob::new(tuuid, fuuid, row.mimetype, &visites, cle_id, format, nonce);
+//                     if flag_job == CHAMP_FLAG_VIDEO_TRAITE {
+//                         // Champs supplementaires pour video
+//                         let params_initial = BackgroundJobParams {
+//                             defaults: Some(true),
+//                             thumbnails: Some(true),
+//                             mimetype: None,
+//                             codec_video: None,
+//                             codec_audio: None,
+//                             resolution_video: None,
+//                             quality_video: None,
+//                             bitrate_video: None,
+//                             bitrate_audio: None,
+//                             preset: None,
+//                             audio_stream_idx: None,
+//                             subtitle_stream_idx: None,
+//                         };
+//                         job.params = Some(params_initial);
+//
+//                         job.user_id = Some(user_id.to_string());
+//                     } else if flag_job == CHAMP_FLAG_INDEX {
+//                         job.user_id = Some(user_id.to_string());
+//                     }
+//                     // collection_jobs.insert_one_with_session(job, None, session).await?;
+//                     collection_jobs.insert_one(job, None).await?;
+//                     fuuids.push(fuuid.to_owned());
+//                 } else {
+//                     // Old format. The keymaster has the key where cle_id == fuuid.
+//                     let cle_id = fuuid;
+//                     let mimetype = row.mimetype;
+//
+//                     // Values for format and header (nonce) are available directly from the key.
+//                     let mut key_information = get_decrypted_keys(middleware, vec![cle_id.to_owned()]).await?;
+//                     if key_information.len() == 1 {
+//                         let key = key_information.pop().expect("pop key_information");
+//                         if key.format.is_some() && key.nonce.is_some() {
+//                             debug!("Cle_id {} information recovered successfully from keymaster", cle_id);
+//                             let format: &str = key.format.expect("format").into();
+//                             let nonce = key.nonce.expect("nonce");
+//                             let visites: Vec<&String> = vec![];
+//                             let job = BackgroundJob::new_index(tuuid, Some(fuuid), user_id, mimetype, &visites, cle_id, format, nonce);
+//                             // collection_jobs.insert_one_with_session(job, None, session).await?;
+//                             collection_jobs.insert_one(job, None).await?;
+//                         }
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//
+//     // Restart session for wrap-up of the call
+//     start_transaction_regular(session).await?;
+//
+//     Ok(())
+// }
 
 pub async fn entretien_jobs_expirees<M>(middleware: &M, fetch_filehosts: bool) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
