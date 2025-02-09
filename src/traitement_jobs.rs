@@ -1754,6 +1754,16 @@ pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), Commo
                     let visites: Vec<&String> = vec![];
                     let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, mimetype, &visites, cle_id, format, nonce);
                     batch.push(job);
+                } else if metadata.format.is_some() && metadata.header.is_some() && metadata.ref_hachage_bytes.is_some() {
+                    // Old format. The keymaster has the key where cle_id == ref_hachage_bytes.
+                    let cle_id = metadata.ref_hachage_bytes.expect("ref_hachage_bytes");
+                    let format = metadata.format.expect("format");
+                    let header = metadata.header.expect("header");
+                    let nonce = &header[1..]; // Remove multibase marker
+                    let mimetype = row_reps.mimetype.unwrap_or_else(|| "application/octet-stream".to_string());
+                    let visites: Vec<&String> = vec![];
+                    let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, mimetype, &visites, cle_id, format, nonce);
+                    batch.push(job);
                 }
             }
         }
