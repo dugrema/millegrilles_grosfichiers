@@ -15,6 +15,7 @@ use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::{FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::redis::SetOptions;
+use millegrilles_common_rust::tokio::time::sleep;
 use serde::Serialize;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::declencher_traitement_nouveau_fuuid;
@@ -125,12 +126,12 @@ pub async fn reclamer_fichiers_session<M>(middleware: &M, gestionnaire: &GrosFic
         error!("verifier_visites Erreur entretien visites nouveaux: {:?}", e);
     }
 
-    if ! nouveau {
-        // Detecter fichiers
-        if let Err(e) = verifier_visites_expirees_session(middleware, session).await {
-            error!("verifier_visites Erreur entretien visites fichiers: {:?}", e);
-        }
-    }
+    // if ! nouveau {
+    //     // Detecter fichiers
+    //     if let Err(e) = verifier_visites_expirees_session(middleware, session).await {
+    //         error!("verifier_visites Erreur entretien visites fichiers: {:?}", e);
+    //     }
+    // }
 
     debug!("verifier_visites Fin");
     Ok(())
@@ -205,102 +206,146 @@ where M: GenerateurMessages + MongoDao
 
     Ok(())
 }
-async fn verifier_visites_expirees_session<M>(middleware: &M, session: &mut ClientSession) -> Result<(), CommonError>
+
+pub async fn verifier_visites_expirees<M>(middleware: &M) -> Result<(), CommonError>
 where M: GenerateurMessages + MongoDao
 {
-    debug!("verifier_visites_expirees Reclamer fuuids");
-
-    let now = Utc::now();
+    debug!("verifier_visites_expirees Claim fuuids");
 
     // Faire une reclamation des fichiers regulierement (tous les jours) pour eviter qu'ils soient
     // consideres comme orphelins (et supprimes).
-    let delai_expiration = Duration::from_secs(86_400);
-    // let delai_expiration = Duration::from_secs(3 * 60);
-    let expiration = now - delai_expiration;
-
     let filtre = doc!{
-        CONST_FIELD_LAST_VISIT_VERIFICATION: {"$lte": expiration},
         "tuuids.0": {"$exists": true},  // Check if at least one tuuid is linked (means not deleted)
     };
 
-    let collection_versions = middleware.get_collection_typed::<FuuidRow>(NOM_COLLECTION_VERSIONS)?;
     let options = FindOptions::builder()
-        .limit(VISIT_BATCH_SIZE as i64)
-        .hint(Hint::Name("last_visits".to_string()))
         .projection(doc!{"fuuids_reclames": 1})
         .build();
 
-    for batch_no in 1..101 {  // Max of 100 batches at once
-        let visits = {
-            let mut curseur = collection_versions.find_with_session(filtre.clone(), options.clone(), session).await?;
-            let mut visits = Vec::with_capacity(VISIT_BATCH_SIZE);
-            while let Some(row) = curseur.next(session).await {
-                let fuuids = row?.fuuids_reclames;
-                visits.extend(fuuids);
-                if visits.len() >= VISIT_BATCH_SIZE {
-                    // Already 1000 items, break and continue with another batch later
-                    break
+    let collection_versions = middleware.get_collection_typed::<FuuidRow>(NOM_COLLECTION_VERSIONS)?;
+    let mut cursor = collection_versions.find(filtre, options).await?;
+    let mut visits = Vec::with_capacity(VISIT_BATCH_SIZE);
+    let mut batch_no = 0;
+    while cursor.advance().await? {
+        let row = cursor.deserialize_current()?;
+        visits.extend(row.fuuids_reclames);
+
+        if(visits.len() >= VISIT_BATCH_SIZE) {
+            let mut reponse = claim_files(middleware, batch_no, false, &visits).await?;
+            for _ in 0..3 {
+                if reponse.ok {
+                    break;  // Success
                 }
+                // Wait 5 seconds
+                warn!("Error receiving response for batch of claims, retrying: Error: {:?}", reponse.err);
+                sleep(Duration::from_secs(5)).await;
+                reponse = claim_files(middleware, batch_no, false, &visits).await?;
             }
 
-            visits
-        };
-
-        info!("verifier_visites_expirees Batch {} verifier {} fuuids", batch_no, visits.len());
-
-        if visits.len() == 0 {
-            break  // Nothing to do
-        }
-
-        // Faire un set de fuuids pour s'assurer qu'ils sont tous dans les reponses
-        let mut visits_set = HashSet::new();
-        visits_set.extend(visits.iter().map(|v| v.as_str()));
-
-        let reponse = verifier_visites_topologies(middleware, &visits).await?;
-        if let Some(visites) = reponse.visits {
-            debug!("verifier_visites_expirees Visite {} fuuids", visites.len());
-
-            // Touch the reps to allow client updates
-            let filtre = doc!{"fuuids_versions": {"$in": visites.iter().map(|x|x.fuuid.as_str()).collect::<Vec<_>>()}};
-            let ops = doc!{"$currentDate": {CHAMP_MODIFICATION: true}};
-            let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-            collection.update_one_with_session(filtre, ops, None, session).await?;
-
-            for item in visites {
-                sauvegarder_visites(middleware, item.fuuid.as_str(), &item.visits, session).await?;
-                visits_set.remove(item.fuuid.as_str());
+            if ! reponse.ok {
+                Err(format!("Error claiming files, aborting: {:?}", reponse.err))?;
             }
-        }
-        if let Some(unknown) = reponse.unknown {
-            debug!("verifier_visites_expirees {} fuuids inconnus", unknown.len());
-            sauvegarder_fuuid_inconnu(middleware, &unknown, session).await?;
-            for f in &unknown {
-                visits_set.remove(f.as_str());
-            }
-        }
 
-        if visits_set.len() > 0 {
-            warn!("verifier_visites_expirees {} fuuids sans reponse sur claim, marquer inconnus", visits_set.len());
-            // Record remaining fuuids as also missing
-            let remaining: Vec<String> = visits_set.iter().map(|v| v.to_string()).collect();
-            sauvegarder_fuuid_inconnu(middleware, &remaining, session).await?;
-        }
-
-        // Commit batch
-        session.commit_transaction().await?;
-        start_transaction_regular(session).await?;
-
-        if visits.len() < VISIT_BATCH_SIZE {
-            break  // All current files covered
+            debug!("verifier_visites_expirees Batch {} of {} fuuids claimed", batch_no, visits.len());
+            visits.clear();
+            batch_no += 1;
         }
     }
+
+    // Last batch
+    let mut reponse = claim_files(middleware, batch_no, true, &visits).await?;
+    for _ in 0..3 {
+        if reponse.ok {
+            break;  // Success
+        }
+        // Wait 5 seconds
+        warn!("Error receiving response for last batch of claims, retrying: Error: {:?}", reponse.err);
+        sleep(Duration::from_secs(5)).await;
+        reponse = claim_files(middleware, batch_no, true, &visits).await?;
+    }
+    if ! reponse.ok {
+        warn!("Error on last batch of claims: {:?}", reponse.err);
+    }
+
+    // let options = FindOptions::builder()
+    //     .limit(VISIT_BATCH_SIZE as i64)
+    //     .hint(Hint::Name("last_visits".to_string()))
+    //     .projection(doc!{"fuuids_reclames": 1})
+    //     .build();
+    //
+    // for batch_no in 1..101 {  // Max of 100 batches at once
+    //     let visits = {
+    //         let mut curseur = collection_versions.find_with_session(filtre.clone(), options.clone(), session).await?;
+    //         let mut visits = Vec::with_capacity(VISIT_BATCH_SIZE);
+    //         while let Some(row) = curseur.next(session).await {
+    //             let fuuids = row?.fuuids_reclames;
+    //             visits.extend(fuuids);
+    //             if visits.len() >= VISIT_BATCH_SIZE {
+    //                 // Already 1000 items, break and continue with another batch later
+    //                 break
+    //             }
+    //         }
+    //
+    //         visits
+    //     };
+    //
+    //     info!("verifier_visites_expirees Batch {} verifier {} fuuids", batch_no, visits.len());
+    //
+    //     if visits.len() == 0 {
+    //         break  // Nothing to do
+    //     }
+    //
+    //     // Faire un set de fuuids pour s'assurer qu'ils sont tous dans les reponses
+    //     let mut visits_set = HashSet::new();
+    //     visits_set.extend(visits.iter().map(|v| v.as_str()));
+    //
+    //     let reponse = verifier_visites_topologies(middleware, &visits).await?;
+    //     if let Some(visites) = reponse.visits {
+    //         debug!("verifier_visites_expirees Visite {} fuuids", visites.len());
+    //
+    //         // Touch the reps to allow client updates
+    //         let filtre = doc!{"fuuids_versions": {"$in": visites.iter().map(|x|x.fuuid.as_str()).collect::<Vec<_>>()}};
+    //         let ops = doc!{"$currentDate": {CHAMP_MODIFICATION: true}};
+    //         let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    //         collection.update_one_with_session(filtre, ops, None, session).await?;
+    //
+    //         for item in visites {
+    //             sauvegarder_visites(middleware, item.fuuid.as_str(), &item.visits, session).await?;
+    //             visits_set.remove(item.fuuid.as_str());
+    //         }
+    //     }
+    //     if let Some(unknown) = reponse.unknown {
+    //         debug!("verifier_visites_expirees {} fuuids inconnus", unknown.len());
+    //         sauvegarder_fuuid_inconnu(middleware, &unknown, session).await?;
+    //         for f in &unknown {
+    //             visits_set.remove(f.as_str());
+    //         }
+    //     }
+    //
+    //     if visits_set.len() > 0 {
+    //         warn!("verifier_visites_expirees {} fuuids sans reponse sur claim, marquer inconnus", visits_set.len());
+    //         // Record remaining fuuids as also missing
+    //         let remaining: Vec<String> = visits_set.iter().map(|v| v.to_string()).collect();
+    //         sauvegarder_fuuid_inconnu(middleware, &remaining, session).await?;
+    //     }
+    //
+    //     // Commit batch
+    //     session.commit_transaction().await?;
+    //     start_transaction_regular(session).await?;
+    //
+    //     if visits.len() < VISIT_BATCH_SIZE {
+    //         break  // All current files covered
+    //     }
+    // }
 
     Ok(())
 }
 
 #[derive(Serialize)]
 struct RequeteFuuidsVisites<'a> {
-    fuuids: &'a Vec<&'a str>
+    fuuids: &'a Vec<&'a str>,
+    batch_no: Option<usize>,
+    done: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -322,10 +367,30 @@ pub async fn verifier_visites_topologies<M,S,I>(middleware: &M, fuuids: I) -> Re
 {
     let fuuids_1 = fuuids.into_iter().collect::<Vec<_>>();  // Copy S reference for ownership
     let fuuids_2 = fuuids_1.iter().map(|f| f.as_ref()).collect::<Vec<_>>(); // Extract &str
-    let requete = RequeteFuuidsVisites { fuuids: &fuuids_2 };
+    let requete = RequeteFuuidsVisites { fuuids: &fuuids_2, batch_no: None, done: None };
 
     let routage = RoutageMessageAction::builder(
         DOMAINE_TOPOLOGIE, "claimAndFilehostVisits", vec![Securite::L3Protege]).build();
+    if let Some(TypeMessage::Valide(reponse)) = middleware.transmettre_commande(routage, &requete).await? {
+        let reponse: RequeteGetVisitesFuuidsResponse = deser_message_buffer!(reponse.message);
+        if ! reponse.ok {
+            Err("verifier_visites_topologies Erreur dans reponse CoreTopologie pour getFilehostVisitsForFuuids")?;
+        }
+        Ok(reponse)
+    } else {
+        Err("verifier_visites_topologies Mauvais type de reponse pour getFilehostVisitsForFuuids")?
+    }
+}
+
+async fn claim_files<M,S,I>(middleware: &M, batch_no: usize, done: bool, fuuids: I) -> Result<RequeteGetVisitesFuuidsResponse, CommonError>
+where M: GenerateurMessages, S: AsRef<str>, I: IntoIterator<Item=S>
+{
+    let fuuids_1 = fuuids.into_iter().collect::<Vec<_>>();  // Copy S reference for ownership
+    let fuuids_2 = fuuids_1.iter().map(|f| f.as_ref()).collect::<Vec<_>>(); // Extract &str
+    let requete = RequeteFuuidsVisites { fuuids: &fuuids_2, batch_no: Some(batch_no), done: Some(done) };
+
+    let routage = RoutageMessageAction::builder(
+        DOMAINE_TOPOLOGIE, "claimFiles", vec![Securite::L3Protege]).build();
     if let Some(TypeMessage::Valide(reponse)) = middleware.transmettre_commande(routage, &requete).await? {
         let reponse: RequeteGetVisitesFuuidsResponse = deser_message_buffer!(reponse.message);
         if ! reponse.ok {
