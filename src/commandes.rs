@@ -168,18 +168,6 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gest
             None => uuid_transaction.to_string(),
         };
 
-        // let fichier_rep = match NodeFichierRepOwned::from_nouvelle_version(
-        //     middleware, &commande, uuid_transaction, &user_id, session).await {
-        //     Ok(inner) => inner,
-        //     Err(e) => Err(format!("grosfichiers.NodeFichierRepOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
-        // };
-        // let tuuid = fichier_rep.tuuid.clone();
-        // let fichier_version = match NodeFichierVersionOwned::from_nouvelle_version(
-        //     &commande, &tuuid, &user_id).await {
-        //     Ok(inner) => inner,
-        //     Err(e) => Err(format!("grosfichiers.NodeFichierVersionOwned.transaction_nouvelle_version Erreur from_nouvelle_version : {:?}", e))?
-        // };
-
         let fuuid = commande.fuuid.as_str();
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
         let filtre = doc!{"fuuid": fuuid};
@@ -226,6 +214,11 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gest
     let mut evenement_contenu = EvenementContenuCollection::new(cuuid.to_owned());
     evenement_contenu.fichiers_ajoutes = Some(vec![tuuid.clone()]);
     emettre_evenement_contenu_collection(middleware, gestionnaire, evenement_contenu).await?;
+
+    // Emit file claim - allows it to be synchronized to all filehosts immediately
+    if let Err(e) = verifier_visites_topologies(middleware, &vec![commande.fuuid.clone()]).await {
+        warn!("transaction_nouvelle_version Error claiming new file version {}: {:?}", tuuid, e);
+    }
 
     Ok(response)
 }
@@ -485,6 +478,17 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gest
         warn!("commande_associer_conversions Erreur emettre_evenement_maj_fichier : {:?}", e);
     }
 
+    // Emit file claim - allows it to be synchronized to all filehosts immediately
+    let mut image_fuuids = Vec::new();
+    for (_, image) in &commande.images {
+        image_fuuids.push(image.hachage.to_owned());
+    }
+    if ! image_fuuids.is_empty() {
+        if let Err(e) = verifier_visites_topologies(middleware, &image_fuuids).await {
+            warn!("commande_associer_conversions Error claiming images for file {}: {:?}", tuuid, e);
+        }
+    }
+
     Ok(response)
 }
 
@@ -526,6 +530,12 @@ async fn commande_associer_video<M>(middleware: &M, m: MessageValide, gestionnai
             warn!("commande_associer_video Erreur emettre_evenement_maj_fichier : {:?}", e);
         }
     }
+
+    // Emit file claim - allows it to be synchronized to all filehosts immediately
+    if let Err(e) = verifier_visites_topologies(middleware, &vec![commande.fuuid_video.clone()]).await {
+        warn!("commande_associer_conversions Error claiming new video for file {:?}: {:?}", commande.tuuid, e);
+    }
+
 
     Ok(response)
 }
