@@ -26,7 +26,7 @@ use crate::grosfichiers_constantes::*;
 use crate::commandes::consommer_commande;
 use crate::requetes::consommer_requete;
 use crate::evenements::{consommer_evenement, HandlerEvenements};
-use crate::traitement_entretien::{calculer_quotas, reclamer_fichiers, verifier_visites_expirees};
+use crate::traitement_entretien::{calculer_quotas, reclamer_fichiers, claim_all_files, process_visits};
 use crate::traitement_index::IndexationJobHandler;
 use crate::traitement_jobs::{create_missing_jobs, entretien_jobs_expirees, maintenance_impossible_jobs};
 // use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
@@ -242,6 +242,7 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         TRANSACTION_IMAGE_SUPPRIMER_JOB_V2,
         TRANSACTION_VIDEO_SUPPRIMER_JOB_V2,
         TRANSACTION_CONFIRMER_FICHIER_INDEXE,
+        COMMAND_VISITS,
     ];
     for cmd in commandes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
@@ -713,21 +714,29 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
         info!("calculer_quotas DONE");
     }
 
-    // Reclamer les fichiers pour eviter qu'ils soient supprimes.
-    // if hours % 3 == 1 && minutes == 14
+    // Claim all files to avoid having them being deleted from filehosts.
+    // if hours % 8 == 1 && minutes == 14
     {
-        if let Err(e) = verifier_visites_expirees(middleware).await {
+        if let Err(e) = claim_all_files(middleware).await {
             error!("verifier_visites Erreur entretien visites fichiers: {:?}", e);
         }
     }
 
+    // Process the log of filehost visits received from batch transfers
+    // if minutes % 20 == 7
     {
-        let nouveaux = minutes % 3 != 0;  // Check fichiers presents nul part toutes les minutes
-        info!("reclamer_fichiers STARTING");
-        if let Err(e) = reclamer_fichiers(middleware, gestionnaire, nouveaux).await {
+        if let Err(e) = process_visits(middleware).await {
+            error!("process_visits Error processing filehost visits log: {:?}", e);
+        }
+    }
+
+    // Check if new files have been transferred to filehosts - this complements the newFuuid event.
+    {
+        info!("reclamer_fichiers for new files STARTING");
+        if let Err(e) = reclamer_fichiers(middleware, gestionnaire, true).await {
             error!("reclamer_fichiers Error: {:?}", e);
         }
-        info!("reclamer_fichiers DONE");
+        info!("reclamer_fichiers for new files DONE");
     }
 
     Ok(())

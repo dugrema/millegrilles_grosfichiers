@@ -24,6 +24,7 @@ pub const NOM_COLLECTION_INDEXATION_JOBS: &str = "GrosFichiers/jobs/indexation";
 pub const NOM_COLLECTION_PARTAGE_CONTACT: &str = "GrosFichiers/partage/contacts";
 pub const NOM_COLLECTION_PARTAGE_COLLECTIONS: &str = "GrosFichiers/partage/collections";
 pub const NOM_COLLECTION_QUOTAS_USAGERS: &str = "GrosFichiers/quotas/usagers";
+pub const NOM_COLLECTION_TEMP_VISITS: &str = "GrosFichiers/temp/visits";
 
 pub const NOM_INDEX_ETAT_JOBS: &str = "etat_jobs_2";
 pub const NOM_INDEX_USER_ID_TUUIDS: &str = "user_id_tuuids";
@@ -110,6 +111,8 @@ pub const COMMANDE_VIDEO_DISPONIBLE: &str = "jobConversionVideoDisponible";
 // pub const COMMANDE_VIDEO_GET_JOB: &str = "getJobVideo";
 pub const COMMANDE_FUUIDS_DOMAINE_LISTE: &str = "fuuidsDomaineListe";
 pub const COMMANDE_GET_CLE_JOB_CONVERSION: &str = "getCleJobConversion";
+pub const COMMAND_VISITS: &str = "visits";
+
 // pub const COMMANDE_INDEXATION_GET_JOB: &str = "getJobIndexation";
 pub const COMMANDE_RECLAMER_FUUIDS: &str = "reclamerFuuids";
 

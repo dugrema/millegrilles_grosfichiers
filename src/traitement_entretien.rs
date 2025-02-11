@@ -2,17 +2,19 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use log::{debug, error, info, warn};
 
-use millegrilles_common_rust::bson::doc;
+use millegrilles_common_rust::bson::{doc, Bson};
+use millegrilles_common_rust::{bson, chrono};
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, start_transaction_regular, MongoDao};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, start_transaction_regular, ChampIndex, IndexOptions, MongoDao};
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::chrono::{DateTime, Utc};
+use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::mongodb::ClientSession;
-use millegrilles_common_rust::mongodb::options::{FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{CountOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::redis::SetOptions;
 use millegrilles_common_rust::tokio::time::sleep;
@@ -207,10 +209,11 @@ where M: GenerateurMessages + MongoDao
     Ok(())
 }
 
-pub async fn verifier_visites_expirees<M>(middleware: &M) -> Result<(), CommonError>
+/// Claims all required files on filehosts. Prevents them from being deleted.
+pub async fn claim_all_files<M>(middleware: &M) -> Result<(), CommonError>
 where M: GenerateurMessages + MongoDao
 {
-    debug!("verifier_visites_expirees Claim fuuids");
+    debug!("claim_all_files Claim fuuids");
 
     // Faire une reclamation des fichiers regulierement (tous les jours) pour eviter qu'ils soient
     // consideres comme orphelins (et supprimes).
@@ -237,7 +240,7 @@ where M: GenerateurMessages + MongoDao
                     break;  // Success
                 }
                 // Wait 5 seconds
-                warn!("Error receiving response for batch of claims, retrying: Error: {:?}", reponse.err);
+                warn!("claim_all_files Error receiving response for batch of claims, retrying: Error: {:?}", reponse.err);
                 sleep(Duration::from_secs(5)).await;
                 reponse = claim_files(middleware, batch_no, false, &visits).await?;
             }
@@ -246,7 +249,7 @@ where M: GenerateurMessages + MongoDao
                 Err(format!("Error claiming files, aborting: {:?}", reponse.err))?;
             }
 
-            debug!("verifier_visites_expirees Batch {} of {} fuuids claimed", batch_no, visits.len());
+            debug!("claim_all_files Batch {} of {} fuuids claimed", batch_no, visits.len());
             visits.clear();
             batch_no += 1;
         }
@@ -259,12 +262,12 @@ where M: GenerateurMessages + MongoDao
             break;  // Success
         }
         // Wait 5 seconds
-        warn!("Error receiving response for last batch of claims, retrying: Error: {:?}", reponse.err);
+        warn!("claim_all_files Error receiving response for last batch of claims, retrying: Error: {:?}", reponse.err);
         sleep(Duration::from_secs(5)).await;
         reponse = claim_files(middleware, batch_no, true, &visits).await?;
     }
     if ! reponse.ok {
-        warn!("Error on last batch of claims: {:?}", reponse.err);
+        warn!("claim_all_files Error on last batch of claims: {:?}", reponse.err);
     }
 
     // let options = FindOptions::builder()
@@ -428,6 +431,65 @@ where M: MongoDao
 
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     collection.update_many_with_session(filtre, ops, None, session).await?;
+
+    Ok(())
+}
+
+/// Processes the entries received in the temp visits table.
+pub async fn process_visits<M>(middleware: &M) -> Result<(), CommonError>
+    where M: ConfigMessages + MongoDao
+{
+    // Check if we have some records to process
+    let collection_temp_visits = middleware.get_collection(NOM_COLLECTION_TEMP_VISITS)?;
+    {
+        let count_options = CountOptions::builder().limit(1).build();
+        let result = collection_temp_visits.count_documents(doc! {}, count_options).await?;
+        if result == 0 {
+            debug!("process_visits No entries to process");
+            return Ok(())
+        }  // Nothing to do
+    }
+
+    // Take over the collection, rename it to _WORK
+    let collection_visits_work_name = format!("{}_WORK", NOM_COLLECTION_TEMP_VISITS);
+    middleware.rename_collection(NOM_COLLECTION_TEMP_VISITS, &collection_visits_work_name, true).await?;
+
+    let collection_work = middleware.get_collection_typed::<RowFuuidVisit>(collection_visits_work_name.as_str())?;
+    // Create an index to facilitate grouping by fuuid
+    {
+        let options_fuuids = IndexOptions { nom_index: Some(format!("fuuids")), unique: false };
+        let champs_index_fuuids_version = vec!(ChampIndex { nom_champ: String::from("fuuid"), direction: 1 });
+        middleware.create_index(middleware, collection_visits_work_name.as_str(), champs_index_fuuids_version, Some(options_fuuids)).await?;
+    }
+
+    // Aggregation pipeline to process the visits
+    let pipeline = vec![
+        doc!{"$sort": {CHAMP_FUUID: 1}},                    // Should use the index
+        doc!{"$match": {"visit_time": {"$exists": true}}},  // Filter out unknown fuuid entries
+
+        doc!{"$addFields": {"obj": {"k": "$filehost_id", "v": "$visit_time"}}},
+        doc!{"$group": {"_id": "$fuuid", "items": {"$push": "$obj"}}},
+        doc!{"$addFields": {
+            "fuuid": "$_id",
+            CHAMP_VISITES: {"$arrayToObject": "$items"},
+            CHAMP_MODIFICATION: "$$NOW",            // Required for changes to get picked-up
+            "last_visit_verification": "$$NOW",
+        }},
+        doc!{"$unset": ["_id", "items"]},
+        doc!{"$merge": {
+            "into": NOM_COLLECTION_VERSIONS,
+            "on": "fuuid",
+            "whenNotMatched": "discard",
+        }},
+    ];
+    info!("process_visits Processing visit batches START");
+    collection_work.aggregate(pipeline, None).await?;
+    info!("process_visits Processing visit batches DONE");
+
+    // TODO - figure out what to do with the unknowns (visit_time null).
+
+    // Done with the work collection, cleanup.
+    collection_work.drop(None).await?;
 
     Ok(())
 }
