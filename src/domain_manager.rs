@@ -715,7 +715,7 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     }
 
     // Claim all files to avoid having them being deleted from filehosts.
-    // if hours % 8 == 1 && minutes == 14
+    if hours % 8 == 1 && minutes == 14
     {
         if let Err(e) = claim_all_files(middleware).await {
             error!("verifier_visites Erreur entretien visites fichiers: {:?}", e);
@@ -723,7 +723,7 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     }
 
     // Process the log of filehost visits received from batch transfers
-    // if minutes % 20 == 7
+    if minutes % 20 == 7
     {
         if let Err(e) = process_visits(middleware).await {
             error!("process_visits Error processing filehost visits log: {:?}", e);
