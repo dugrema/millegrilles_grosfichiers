@@ -120,7 +120,7 @@ struct RowVersionsIds {
     fuuid: String,
     mimetype: String,
     user_id: String,
-    visites: Option<HashMap<String, i64>>,
+    // visites: Option<HashMap<String, i64>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -1931,7 +1931,7 @@ struct RowTuuid {
     fuuid: Option<String>,
     fuuids: Option<Vec<String>>,
     mimetype: Option<String>,
-    visites: Option<HashMap<String, i64>>,
+    // visites: Option<HashMap<String, i64>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

@@ -365,7 +365,8 @@ pub struct NodeFichierVersionRow<'a> {
     pub tuuids: Vec<&'a str>,
     pub fuuids_reclames: Vec<&'a str>,
 
-    #[serde(with="mapstringepochseconds")]
+    // #[serde(with="mapstringepochseconds")]
+    #[serde(with="map_chrono_datetime_as_bson_datetime")]
     pub visites: HashMap<String, DateTime<Utc>>,
     #[serde(with="chrono_datetime_as_bson_datetime")]
     pub last_visit_verification: DateTime<Utc>,

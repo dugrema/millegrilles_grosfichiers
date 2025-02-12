@@ -390,12 +390,12 @@ async fn entretien_supprimer_visites_expirees_session<M>(middleware: &M, session
     };
 
     let expiration_visite = Utc::now() - Duration::days(3);
-    let expiration_ts = (expiration_visite.timestamp());
+    // let expiration_ts = (expiration_visite.timestamp());
 
     let collection = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
         NOM_COLLECTION_VERSIONS)?;
     for instance in instances_topologie.resultats {
-        let filtre = doc! { format!("visites.{}", instance.instance_id): {"$lt": expiration_ts} };
+        let filtre = doc! { format!("visites.{}", instance.instance_id): {"$lt": expiration_visite} };
         let ops = doc! {
             "$unset": {format!("visites.{}", instance.instance_id): true},
             "$currentDate": {CHAMP_MODIFICATION: true}

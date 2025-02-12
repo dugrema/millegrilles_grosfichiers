@@ -155,12 +155,12 @@ where M: GenerateurMessages + MongoDao
     // creation recente (< 30 minutes).
     let delai_expiration = Duration::from_secs(1800);
     let expiration = now - delai_expiration;
-    let expiration_secs = expiration.timestamp();
+    // let expiration_secs = expiration.timestamp();
 
-    debug!("verifier_visites_nouvelles Verifier nouveaux (visites.nouveau, epoch {} et plus recent)", expiration_secs);
+    debug!("verifier_visites_nouvelles Verifier nouveaux (visites.nouveau, epoch {} et plus recent)", expiration);
 
     let filtre = doc!{
-        "visites.nouveau": {"$gte": expiration_secs},
+        "visites.nouveau": {"$gte": expiration},
         "tuuids.0": {"$exists": true},  // Check if at least one tuuid is linked (means not deleted)
     };
 
@@ -421,7 +421,7 @@ pub async fn sauvegarder_visites<M>(middleware: &M, fuuid: &str, visites: &HashM
     }
 
     let ops = doc!{
-        "$set": {"visites": convertir_to_bson(visites)?},
+        "$set": {"visites": convertir_to_bson(visits_date)?},
         "$currentDate": {CHAMP_MODIFICATION: true, CONST_FIELD_LAST_VISIT_VERIFICATION: true},
     };
 
