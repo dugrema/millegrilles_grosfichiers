@@ -33,7 +33,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiff
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
-use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
+use millegrilles_common_rust::mongo_dao::{opt_chrono_datetime_as_bson_datetime, map_chrono_datetime_as_bson_datetime};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
 use crate::data_structs::{AudioDetail, MediaOwnedRow, ResponseVersionCourante, SubtitleDetail, VideoDetail};
 use crate::domain_manager::GrosFichiersDomainManager;
@@ -501,7 +501,7 @@ async fn get_complete_files<M>(middleware: &M, filtre: Document, options: Option
 
     // Recuperer l'information de versions de tous les fichiers
     let fuuids_fichiers: Vec<&str> = map_fichiers_par_fuuid.keys().map(|s| s.as_str()).collect();
-    // debug!("Load fuuids\n{:?}", fuuids_fichiers);
+    debug!("Load media for fuuids\n{:?}", fuuids_fichiers);
 
     // Get media information for all files
     let mut media_map = HashMap::new();
@@ -518,15 +518,26 @@ async fn get_complete_files<M>(middleware: &M, filtre: Document, options: Option
         media_map.insert(row.fuuid.clone(), row);
     }
 
+    debug!("Load fuuids versions\n{:?}", fuuids_fichiers);
     let filtre = doc! { CHAMP_FUUID: {"$in": fuuids_fichiers} };
     let options = FindOptions::builder()
         .hint(Hint::Name(String::from("fuuid")))
         .build();
-    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(
-        NOM_COLLECTION_VERSIONS)?;
+    // let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(
+    //     NOM_COLLECTION_VERSIONS)?;
+    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     let mut curseur = collection_versions.find(filtre, options).await?;
     while let Some(r) = curseur.next().await {
-        let mut row = r?;
+        let mut row: NodeFichierVersionOwned = match r {
+            Ok(inner) => {
+                let error_message = format!("Error converting version row: {:?}", inner);
+                match convertir_bson_deserializable(inner) {
+                    Ok(inner) => inner,
+                    Err(e) => Err(format!("{}: {:?}", error_message, e))?,
+                }
+            },
+            Err(e) => Err(format!("Error mapping file version row: {:?}", e))?
+        };
         let fuuid = row.fuuid.clone();
         match map_fichiers_par_fuuid.remove(fuuid.as_str()) {
             Some(mut inner) => {

@@ -410,6 +410,16 @@ pub async fn sauvegarder_visites<M>(middleware: &M, fuuid: &str, visites: &HashM
     where M: MongoDao
 {
     let filtre = doc!{"fuuid": fuuid};
+
+    let mut visits_date = HashMap::new();
+    for (k,v) in visites {
+        let date_time = match DateTime::from_timestamp(*v, 0) {
+            Some(inner) => inner,
+            None => Err("sauvegarder_visites Invalid visit date")?
+        };
+        visits_date.insert(k.to_string(), date_time);
+    }
+
     let ops = doc!{
         "$set": {"visites": convertir_to_bson(visites)?},
         "$currentDate": {CHAMP_MODIFICATION: true, CONST_FIELD_LAST_VISIT_VERIFICATION: true},

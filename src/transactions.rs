@@ -20,7 +20,7 @@ use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionforma
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{optionepochseconds, MessageMilleGrillesBufferDefault, MessageMilleGrillesOwned};
 use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::mapstringepochseconds;
-use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
+use millegrilles_common_rust::mongo_dao::{opt_chrono_datetime_as_bson_datetime, map_chrono_datetime_as_bson_datetime};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, convertir_to_bson_array, start_transaction_regeneration, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::mongodb::{ClientSession, Collection, Cursor, SessionCursor};
@@ -404,7 +404,10 @@ pub struct NodeFichierVersionOwned {
     pub tuuids: Vec<String>,
     pub fuuids_reclames: Vec<String>,
 
-    #[serde(with="mapstringepochseconds")]
+    #[serde(
+        serialize_with="mapstringepochseconds::serialize",
+        deserialize_with="map_chrono_datetime_as_bson_datetime::deserialize"
+    )]
     pub visites: HashMap<String, DateTime<Utc>>,
 
     // Mapping date
