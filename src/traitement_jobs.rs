@@ -173,8 +173,8 @@ pub struct BackgroundJob {
 
     // Etat de la job
     pub etat: i32,
-    #[serde(rename="_mg-creation", with="bson::serde_helpers::chrono_datetime_as_bson_datetime")]
-    pub date_creation: chrono::DateTime<Utc>,
+    // #[serde(rename="_mg-creation", with="bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    // pub date_creation: chrono::DateTime<Utc>,
     #[serde(rename="_mg-derniere-modification", with="bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub date_modification: chrono::DateTime<Utc>,
     #[serde(default, with="opt_chrono_datetime_as_bson_datetime")]
@@ -202,7 +202,7 @@ impl BackgroundJob {
             format: format.to_string(),
             nonce: nonce.to_string(),
             etat: VIDEO_CONVERSION_ETAT_PENDING,
-            date_creation: Utc::now(),
+            // date_creation: Utc::now(),
             date_modification: Utc::now(),
             date_maj: None,
             retry: 0,
@@ -226,7 +226,7 @@ impl BackgroundJob {
             format: format.to_string(),
             nonce: nonce.to_string(),
             etat: VIDEO_CONVERSION_ETAT_PENDING,
-            date_creation: Utc::now(),
+            // date_creation: Utc::now(),
             date_modification: Utc::now(),
             date_maj: None,
             retry: 0,
@@ -902,7 +902,7 @@ where M: MongoDao + GenerateurMessages + ValidateurX509 {
     let filtre = doc!{
         "$or": [
             {"retry": {"$gt": CONST_MAX_RETRY}},  // Any job with retry > CONST_MAX_RETRY
-            {CHAMP_CREATION: {"$lte": expiration}},
+            {CHAMP_MODIFICATION: {"$lte": expiration}},
         ]
     };
     // info!("remove_impossible_jobs Collection {} action {}, Filtre: {:?}", nom_collection, action, filtre);
