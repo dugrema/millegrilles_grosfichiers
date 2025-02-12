@@ -27,19 +27,7 @@ pub async fn calculer_quotas<M>(middleware: &M)
 -> Result<(), CommonError>
 where M: MongoDao
 {
-    let mut session = middleware.get_session().await?;
-    start_transaction_regular(&mut session).await?;
-    match calculer_quotas_fichiers_usagers(middleware, &mut session).await {
-        Ok(()) => {
-            session.commit_transaction().await?;
-            Ok(())
-        },
-        Err(e) => {
-            // error!("creer_jobs_manquantes_session Error: {:?}", e);
-            session.abort_transaction().await?;
-            Err(e)
-        }
-    }
+    calculer_quotas_fichiers_usagers(middleware).await
 }
 
 #[derive(Deserialize)]
@@ -50,7 +38,7 @@ struct QuotaFichiersAggregateRow {
     nombre_total_versions: i64,
 }
 
-async fn calculer_quotas_fichiers_usagers<M>(middleware: &M, session: &mut ClientSession) -> Result<(), CommonError>
+async fn calculer_quotas_fichiers_usagers<M>(middleware: &M) -> Result<(), CommonError>
 where M: MongoDao
 {
     let pipeline = vec! [
@@ -75,26 +63,17 @@ where M: MongoDao
             "bytes_total_versions": {"$sum": "$taille"},
             "nombre_total_versions": {"$count": {}},
         }},
+        doc! { "$addFields": {"user_id": "$_id", CHAMP_MODIFICATION: "$$NOW"} },
+        doc! { "$unset": "_id" },
+        doc!{"$merge": {
+            "into": NOM_COLLECTION_QUOTAS_USAGERS,
+            "on": "user_id",
+            "whenNotMatched": "insert",
+        }}
     ];
 
     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    let collection_quotas = middleware.get_collection(NOM_COLLECTION_QUOTAS_USAGERS)?;
-    let mut result = collection_versions.aggregate_with_session(pipeline, None, session).await?;
-    while let Some(row) = result.next(session).await {
-        let row = row?;
-        let row: QuotaFichiersAggregateRow = convertir_bson_deserializable(row)?;
-        let filtre_upsert = doc!{"user_id": row.user_id};
-        let ops = doc!{
-            "$setOnInsert": {CHAMP_CREATION: Utc::now()},
-            "$set": {
-                "bytes_total_versions": row.bytes_total_versions,
-                "nombre_total_versions": row.nombre_total_versions,
-            },
-            "$currentDate": {CHAMP_MODIFICATION: true}
-        };
-        let options = UpdateOptions::builder().upsert(true).build();
-        collection_quotas.update_one_with_session(filtre_upsert, ops, options, session).await?;
-    }
+    collection_versions.aggregate(pipeline, None).await?;
 
     Ok(())
 }
