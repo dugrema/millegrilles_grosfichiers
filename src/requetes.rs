@@ -21,7 +21,7 @@ use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, filtrer_doc_id, MongoDao};
 use millegrilles_common_rust::mongodb::Cursor;
-use millegrilles_common_rust::mongodb::options::{FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{AggregateOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::redis::Commands;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
@@ -451,162 +451,145 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
 
     debug!("requete_documents_par_tuuid Filtre {:?}", serde_json::to_string(&filtre)?);
 
-    let (reponse, truncated) = get_complete_files(middleware, filtre, None, None).await?;
+    let (reponse, truncated) = get_complete_files(middleware, filtre, None, None, None).await?;
 
     debug!("requete_documents_par_tuuid Reponse {:?}", serde_json::to_string(&reponse)?);
 
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn get_complete_files<M>(middleware: &M, filtre: Document, options: Option<FindOptions>, limit_size: Option<i32>)
+#[derive(Deserialize)]
+struct CompleteFileRow {
+    fichierrep: NodeFichierRepOwned,
+    current_version: Option<NodeFichierVersionOwned>,
+    media: Option<MediaOwnedRow>
+}
+
+/// Fetches complete file content from fichierrep, versions and media. Supports paging.
+async fn get_complete_files<M>(middleware: &M, mut filtre: Document, changed_since: Option<DateTime<Utc>>,
+                               skip_count: Option<i64>, limit_count: Option<i32>)
     -> Result<(ReponseDocumentsParTuuid, bool), Error>
     where M: MongoDao
 {
-    let collection_typed =
-        middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
-    let mut curseur = collection_typed.find(filtre, options).await?;
-    let mut reponse = ReponseDocumentsParTuuid { fichiers: Vec::new() };
-    let mut map_fichiers_par_fuuid: HashMap<String, ReponseFichierRepVersion> = HashMap::new();
-    let mut user_ids = HashSet::new();
-    {
-        while let Some(r) = curseur.next().await {
-            let mut row = r?;
-            // row.map_date_modification();
-            debug!("Loading file/directory\n{:?}", row);
+    let mut pipeline = vec![doc!{"$match": filtre}];
 
-            let type_node = TypeNode::try_from(row.type_node.as_str())?;
-            match type_node {
-                TypeNode::Fichier => {
-                    // Conserver le fichier separement pour requete sur versions
-                    let fuuid: Option<&String> = match row.fuuids_versions.as_ref() {
-                        Some(inner) => inner.get(0),
-                        None => None
-                    };
-
-                    // Gather user_ids (used for loading media)
-                    user_ids.insert(row.user_id.clone());
-
-                    if let Some(fuuid) = fuuid {
-                        map_fichiers_par_fuuid.insert(fuuid.clone(), row.into());
-                    } else {
-                        reponse.fichiers.push(row.into());
-                    }
-                },
-                TypeNode::Collection | TypeNode::Repertoire => {
-                    reponse.fichiers.push(row.into());
-                }
-            }
-        }
-    };
-
-    // Recuperer l'information de versions de tous les fichiers
-    let fuuids_fichiers: Vec<&str> = map_fichiers_par_fuuid.keys().map(|s| s.as_str()).collect();
-    debug!("Load media for fuuids\n{:?}", fuuids_fichiers);
-
-    // Get media information for all files
-    let mut media_map = HashMap::new();
-    let user_ids: Vec<String> = user_ids.into_iter().collect();
-    let filtre = doc! { CHAMP_FUUID: {"$in": &fuuids_fichiers}, CHAMP_USER_ID: {"$in": &user_ids}};
-    let options = FindOptions::builder()
-        .hint(Hint::Name(String::from("fuuid_userid")))
-        .build();
-    let collection_versions =
-        middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
-    let mut curseur = collection_versions.find(filtre, options).await?;
-    while let Some(r) = curseur.next().await {
-        let row = r?;
-        media_map.insert(row.fuuid.clone(), row);
+    if limit_count.is_some() || skip_count.is_some() {
+        pipeline.push(doc!{"$sort": {CHAMP_MODIFICATION: 1}});  // Need to sort for paging
     }
 
-    debug!("Load fuuids versions\n{:?}", fuuids_fichiers);
-    let filtre = doc! { CHAMP_FUUID: {"$in": fuuids_fichiers} };
-    let options = FindOptions::builder()
-        .hint(Hint::Name(String::from("fuuid")))
-        .build();
-    // let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(
-    //     NOM_COLLECTION_VERSIONS)?;
-    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    let mut curseur = collection_versions.find(filtre, options).await?;
-    while let Some(r) = curseur.next().await {
-        let mut row: NodeFichierVersionOwned = match r {
-            Ok(inner) => {
-                let error_message = format!("Error converting version row: {:?}", inner);
-                match convertir_bson_deserializable(inner) {
-                    Ok(inner) => inner,
-                    Err(e) => Err(format!("{}: {:?}", error_message, e))?,
-                }
-            },
-            Err(e) => Err(format!("Error mapping file version row: {:?}", e))?
-        };
-        let fuuid = row.fuuid.clone();
-        match map_fichiers_par_fuuid.remove(fuuid.as_str()) {
-            Some(mut inner) => {
-                let mut version_response = ResponseVersionCourante {
-                    fuuid: row.fuuid,
-                    mimetype: row.mimetype,
-                    taille: row.taille,
-                    fuuids_reclames: row.fuuids_reclames,
-                    visites: row.visites,
-                    derniere_modification: row.derniere_modification,
-                    height: None,
-                    width: None,
-                    duration: None,
-                    video_codec: None,
-                    anime: None,
-                    images: None,
-                    video: None,
-                    audio: None,
-                    subtitles: None,
-                    cle_id: row.cle_id,
-                    format: row.format,
-                    nonce: row.nonce,
-                    verification: row.verification,
-                };
+    if let Some(skip) = skip_count {
+        pipeline.push(doc! {"$skip": skip});
+    }
 
-                if let Some(media) = media_map.remove(&fuuid) {
-                    version_response.anime = Some(media.anime);
-                    version_response.height = media.height;
-                    version_response.width = media.width;
-                    version_response.duration = media.duration;
-                    version_response.video_codec = media.video_codec;
-                    version_response.images = media.images;
-                    version_response.video = media.video;
-                    version_response.audio = media.audio;
-                    version_response.subtitles = media.subtitles;
-                }
-
-                inner.version_courante = Some(version_response);
-                reponse.fichiers.push(inner);  // Transferer vers la liste de reponses
-            },
-            None => {
-                warn!("get_complete_files Recu version {} qui ne match aucun element en memoire", row.fuuid);
-            }
+    if changed_since.is_none() {
+        // Limit before $lookup
+        if let Some(limit) = limit_count {
+            pipeline.push(doc! {"$limit": &limit});
         }
+    }
+
+    // Move all content under fichierrep doc for easier mapping to CompleteFileRow
+    pipeline.push(doc!{"$replaceRoot": {"newRoot": {"fichierrep": "$$ROOT"}}});
+
+    // Join version information
+    pipeline.push(doc!{"$lookup": {
+            "from": NOM_COLLECTION_VERSIONS,
+            "localField": "fichierrep.fuuids_versions.0",
+            "foreignField": "fuuid",
+            "as": "versions",
+        }}
+    );
+    pipeline.push(doc!{"$addFields": {"current_version": {"$arrayElemAt": ["$versions", 0]}}});
+    pipeline.push(doc!{"$unset": "versions"});
+
+    if let Some(changed_since) = changed_since {
+        // Filter on changed date. Use max value for file between fichierrep and versions collections.
+        pipeline.push(doc!{"$addFields": {"changed_since": {"$max": [format!("$fichierrep.{}", CHAMP_MODIFICATION), format!("$current_version.{}", CHAMP_MODIFICATION)]}}});
+        pipeline.push(doc!{"$match": {"changed_since": {"$gte": changed_since}}});
+        if let Some(limit) = limit_count {
+            // Limit after match
+            pipeline.push(doc! {"$limit": limit});
+        }
+    }
+
+    // Add lookup to media content
+    pipeline.push(
+        doc!{"$lookup": {
+            "from": NOM_COLLECTION_MEDIA,
+            "localField": "fichierrep.fuuids_versions.0",
+            "foreignField": "fuuid",
+            "let": {"user_id": "$fichierrep.user_id"},  // Expose the outer user_id as inner variable $$user_id
+            "pipeline": [{"$match": {"$expr": {"$eq": ["$user_id", "$$user_id"]}}}],        // Second key
+            "as": "media_list",
+        }}
+    );
+    pipeline.push(doc!{"$addFields": {"media": {"$arrayElemAt": ["$media_list", 0]}}});
+    pipeline.push(doc!{"$unset": "media_list"});
+
+    let collection_fichierrep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+
+    // DEBUG - output to collection
+    // pipeline.push(doc!{"$out": {"db": middleware.get_database()?.name(), "coll": "GrosFichiers/TestSync"}});
+    // collection_fichierrep.aggregate(pipeline, None).await?;
+
+    let mut response = ReponseDocumentsParTuuid { fichiers: Vec::new() };
+    let mut cursor = collection_fichierrep.aggregate(pipeline, None).await?;
+    while cursor.advance().await? {
+        let row = cursor.deserialize_current()?;
+        let row: CompleteFileRow = match convertir_bson_deserializable(row) {
+            Ok(inner) => inner,
+            Err(e) => {
+                warn!("get_complete_files Deserialization error on row: {:?}", e);
+                continue    // Skip this entry
+            }
+        };
+
+        let mut fichier_rep: ReponseFichierRepVersion = row.fichierrep.into();
+
+        if let Some(mut version) = row.current_version {
+            // Map the version to response format
+            let mut version_response = ResponseVersionCourante {
+                fuuid: version.fuuid,
+                mimetype: version.mimetype,
+                taille: version.taille,
+                fuuids_reclames: version.fuuids_reclames,
+                visites: version.visites,
+                derniere_modification: version.derniere_modification,
+                height: None,
+                width: None,
+                duration: None,
+                video_codec: None,
+                anime: None,
+                images: None,
+                video: None,
+                audio: None,
+                subtitles: None,
+                cle_id: version.cle_id,
+                format: version.format,
+                nonce: version.nonce,
+                verification: version.verification,
+            };
+
+            if let Some(media) = row.media {
+                version_response.anime = Some(media.anime);
+                version_response.height = media.height;
+                version_response.width = media.width;
+                version_response.duration = media.duration;
+                version_response.video_codec = media.video_codec;
+                version_response.images = media.images;
+                version_response.video = media.video;
+                version_response.audio = media.audio;
+                version_response.subtitles = media.subtitles;
+            }
+
+            fichier_rep.version_courante = Some(version_response);
+        }
+        response.fichiers.push(fichier_rep);
     }
 
     let mut truncated = false;
 
-    // reponse.fichiers = match limit_size {
-    //     Some(limit_size) => {
-    //         // Estimate the size of each entry and truncate response if needed
-    //         let mut fichiers = Vec::new();
-    //         let mut estimated_size = 2630;  // Estimated overhead of response
-    //         for fichier in reponse.fichiers {
-    //             let serialized_str = serde_json::to_string(&fichier)?;
-    //             estimated_size += serialized_str.len();
-    //             fichiers.push(fichier);
-    //             if estimated_size > limit_size as usize {
-    //                 truncated = true;
-    //                 break
-    //             }
-    //         }
-    //         debug!("get_complete_files Estimated size: {}", estimated_size);
-    //         fichiers
-    //     },
-    //     None => reponse.fichiers
-    // };
-
-    Ok((reponse, truncated))
+    Ok((response, truncated))
 }
 
 #[derive(Serialize)]
@@ -3150,7 +3133,7 @@ struct RequestSyncDirectory {
     cuuid: Option<String>,
     contact_id: Option<String>,
     last_sync: Option<i64>,
-    skip: Option<u64>,
+    skip: Option<i64>,
     limit_count: Option<i32>,
     limit_size: Option<i32>,
     deleted: Option<bool>,
@@ -3358,20 +3341,20 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
         (None, None, None)
     };
 
-    if let Some(last_sync) = last_sync.as_ref() {
-        filtre.insert(CHAMP_MODIFICATION.to_string(), doc!{"$gte": last_sync});
-    }
+    // if let Some(last_sync) = last_sync.as_ref() {
+    //     filtre.insert(CHAMP_MODIFICATION.to_string(), doc!{"$gte": last_sync});
+    // }
 
     let limit_count = request.limit_count.unwrap_or(100);
     let limit_size = request.limit_size.unwrap_or(100_000);
-    let options = FindOptions::builder()
-        .skip(skip)
-        .limit(limit_count as i64)
-        // .sort(doc!{})  // Ensures unique paging
-        .sort(doc!{CHAMP_MODIFICATION: -1, "_id": 1})  // _id ensures unique paging
-        .build();
+    // let options = AggregateOptions::builder()
+    //     .skip(skip)
+    //     .limit(limit_count as i64)
+    //     // .sort(doc!{})  // Ensures unique paging
+    //     .sort(doc!{CHAMP_MODIFICATION: -1, "_id": 1})  // _id ensures unique paging
+    //     .build();
 
-    let (result, truncated) = get_complete_files(middleware, filtre, Some(options), Some(limit_size)).await?;
+    let (result, truncated) = get_complete_files(middleware, filtre, last_sync.clone(), Some(skip), Some(limit_count)).await?;
     let complete = !truncated && result.fichiers.len() < limit_count as usize;
     let mut sync_response = RequestSyncDirectoryResponseFile {
         ok: true, cuuid, stats, files: result.fichiers, breadcrumb,
@@ -3591,7 +3574,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
                 let tuuids: Vec<&String> = first_batch.iter().map(|d| &d.tuuid).collect();
                 let filtre = doc!{"tuuid": {"$in": &tuuids}};
                 // debug!("search_index_v2 Filter for loading files:\n{:?}", filtre);
-                let (result, truncated) = get_complete_files(middleware, filtre, None, None).await?;
+                let (result, truncated) = get_complete_files(middleware, filtre, None, None, None).await?;
                 // debug!("Loaded {} complete files", result.fichiers.len());
                 response.files = Some(result.fichiers);
 
@@ -3700,7 +3683,7 @@ async fn request_files_by_tuuid<M>(middleware: &M, m: MessageValide)
 
     debug!("request_files_by_tuuid Filter: {:?}", filtre);
 
-    let (files, _) = get_complete_files(middleware, filtre, None, None).await?;
+    let (files, _) = get_complete_files(middleware, filtre, None, None, None).await?;
 
     // Post-filter of the shared files (different user_id)
     let files = match shares {
