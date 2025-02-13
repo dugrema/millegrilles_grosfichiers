@@ -19,13 +19,14 @@ use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::serde_json::{json, Value};
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::{chrono, millegrilles_cryptographie, uuid};
+use millegrilles_common_rust::bson::Document;
 use millegrilles_common_rust::domaines_v2::GestionnaireDomaineSimple;
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable_v2;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleSecreteSerialisee;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
-use millegrilles_common_rust::mongodb::ClientSession;
+use millegrilles_common_rust::mongodb::{ClientSession, Collection};
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::tokio_stream::StreamExt;
 use millegrilles_common_rust::uuid::{uuid, Uuid};
@@ -720,34 +721,14 @@ where M: MongoDao + GenerateurMessages
 pub async fn entretien_jobs_expirees<M>(middleware: &M, fetch_filehosts: bool) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
-    let mut session = middleware.get_session().await?;
-    start_transaction_regular(&mut session).await?;
-
-    match entretien_jobs_expirees_session(middleware, fetch_filehosts, &mut session).await {
-        Ok(()) => {
-            session.commit_transaction().await?;
-            Ok(())
-        },
-        Err(e) => {
-            // error!("creer_jobs_manquantes_session Error: {:?}", e);
-            session.abort_transaction().await?;
-            Err(e)
-        }
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_IMAGES_JOBS, 180, 1000 , "media", "processImage", fetch_filehosts).await {
+        error!("entretien_jobs_expirees Erreur entretien images: {:?}", e);
     }
-}
-
-async fn entretien_jobs_expirees_session<M>(middleware: &M, fetch_filehosts: bool, session: &mut ClientSession)
-    -> Result<(), CommonError>
-    where M: MongoDao + GenerateurMessages + ValidateurX509
-{
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_IMAGES_JOBS, 180, 1000 , "media", "processImage", fetch_filehosts, session).await {
-        error!("entretien_jobs_expirees_session Erreur entretien images: {:?}", e);
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_VIDEO_JOBS, 600, 100, "media", "processVideo", fetch_filehosts).await {
+        error!("entretien_jobs_expirees Erreur entretien videos: {:?}", e);
     }
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_VIDEO_JOBS, 600, 100, "media", "processVideo", fetch_filehosts, session).await {
-        error!("entretien_jobs_expirees_session Erreur entretien videos: {:?}", e);
-    }
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 180, 2000, "solrrelai", "processIndex", fetch_filehosts, session).await {
-        error!("entretien_jobs_expirees_session Erreur entretien index: {:?}", e);
+    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 180, 2000, "solrrelai", "processIndex", fetch_filehosts).await {
+        error!("entretien_jobs_expirees Erreur entretien index: {:?}", e);
     }
     Ok(())
 }
@@ -793,7 +774,7 @@ async fn maintenance_impossible_jobs_session<M>(middleware: &M, gestionnaire: &G
 /// Resubmits a batch of pending jobs to queue. Reactivates running jobs that have expired.
 pub async fn reactiver_jobs<M>(middleware: &M,
                                nom_collection: &str, timeout: i64, limit: i64,
-                               domain: &str, action: &str, fetch_filehosts: bool, session: &mut ClientSession)
+                               domain: &str, action: &str, fetch_filehosts: bool)
     -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
@@ -806,7 +787,7 @@ pub async fn reactiver_jobs<M>(middleware: &M,
         "$set": {"etat": VIDEO_CONVERSION_ETAT_PENDING},
         "$inc": {"retry": 1},
     };
-    let result = collection.update_many_with_session(filtre.clone(), ops, None, session).await?;
+    let result = collection.update_many(filtre.clone(), ops, None).await?;
     info!("reactiver_jobs Collection {}, {} filter: {:?}, result {:?}", nom_collection, action, filtre, result);
 
     let filtre = doc!{"etat": VIDEO_CONVERSION_ETAT_PENDING, "retry": {"$lte": CONST_MAX_RETRY}};
@@ -814,8 +795,8 @@ pub async fn reactiver_jobs<M>(middleware: &M,
 
     // Resubmit jobs - duplicates in the Q will be caught when requesting job decryption key
     let mut fuuids = Vec::new();
-    let mut curseur = collection.find_with_session(filtre, options, session).await?;
-    while curseur.advance(session).await? {
+    let mut curseur = collection.find(filtre, options).await?;
+    while curseur.advance().await? {
         let row = curseur.deserialize_current()?;
         if let Some(fuuid) = row.fuuid.as_ref() {
             fuuids.push(fuuid.to_owned());
@@ -850,7 +831,7 @@ pub async fn reactiver_jobs<M>(middleware: &M,
 
     // Synchronise with core in case some files were received without GrosFichiers being notified.
     if ! fuuids.is_empty() && fetch_filehosts {
-        if let Err(e) = sync_jobs_core_filehosts(middleware, nom_collection, &fuuids, session).await {
+        if let Err(e) = sync_jobs_core_filehosts(middleware, nom_collection, &fuuids).await {
             warn!("reactiver_jobs Error sync jobs with fuuids in core: {:?}", e);
         }
     }
@@ -864,7 +845,7 @@ pub struct FuuidVisitResponseItem {pub fuuid: String, pub visits: HashMap<String
 #[derive(Deserialize)]
 struct RequestFilehostsForFuuidsResponse {fuuids: Vec<FuuidVisitResponseItem>}
 
-pub async fn sync_jobs_core_filehosts<M>(middleware: &M, nom_collection: &str, fuuids: &Vec<String>, session: &mut ClientSession)
+pub async fn sync_jobs_core_filehosts<M>(middleware: &M, nom_collection: &str, fuuids: &Vec<String>)
     -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
@@ -877,18 +858,34 @@ pub async fn sync_jobs_core_filehosts<M>(middleware: &M, nom_collection: &str, f
         let response: RequestFilehostsForFuuidsResponse = deser_message_buffer!(response.message);
 
         let collection_jobs = middleware.get_collection(nom_collection)?;
-        for fuuid_visits in response.fuuids {
-            // Update the jobs table
-            let filehost_ids: Vec<&String> = fuuid_visits.visits.keys().collect();
-            let filtre = doc!{"fuuid": &fuuid_visits.fuuid};
-            let ops = doc!{"$addToSet": {"filehost_ids": {"$each": filehost_ids}}, "$currentDate": {CHAMP_MODIFICATION: true}};
-            collection_jobs.update_many_with_session(filtre.clone(), ops, None, session).await?;
-
-            // Update visits in the versions tables
-            sauvegarder_visites(middleware, fuuid_visits.fuuid.as_str(), &fuuid_visits.visits, session).await?;
+        let mut session = middleware.get_session().await?;
+        match sync_jobs_save_visits(middleware, response, collection_jobs, &mut session).await {
+            Ok(_) => {
+                session.commit_transaction().await?;
+            },
+            Err(e) => {
+                session.abort_transaction().await?;
+                return Err(e);
+            }
         }
     }
 
+    Ok(())
+}
+
+async fn sync_jobs_save_visits<M>(middleware: &M, response: RequestFilehostsForFuuidsResponse, collection_jobs: Collection<Document>, mut session: &mut ClientSession) -> Result<(), Error>
+    where M: MongoDao
+{
+    for fuuid_visits in response.fuuids {
+        // Update the jobs table
+        let filehost_ids: Vec<&String> = fuuid_visits.visits.keys().collect();
+        let filtre = doc! {"fuuid": &fuuid_visits.fuuid};
+        let ops = doc! {"$addToSet": {"filehost_ids": {"$each": filehost_ids}}, "$currentDate": {CHAMP_MODIFICATION: true}};
+        collection_jobs.update_many(filtre.clone(), ops, None).await?;
+
+        // Update visits in the versions tables
+        sauvegarder_visites(middleware, fuuid_visits.fuuid.as_str(), &fuuid_visits.visits, &mut session).await?;
+    }
     Ok(())
 }
 
