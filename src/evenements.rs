@@ -491,6 +491,8 @@ async fn marquer_visites_fuuids<M>(
             "$currentDate": { CHAMP_MODIFICATION: true },
         };
 
+        debug!("marquer_visites_fuuids ops: {:?}", ops);
+
         let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
         collection_versions.update_many_with_session(filtre_versions, ops, None, session).await?;
     }

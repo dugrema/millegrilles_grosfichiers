@@ -487,6 +487,7 @@ pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), Commo
 
 #[derive(Deserialize, Debug)]
 struct MissingMediaJobMapping {
+    fuuid: String,
     version: NodeFichierVersionOwned,
     fichierreps: Vec<NodeFichierRepOwned>,
     jobs: Vec<BackgroundJob>,
@@ -507,6 +508,7 @@ where M: MongoDao + GenerateurMessages
         doc! { "$match": {flag_job: false, format!("{}.0", CHAMP_TUUIDS): {"$exists": true}} },
         // Restructure to keep version structure intact for mapping
         doc! { "$replaceRoot": {"newRoot": {"_id": "$fuuid", "version": "$$ROOT"}}},
+        doc! { "$addFields": {"fuuid": "$version.fuuid"} },  // Copy fuuid back to root for easier troubleshooting
         doc! { "$lookup": {
             "from": jobs_collection_name,
             "localField": "version.fuuid",
@@ -529,7 +531,14 @@ where M: MongoDao + GenerateurMessages
     let mut cursor = collection_version.aggregate(pipeline, None).await?;
     while cursor.advance().await? {
         let row = cursor.deserialize_current()?;
-        let row: MissingMediaJobMapping = convertir_bson_deserializable(row)?;
+        let fuuid = row.get_str("fuuid")?.to_owned();  // Keep tuuid in case of error
+        let row: MissingMediaJobMapping = match convertir_bson_deserializable(row) {
+            Ok(inner) => inner,
+            Err(e) => {
+                warn!("create_missing_jobs_media Mapping error on version entry tuuid:{} - SKIPPING: {:?}", fuuid, e);
+                continue
+            }
+        };
         let fichier_version = row.version;
 
         let fuuid = fichier_version.fuuid.as_str();

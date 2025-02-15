@@ -680,11 +680,11 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
 
     if minutes % 4 == 2
     {
-        info!("creer_jobs_manquantes STARTING");
+        info!("create_missing_jobs STARTING");
         if let Err(e) = create_missing_jobs(middleware).await {  // Creer jobs media/indexation manquantes (recovery)
-            info!("creer_jobs_manquantes Error: {:?}", e);
+            info!("create_missing_jobs Error: {:?}", e);
         }
-        info!("creer_jobs_manquantes DONE");
+        info!("create_missing_jobs DONE");
 
         // Restart expired media jobs
         info!("entretien_jobs_expirees STARTING");

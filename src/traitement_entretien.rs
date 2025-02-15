@@ -390,7 +390,7 @@ pub async fn sauvegarder_visites<M>(middleware: &M, fuuid: &str, visites: &HashM
 {
     let filtre = doc!{"fuuid": fuuid};
 
-    let mut visits_date = HashMap::new();
+    let mut visits_date = doc!{};
     for (k,v) in visites {
         let date_time = match DateTime::from_timestamp(*v, 0) {
             Some(inner) => inner,
@@ -400,9 +400,11 @@ pub async fn sauvegarder_visites<M>(middleware: &M, fuuid: &str, visites: &HashM
     }
 
     let ops = doc!{
-        "$set": {"visites": convertir_to_bson(visits_date)?},
+        "$set": {"visites": visits_date},
         "$currentDate": {CHAMP_MODIFICATION: true, CONST_FIELD_LAST_VISIT_VERIFICATION: true},
     };
+
+    debug!("sauvegarder_visites ops {:?}", ops);
 
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     collection.update_one_with_session(filtre, ops, None, session).await?;
