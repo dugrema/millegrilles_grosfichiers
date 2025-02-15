@@ -941,6 +941,9 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         return Ok(None)
     }
 
+    // This is a batch operation, commit transaction.
+    session.commit_transaction().await?;
+
     let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     let date_initial_verification = DateTime::from_timestamp(1704085200, 0).expect("from_timestamp");
     let ops = doc! {
@@ -950,6 +953,9 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     collection_versions.update_many_with_session(doc!{}, ops, None, session).await?;
 
     info!("Visits/claims reset done");
+
+    // Start new transaction to avoid error on return
+    start_transaction_regular(session).await?;
 
     Ok(None)
 }
