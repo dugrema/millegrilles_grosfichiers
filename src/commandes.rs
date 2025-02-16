@@ -481,8 +481,12 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gest
     // Emit file claim - allows it to be synchronized to all filehosts immediately
     let mut image_fuuids = Vec::new();
     for (_, image) in &commande.images {
-        image_fuuids.push(image.hachage.to_owned());
+        if image.data_chiffre.is_none() {
+            // This is not an inline thumbnail
+            image_fuuids.push(image.hachage.to_owned());
+        }
     }
+
     if ! image_fuuids.is_empty() {
         if let Err(e) = verifier_visites_topologies(middleware, &image_fuuids).await {
             warn!("commande_associer_conversions Error claiming images for file {}: {:?}", tuuid, e);
@@ -535,7 +539,6 @@ async fn commande_associer_video<M>(middleware: &M, m: MessageValide, gestionnai
     if let Err(e) = verifier_visites_topologies(middleware, &vec![commande.fuuid_video.clone()]).await {
         warn!("commande_associer_conversions Error claiming new video for file {:?}: {:?}", commande.tuuid, e);
     }
-
 
     Ok(response)
 }
