@@ -20,7 +20,7 @@ use millegrilles_common_rust::redis::SetOptions;
 use millegrilles_common_rust::tokio::time::sleep;
 use serde::Serialize;
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
-
+use crate::commandes::VisitWorkRow;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::declencher_traitement_nouveau_fuuid;
 use crate::grosfichiers_constantes::*;
@@ -428,13 +428,13 @@ where M: MongoDao
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct FuuidVisitWorkRow {
-    fuuid: String,
-    filehost_id: Option<String>,
-    #[serde(with="opt_chrono_datetime_as_bson_datetime")]
-    visit_time: Option<DateTime<Utc>>,
-}
+// #[derive(Deserialize)]
+// struct FuuidVisitWorkRow {
+//     fuuid: String,
+//     filehost_id: Option<String>,
+//     #[serde(with="opt_chrono_datetime_as_bson_datetime")]
+//     visit_time: Option<DateTime<Utc>>,
+// }
 
 /// Processes the entries received in the temp visits table.
 pub async fn process_visits<M>(middleware: &M) -> Result<(), CommonError>
@@ -455,7 +455,7 @@ pub async fn process_visits<M>(middleware: &M) -> Result<(), CommonError>
     let collection_visits_work_name = format!("{}_WORK", NOM_COLLECTION_TEMP_VISITS);
     middleware.rename_collection(NOM_COLLECTION_TEMP_VISITS, &collection_visits_work_name, true).await?;
 
-    let collection_work = middleware.get_collection_typed::<FuuidVisitWorkRow>(collection_visits_work_name.as_str())?;
+    let collection_work = middleware.get_collection_typed::<VisitWorkRow>(collection_visits_work_name.as_str())?;
     // Create an index to facilitate grouping by fuuid
     {
         let options_fuuids = IndexOptions { nom_index: Some(format!("fuuids")), unique: false };

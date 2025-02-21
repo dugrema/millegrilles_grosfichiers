@@ -2970,11 +2970,11 @@ async fn claim_files_by_fuuids<M>(middleware: &M, fuuid_batch: &[String]) -> Res
 }
 
 #[derive(Serialize, Deserialize)]
-struct VisitWorkRow {
-    fuuid: String,
-    filehost_id: Option<String>,
+pub struct VisitWorkRow {
+    pub fuuid: String,
+    pub filehost_id: Option<String>,
     #[serde(with="opt_chrono_datetime_as_bson_datetime")]
-    visit_time: Option<DateTime<Utc>>,
+    pub visit_time: Option<DateTime<Utc>>,
 }
 
 async fn command_receive_visits<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
