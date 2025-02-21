@@ -19,6 +19,8 @@ use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::redis::SetOptions;
 use millegrilles_common_rust::tokio::time::sleep;
 use serde::Serialize;
+use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
+
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::declencher_traitement_nouveau_fuuid;
 use crate::grosfichiers_constantes::*;
@@ -426,6 +428,14 @@ where M: MongoDao
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct FuuidVisitWorkRow {
+    fuuid: String,
+    filehost_id: Option<String>,
+    #[serde(with="opt_chrono_datetime_as_bson_datetime")]
+    visit_time: Option<DateTime<Utc>>,
+}
+
 /// Processes the entries received in the temp visits table.
 pub async fn process_visits<M>(middleware: &M) -> Result<(), CommonError>
     where M: ConfigMessages + MongoDao
@@ -445,12 +455,37 @@ pub async fn process_visits<M>(middleware: &M) -> Result<(), CommonError>
     let collection_visits_work_name = format!("{}_WORK", NOM_COLLECTION_TEMP_VISITS);
     middleware.rename_collection(NOM_COLLECTION_TEMP_VISITS, &collection_visits_work_name, true).await?;
 
-    let collection_work = middleware.get_collection_typed::<RowFuuidVisit>(collection_visits_work_name.as_str())?;
+    let collection_work = middleware.get_collection_typed::<FuuidVisitWorkRow>(collection_visits_work_name.as_str())?;
     // Create an index to facilitate grouping by fuuid
     {
         let options_fuuids = IndexOptions { nom_index: Some(format!("fuuids")), unique: false };
         let champs_index_fuuids_version = vec!(ChampIndex { nom_champ: String::from("fuuid"), direction: 1 });
         middleware.create_index(middleware, collection_visits_work_name.as_str(), champs_index_fuuids_version, Some(options_fuuids)).await?;
+    }
+
+    info!("process_visits Processing visit batches START");
+
+    // Process the unknown visits - this empties the visites object.
+    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let filtre = doc!{"visit_time": null};
+    let mut cursor = collection_work.find(filtre, None).await?;
+    let mut removed_visits = Vec::new();
+    let ops = doc!{
+        "$set": {CHAMP_VISITES: {}},
+        "$currentDate": {CHAMP_MODIFICATION: true, "last_visit_verification": true},
+    };
+    while cursor.advance().await? {
+        let row = cursor.deserialize_current()?;
+        removed_visits.push(row.fuuid);
+        if removed_visits.len() > 50 {
+            let filtre = doc!{"fuuid": {"$in": &removed_visits}};
+            collection_versions.update_many(filtre, ops.clone(), None).await?;
+            removed_visits.clear();
+        }
+    }
+    if ! removed_visits.is_empty() {
+        let filtre = doc!{"fuuid": {"$in": removed_visits}};
+        collection_versions.update_many(filtre, ops.clone(), None).await?;
     }
 
     // Aggregation pipeline to process the visits
@@ -473,11 +508,9 @@ pub async fn process_visits<M>(middleware: &M) -> Result<(), CommonError>
             "whenNotMatched": "discard",
         }},
     ];
-    info!("process_visits Processing visit batches START");
     collection_work.aggregate(pipeline, None).await?;
-    info!("process_visits Processing visit batches DONE");
 
-    // TODO - figure out what to do with the unknowns (visit_time null).
+    info!("process_visits Processing visit batches DONE");
 
     // Done with the work collection, cleanup.
     collection_work.drop(None).await?;
