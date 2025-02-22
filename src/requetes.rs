@@ -3450,6 +3450,8 @@ async fn get_file_keys<M>(middleware: &M, cle_ids: HashSet<&String>)
 struct RequestSearchIndexV2 {
     query: String,
     limit_count: Option<i64>,
+    /// Size of the inital batch to return
+    intitial_batch_size: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -3501,6 +3503,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     };
 
     let request: RequestSearchIndexV2 = deser_message_buffer!(m.message);
+    let initial_batch_size = request.intitial_batch_size.unwrap_or(20) as usize;
 
     let mut requete_transfert = TransfertRequeteRechercheIndex::new_v2(
         &user_id, request);
@@ -3568,7 +3571,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     if result.ok {
         if let Some(docs) = response.search_results.docs.as_ref () {
             if docs.len() > 0 {
-                let first_batch_len = if docs.len() > 30 { 30 } else { docs.len() };
+                let first_batch_len = if docs.len() > initial_batch_size { initial_batch_size } else { docs.len() };
                 // debug!("search_index_v2 Load first {} docs", first_batch_len);
                 let first_batch = &docs[..first_batch_len];
                 let tuuids: Vec<&String> = first_batch.iter().map(|d| &d.tuuid).collect();
