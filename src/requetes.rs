@@ -2324,7 +2324,7 @@ async fn find_sync_cuuids<M>(middleware: &M, filtre: Document, opts: FindOptions
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RequeteChargerContacts {}
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct ContactRow { pub contact_id: String, pub user_id: String, pub contact_user_id: String }
 
 #[derive(Serialize, Deserialize)]
@@ -3584,17 +3584,20 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
                 let mut cle_ids = HashSet::new();
                 if let Some(files) = response.files.as_ref() {
                     for r in files {
-                        if let Some(cle_id) = r.cle_id.as_ref() {
-                            cle_ids.insert(cle_id);
-                        }
-                        if let Some(cle_id) = r.metadata.cle_id.as_ref() {
-                            cle_ids.insert(cle_id);
-                        }
-                        if let Some(version) = r.version_courante.as_ref() {
-                            if let Some(cle_id) = version.cle_id.as_ref() {
-                                cle_ids.insert(cle_id);
-                            }
-                        }
+                        let keys = extract_key_ids_from_file(r)?;
+                        cle_ids.extend(keys);
+
+                    //     if let Some(cle_id) = r.cle_id.as_ref() {
+                    //         cle_ids.insert(cle_id);
+                    //     }
+                    //     if let Some(cle_id) = r.metadata.cle_id.as_ref() {
+                    //         cle_ids.insert(cle_id);
+                    //     }
+                    //     if let Some(version) = r.version_courante.as_ref() {
+                    //         if let Some(cle_id) = version.cle_id.as_ref() {
+                    //             cle_ids.insert(cle_id);
+                    //         }
+                    //     }
                     }
                 }
 
@@ -3684,7 +3687,7 @@ async fn request_files_by_tuuid<M>(middleware: &M, m: MessageValide)
         CHAMP_USER_ID: {"$in": user_ids},
     };
 
-    debug!("request_files_by_tuuid Filter: {:?}", filtre);
+    debug!("request_files_by_tuuid Filter: {:?}, shares: {:?}", filtre, shares);
 
     let (files, _) = get_complete_files(middleware, filtre, None, None, None).await?;
 
@@ -3755,31 +3758,10 @@ async fn request_files_by_tuuid<M>(middleware: &M, m: MessageValide)
         keys: None,
     };
 
-    let mut cle_ids = HashSet::new();
+    let mut cle_ids: HashSet<&String> = HashSet::new();
     for r in &response.files {
-
-        let fuuid = match r.fuuids_versions.as_ref() {
-            Some(fuuids) => fuuids.get(0),
-            None => None
-        };
-
-        if let Some(cle_id) = r.cle_id.as_ref() {
-            cle_ids.insert(cle_id);
-        }
-        if let Some(cle_id) = r.metadata.cle_id.as_ref() {
-            cle_ids.insert(cle_id);
-        } else if let Some(ref_hachage_bytes) = r.metadata.ref_hachage_bytes.as_ref() {
-            // Legacy method to get key id
-            cle_ids.insert(ref_hachage_bytes);
-        } else if let Some(fuuid) = fuuid.as_ref() {
-            // Legacy method to get key id
-            cle_ids.insert(fuuid);
-        }
-        if let Some(version) = r.version_courante.as_ref() {
-            if let Some(cle_id) = version.cle_id.as_ref() {
-                cle_ids.insert(cle_id);
-            }
-        }
+        let keys = extract_key_ids_from_file(r)?;
+        cle_ids.extend(keys);
     }
 
     if cle_ids.len() > 0 {
@@ -3789,3 +3771,34 @@ async fn request_files_by_tuuid<M>(middleware: &M, m: MessageValide)
 
     Ok(Some(middleware.build_reponse(&response)?.0))
 }
+
+fn extract_key_ids_from_file(r: &ReponseFichierRepVersion) -> Result<Vec<&String>, Error> {
+
+    let mut key_ids = Vec::new();
+
+    let fuuid = match r.fuuids_versions.as_ref() {
+        Some(fuuids) => fuuids.get(0),
+        None => None
+    };
+
+    if let Some(cle_id) = r.cle_id.as_ref() {
+        key_ids.push(cle_id);
+    }
+    if let Some(cle_id) = r.metadata.cle_id.as_ref() {
+        key_ids.push(cle_id);
+    } else if let Some(ref_hachage_bytes) = r.metadata.ref_hachage_bytes.as_ref() {
+        // Legacy method to get key id
+        key_ids.push(ref_hachage_bytes);
+    } else if let Some(fuuid) = fuuid.as_ref() {
+        // Legacy method to get key id
+        key_ids.push(fuuid);
+    }
+    if let Some(version) = r.version_courante.as_ref() {
+        if let Some(cle_id) = version.cle_id.as_ref() {
+            key_ids.push(cle_id);
+        }
+    }
+
+    Ok(key_ids)
+}
+
