@@ -526,6 +526,7 @@ async fn get_complete_files<M>(middleware: &M, mut filtre: Document, changed_sin
     pipeline.push(doc!{"$addFields": {"media": {"$arrayElemAt": ["$media_list", 0]}}});
     pipeline.push(doc!{"$unset": "media_list"});
 
+    // debug!("get_complete_files Pipeline: {:?}", pipeline);
     let collection_fichierrep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
 
     // DEBUG - output to collection
@@ -3137,6 +3138,7 @@ struct RequestSyncDirectory {
     limit_count: Option<i32>,
     limit_size: Option<i32>,
     deleted: Option<bool>,
+    produce_stats: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -3223,7 +3225,7 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     let deleted = request.deleted.unwrap_or(false);
     let cuuid = request.cuuid.clone();
     
-    let mut filtre = match deleted {
+    let filtre = match deleted {
         false => match cuuid.as_ref() {
             Some(cuuid) => doc!{"path_cuuids.0": cuuid, "user_id": &user_id, "supprime": false},
             None => doc!{"path_cuuids": {"$exists": false}, "user_id": &user_id, "supprime": false}
@@ -3247,7 +3249,8 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     };
 
     let skip = request.skip.unwrap_or(0);
-    let (stats, breadcrumb, deleted_tuuids) = if skip == 0 {
+    let produce_stats = skip == 0 || deleted || request.produce_stats == Some(true);
+    let (stats, breadcrumb, deleted_tuuids) = if produce_stats {
         // This is an initial request. Fetch statistics for all files and direct sub-directories
         let stats = get_directory_statistics(middleware, filtre.clone()).await?;
 
@@ -3346,7 +3349,7 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     // }
 
     let limit_count = request.limit_count.unwrap_or(100);
-    let limit_size = request.limit_size.unwrap_or(100_000);
+    // let limit_size = request.limit_size.unwrap_or(100_000);
     // let options = AggregateOptions::builder()
     //     .skip(skip)
     //     .limit(limit_count as i64)
