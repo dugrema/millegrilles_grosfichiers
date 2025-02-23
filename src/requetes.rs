@@ -3231,8 +3231,20 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
             None => doc!{"path_cuuids": {"$exists": false}, "user_id": &user_id, "supprime": false}
         },
         true => match cuuid.as_ref() {
-            Some(cuuid) => doc!{"path_cuuids.0": cuuid, "user_id": &user_id, "supprime": true},
-            None => doc!{"user_id": &user_id, "supprime": true, "supprime_indirect": false}
+            Some(cuuid) => doc!{
+                "path_cuuids.0": cuuid, "user_id": &user_id, "supprime": true,
+                "$or": [
+                    {"type_node": "Fichier", "fuuids_versions.0": {"$exists": true}},   // File has not been permanently deleted
+                    {"type_node": {"$ne": "Fichier"}},                                  // Directory or Collection
+                ]
+            },
+            None => doc!{
+                "user_id": &user_id, "supprime": true, "supprime_indirect": false,
+                "$or": [
+                    {"type_node": "Fichier", "fuuids_versions.0": {"$exists": true}},   // File has not been permanently deleted
+                    {"type_node": {"$ne": "Fichier"}},                                  // Directory or Collection
+                ]
+            }
         }
     };
 
