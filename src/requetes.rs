@@ -722,18 +722,34 @@ async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValide, gest
         None => user_id.to_owned()
     };
 
-    todo!("obsolete?")  // Check if this is used in media queries
-    // let resultat = verifier_acces_usager(middleware, &user_id, &requete.fuuids).await?;
-    //
-    // let acces_tous = resultat.len() == requete.fuuids.len();
-    //
-    // // let reponse = json!({ "fuuids_acces": resultat , "acces_tous": acces_tous, "user_id": user_id });
-    // let reponse = ReponseVerifierAccesFuuids {
-    //     fuuids_acces: resultat,
-    //     acces_tous,
-    //     user_id,
-    // };
-    // Ok(Some(middleware.build_reponse(&reponse)?.0))
+    let mut fuuids_found = HashSet::with_capacity(requete.fuuids.len());
+    let filtre = doc!{
+        "user_id": &user_id,
+        "fuuids_versions": {"$in": &requete.fuuids}
+    };
+    let collection = middleware.get_collection_typed::<NodeFichierRepBorrowed>(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut cursor = collection.find(filtre, None).await?;
+    let mut acces_tous = true;
+    while cursor.advance().await? {
+        let row = cursor.deserialize_current()?;
+        if let Some(fuuids_versions) = row.fuuids_versions {
+            for fuuid in fuuids_versions {
+                if requete.fuuids.contains(&fuuid.to_string()) {
+                    fuuids_found.insert(fuuid.to_owned());
+                } else {
+                    acces_tous = false;
+                }
+            }
+        }
+    }
+
+    let reponse = ReponseVerifierAccesFuuids {
+        fuuids_acces: fuuids_found.into_iter().collect(),
+        acces_tous,
+        user_id,
+    };
+
+    Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
 #[derive(Serialize)]
