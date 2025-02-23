@@ -3367,41 +3367,45 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     // Gather all required keys
     let mut cle_ids = HashSet::new();
     for r in &sync_response.files {
-        if let Some(cle_id) = r.cle_id.as_ref() {
-            cle_ids.insert(cle_id);
-        }
-
-        if let Some(cle_id) = r.metadata.cle_id.as_ref() {
-            cle_ids.insert(cle_id);
-        } else if let Some(cle_id) = r.metadata.ref_hachage_bytes.as_ref() {
-            // Legacy, old field for cle_id
-            cle_ids.insert(cle_id);
-        } else if let Some(fuuids) = r.fuuids_versions.as_ref() {
-            // Legacy, use fuuid as cle_id
-            if let Some(fuuid) = fuuids.first() {
-                cle_ids.insert(fuuid);
-            }
-        }
-
-        if let Some(version) = r.version_courante.as_ref() {
-            if let Some(cle_id) = version.cle_id.as_ref() {
-                cle_ids.insert(cle_id);
-            }
-        }
+        let key_ids = extract_key_ids_from_file(r)?;
+        cle_ids.extend(key_ids);
+        // if let Some(cle_id) = r.cle_id.as_ref() {
+        //     cle_ids.insert(cle_id);
+        // }
+        //
+        // if let Some(cle_id) = r.metadata.cle_id.as_ref() {
+        //     cle_ids.insert(cle_id);
+        // } else if let Some(cle_id) = r.metadata.ref_hachage_bytes.as_ref() {
+        //     // Legacy, old field for cle_id
+        //     cle_ids.insert(cle_id);
+        // } else if let Some(fuuids) = r.fuuids_versions.as_ref() {
+        //     // Legacy, use fuuid as cle_id
+        //     if let Some(fuuid) = fuuids.first() {
+        //         cle_ids.insert(fuuid);
+        //     }
+        // }
+        //
+        // if let Some(version) = r.version_courante.as_ref() {
+        //     if let Some(cle_id) = version.cle_id.as_ref() {
+        //         cle_ids.insert(cle_id);
+        //     }
+        // }
     }
     if let Some(breadcrumbs) = sync_response.breadcrumb.as_ref() {
         for breadcrumb in breadcrumbs {
-            if let Some(cle_id) = breadcrumb.metadata.cle_id.as_ref() {
-                cle_ids.insert(cle_id);
-            } else if let Some(cle_id) = breadcrumb.metadata.ref_hachage_bytes.as_ref() {
-                // Legacy, old field for cle_id
-                cle_ids.insert(cle_id);
-            } else if let Some(fuuids) = breadcrumb.fuuids_versions.as_ref() {
-                // Legacy, use fuuid as cle_id
-                if let Some(fuuid) = fuuids.first() {
-                    cle_ids.insert(fuuid);
-                }
-            }
+            let key_ids = extract_key_ids_from_file(breadcrumb)?;
+            cle_ids.extend(key_ids);
+            // if let Some(cle_id) = breadcrumb.metadata.cle_id.as_ref() {
+            //     cle_ids.insert(cle_id);
+            // } else if let Some(cle_id) = breadcrumb.metadata.ref_hachage_bytes.as_ref() {
+            //     // Legacy, old field for cle_id
+            //     cle_ids.insert(cle_id);
+            // } else if let Some(fuuids) = breadcrumb.fuuids_versions.as_ref() {
+            //     // Legacy, use fuuid as cle_id
+            //     if let Some(fuuid) = fuuids.first() {
+            //         cle_ids.insert(fuuid);
+            //     }
+            // }
         }
     }
 
