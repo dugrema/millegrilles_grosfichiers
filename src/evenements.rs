@@ -515,49 +515,6 @@ async fn marquer_visites_fuuids<M>(
     Ok(())
 }
 
-async fn marquer_visites_fuuids_filecontroler<M>(
-    middleware: &M, fuuids: &Vec<String>, date_visite: &DateTime<Utc>, instance_id: String, session: &mut ClientSession)
-    -> Result<(), CommonError>
-where M: MongoDao
-{
-    debug!("marquer_visites_fuuids_filecontroler  Visiter {} fuuids de l'instance {}", fuuids.len(), instance_id);
-
-    // Marquer versions
-    {
-        let filtre_versions = doc! {
-            "fuuids": {"$in": fuuids},  // Utiliser index
-            // "fuuid": {"$in": fuuids}
-        };
-        debug!("marquer_visites_fuuids_filecontroler Filtre versions {:?}", filtre_versions);
-
-        let ops = doc! {
-            "$set": {format!("visites.{}", instance_id): date_visite.timestamp()},
-            "$unset": {"visites.nouveau": true},
-            "$currentDate": { CHAMP_MODIFICATION: true },
-        };
-
-        let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-        collection_versions.update_many_with_session(filtre_versions, ops, None, session).await?;
-    }
-
-    // Marquer fichiersrep (date modification, requis pour pour sync)
-    {
-        let filtre_rep = doc! {
-            CHAMP_FUUIDS_VERSIONS: {"$in": fuuids},  // Utiliser index
-        };
-        debug!("marquer_visites_fuuids_filecontroler Filtre fichierrep {:?}", filtre_rep);
-        let collection_rep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-
-        let ops = doc! {
-            "$currentDate": { CHAMP_MODIFICATION: true },
-        };
-
-        collection_rep.update_many_with_session(filtre_rep, ops, None, session).await?;
-    }
-
-    Ok(())
-}
-
 #[derive(Debug)]
 pub struct HandlerEvenements {
     /// Key: user_id/cuuid, value : epoch secs
