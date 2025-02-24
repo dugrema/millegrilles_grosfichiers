@@ -670,11 +670,10 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         // Check if they have at least 1 child node
         doc!{"$lookup": {
             "from": NOM_COLLECTION_FICHIERS_REP,
-            // "let": {"tuuid": "$tuuid"},
             "localField": "tuuid",
             "foreignField": "path_cuuids.0",
             "pipeline": [
-                // {"$match": {"$expr": {"$eq": ["$path_cuuids.0", "$$tuuid"]}}},
+                {"$limit": 1},  // We don't need the exact count, a single entry is enough
                 {"$group": {"_id": "NONE", "count": {"$count": {}}}},
             ],
             "as": "children",
