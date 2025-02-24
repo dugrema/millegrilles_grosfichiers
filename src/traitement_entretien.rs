@@ -500,9 +500,34 @@ pub async fn process_visits<M>(middleware: &M) -> Result<(), CommonError>
     Ok(())
 }
 
+async fn remove_expired_new_file_visits<M>(middleware: &M) -> Result<(), CommonError>
+    where M: MongoDao
+{
+    let now = Utc::now();
+    let delai_expiration = Duration::from_secs(3_600);
+    let expiration = now - delai_expiration;
+
+    debug!("remove_expired_new_file_visits Remove new file visits (visites.nouveau, epoch {} and older)", expiration);
+
+    let filtre = doc!{"visites.nouveau": {"$lt": expiration}};
+    let ops = doc!{
+        "$unset": {"visites.nouveau": true},
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    let result = collection.update_many(filtre, ops, None).await?;
+    debug!("remove_expired_new_file_visits Removed {} visistes.nouveau", result.modified_count);
+
+    Ok(())
+}
+
 pub async fn maintain_deleted_files<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager) -> Result<(), CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
+    if let Err(e) = remove_expired_new_file_visits(middleware).await {
+        error!("maintain_deleted_files Error during remove_expired_new_file_visits: {:?}", e);
+    }
+
     if let Err(e) = maintain_delete_versions_fichiers(middleware, gestionnaire).await {
         error!("maintain_deleted_files Error during maintain_delete_versions_fichiers: {:?}", e);
     }
