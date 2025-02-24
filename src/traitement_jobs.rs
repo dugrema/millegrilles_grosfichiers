@@ -868,6 +868,7 @@ pub async fn sync_jobs_core_filehosts<M>(middleware: &M, nom_collection: &str, f
 
         let collection_jobs = middleware.get_collection(nom_collection)?;
         let mut session = middleware.get_session().await?;
+        start_transaction_regular(&mut session).await?;
         match sync_jobs_save_visits(middleware, response, collection_jobs, &mut session).await {
             Ok(_) => {
                 session.commit_transaction().await?;
