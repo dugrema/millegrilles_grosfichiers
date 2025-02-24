@@ -529,17 +529,22 @@ async fn remove_expired_new_file_visits<M>(middleware: &M) -> Result<(), CommonE
 pub async fn maintain_deleted_files<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager) -> Result<(), CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
+    info!("maintain_deleted_files remove_expired_new_file_visits START");
     if let Err(e) = remove_expired_new_file_visits(middleware).await {
         error!("maintain_deleted_files Error during remove_expired_new_file_visits: {:?}", e);
     }
 
+    info!("maintain_deleted_files maintain_delete_versions_fichiers START");
     if let Err(e) = maintain_delete_versions_fichiers(middleware, gestionnaire).await {
         error!("maintain_deleted_files Error during maintain_delete_versions_fichiers: {:?}", e);
     }
 
+    info!("maintain_deleted_files maintain_delete_fichiersrep START");
     if let Err(e) = maintain_delete_fichiersrep(middleware, gestionnaire).await {
         error!("maintain_deleted_files Error during maintain_delete_fichiersrep: {:?}", e);
     }
+
+    info!("maintain_deleted_files DONE");
 
     Ok(())
 }
