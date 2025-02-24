@@ -509,7 +509,12 @@ async fn remove_expired_new_file_visits<M>(middleware: &M) -> Result<(), CommonE
 
     debug!("remove_expired_new_file_visits Remove new file visits (visites.nouveau, epoch {} and older)", expiration);
 
-    let filtre = doc!{"visites.nouveau": {"$lt": expiration}};
+    let filtre = doc!{
+        "$or": [
+            {"visites.nouveau": {"$lt": expiration}},
+            {"visites.nouveau": {"$lt": expiration.timestamp()}},   // Old epoch int format (obsolete)
+        ]
+    };
     let ops = doc!{
         "$unset": {"visites.nouveau": true},
         "$currentDate": {CHAMP_MODIFICATION: true}
