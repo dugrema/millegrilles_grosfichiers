@@ -501,20 +501,20 @@ pub async fn set_flag_image_traitee<M,S>(middleware: &M, tuuid_in: Option<S>, fu
 {
     let tuuid = match &tuuid_in {Some(inner)=>Some(inner.to_string()), None=>None};
 
-    let mut filtre = doc! {"fuuid": fuuid};
-    if let Some(tuuid) = tuuid.as_ref() {
-        filtre.insert("tuuid", tuuid);
-    }
-
     // Set flag versionFichiers
+    let filtre = doc! {"fuuid": fuuid};
     let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
     let ops = doc! {
         "$set": {CHAMP_FLAG_MEDIA_TRAITE: true},
         "$currentDate": {CHAMP_MODIFICATION: true},
     };
-    collection.update_many_with_session(filtre.clone(), ops, None, session).await?;
+    collection.update_many_with_session(filtre, ops, None, session).await?;
 
     // Supprimer job image
+    let mut filtre = doc! {"fuuid": fuuid};
+    if let Some(tuuid) = tuuid.as_ref() {
+        filtre.insert("tuuid", tuuid);
+    }
     let collection = middleware.get_collection(NOM_COLLECTION_IMAGES_JOBS)?;
     collection.delete_many_with_session(filtre, None, session).await?;
 
