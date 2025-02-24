@@ -499,7 +499,10 @@ async fn get_complete_files<M>(middleware: &M, mut filtre: Document, changed_sin
             "as": "versions",
         }}
     );
-    pipeline.push(doc!{"$addFields": {"current_version": {"$arrayElemAt": ["$versions", 0]}}});
+    pipeline.push(doc!{"$addFields": {
+        "tuuid": "$fichierrep.tuuid",   // Used for troubleshooting deserialization errors
+        "current_version": {"$arrayElemAt": ["$versions", 0]},
+    }});
     pipeline.push(doc!{"$unset": "versions"});
 
     if let Some(changed_since) = changed_since {
