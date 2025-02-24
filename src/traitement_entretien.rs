@@ -507,6 +507,10 @@ pub async fn maintain_deleted_files<M>(middleware: &M, gestionnaire: &GrosFichie
         error!("maintain_deleted_files Error during maintain_delete_versions_fichiers: {:?}", e);
     }
 
+    if let Err(e) = maintain_delete_fichiersrep(middleware, gestionnaire).await {
+        error!("maintain_deleted_files Error during maintain_delete_fichiersrep: {:?}", e);
+    }
+
     Ok(())
 }
 
@@ -528,7 +532,8 @@ async fn maintain_delete_versions_fichiers<M>(middleware: &M, gestionnaire: &Gro
     let collection_versions = middleware.get_collection_typed::<FuuidRow>(NOM_COLLECTION_VERSIONS)?;
     let mut cursor = collection_versions.find(filtre, options).await?;
 
-    let mut fuuids = Vec::new();
+    const BATCH_SIZE: usize = 50;
+    let mut fuuids = Vec::with_capacity(BATCH_SIZE);
 
     let mut session = middleware.get_session().await?;
 
@@ -536,12 +541,11 @@ async fn maintain_delete_versions_fichiers<M>(middleware: &M, gestionnaire: &Gro
         let row = cursor.deserialize_current()?;
         fuuids.push(row.fuuid.clone());
 
-        const BATCH_SIZE: usize = 50;
-        if fuuids.len() > BATCH_SIZE {
+        if fuuids.len() >= BATCH_SIZE {
             let tuuids = find_deleted_tuuids_for_fuuids(middleware, &fuuids).await?;
             let transaction = PermanentlyDeleteFilesTransaction {
-                fuuids,
-                tuuids: Some(tuuids),
+                tuuids,
+                fuuids: Some(fuuids),
             };
             debug!("maintain_delete_versions_fichiers: Transaction {:?}", transaction);
             start_transaction_regular(&mut session).await?;
@@ -553,15 +557,15 @@ async fn maintain_delete_versions_fichiers<M>(middleware: &M, gestionnaire: &Gro
                 }
             }
 
-            fuuids = Vec::new();    // New batch
+            fuuids = Vec::with_capacity(BATCH_SIZE);    // New batch
         }
     }
 
     if fuuids.len() > 0 {
         let tuuids = find_deleted_tuuids_for_fuuids(middleware, &fuuids).await?;
         let transaction = PermanentlyDeleteFilesTransaction {
-            fuuids,
-            tuuids: Some(tuuids),
+            tuuids,
+            fuuids: Some(fuuids),
         };
         debug!("maintain_delete_versions_fichiers: Transaction {:?}", transaction);
         start_transaction_regular(&mut session).await?;
@@ -591,4 +595,99 @@ async fn find_deleted_tuuids_for_fuuids<M>(middleware: &M, fuuids: &Vec<String>)
     }
 
     Ok(tuuids)
+}
+
+#[derive(Deserialize)]
+struct TuuidRow {tuuid: String}
+
+/// Deletes orphan fichierrep files and directory/collections.
+async fn maintain_delete_fichiersrep<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager) -> Result<(), CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    let collection = middleware.get_collection_typed::<TuuidRow>(NOM_COLLECTION_FICHIERS_REP)?;
+    const BATCH_SIZE: usize = 100;
+    let mut session = middleware.get_session().await?;
+
+    // Used for batching transactions
+    let mut tuuids = Vec::with_capacity(BATCH_SIZE);
+
+    // Cleanup deleted files that are not associated to any file version (fuuids).
+    {
+        let filtre = doc!{
+            "type_node": "Fichier",
+            "supprime": true,
+            "fuuids_versions.0": {"$exists": false}
+        };
+        let options = FindOptions::builder().projection(doc!{ "tuuid": 1 }).limit(1000).build();
+        let mut cursor = collection.find(filtre, options).await?;
+
+        while cursor.advance().await? {
+            let row = cursor.deserialize_current()?;
+            tuuids.push(row.tuuid);
+
+            if tuuids.len() >= BATCH_SIZE {
+                run_delete_tuuids_transaction(middleware, gestionnaire, &mut session, tuuids).await?;
+                tuuids = Vec::with_capacity(BATCH_SIZE);
+            }
+        }
+    }
+
+    // Directory/Collections
+    // Find any that are both supprime==true and have no remaining children nodes.
+    let pipeline = vec![
+        // Find deleted directories/collections
+        doc!{"$match": {"supprime": true, "type_node": {"$in": ["Repertoire", "Collection"]}}},
+        // Check if they have at least 1 child node
+        doc!{"$lookup": {
+            "from": NOM_COLLECTION_FICHIERS_REP,
+            // "let": {"tuuid": "$tuuid"},
+            "localField": "tuuid",
+            "foreignField": "path_cuuids.0",
+            "pipeline": [
+                // {"$match": {"$expr": {"$eq": ["$path_cuuids.0", "$$tuuid"]}}},
+                {"$group": {"_id": "NONE", "count": {"$count": {}}}},
+            ],
+            "as": "children",
+        }},
+        doc!{"$match": {"children": []}},       // Only keep entries with no children
+        doc!{"$limit": 1000},
+        doc!{"$project": {"tuuid": 1}},
+        // doc!{"$out": "GrosFichiers/testDelete"},
+    ];
+    let mut cursor = collection.aggregate(pipeline, None).await?;
+
+    while cursor.advance().await? {
+        let row = cursor.deserialize_current()?;
+        let row: TuuidRow = convertir_bson_deserializable(row)?;
+        tuuids.push(row.tuuid);
+
+        if tuuids.len() >= BATCH_SIZE {
+            run_delete_tuuids_transaction(middleware, gestionnaire, &mut session, tuuids).await?;
+            tuuids = Vec::with_capacity(BATCH_SIZE);
+        }
+    }
+
+    if tuuids.len() > 0 {
+        run_delete_tuuids_transaction(middleware, gestionnaire, &mut session, tuuids).await?;
+    }
+
+    Ok(())
+}
+
+async fn run_delete_tuuids_transaction<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, mut session: &mut ClientSession, tuuids: Vec<String>)
+    -> Result<(), Error>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    debug!("maintain_delete_fichiersrep Delete tuuids: {:?}", tuuids);
+    let transaction = PermanentlyDeleteFilesTransaction { tuuids, fuuids: None };
+    debug!("maintain_delete_fichiersrep: Transaction {:?}", transaction);
+    start_transaction_regular(&mut session).await?;
+    match sauvegarder_traiter_transaction_serializable_v2(middleware, &transaction, gestionnaire, &mut session, DOMAINE_NOM_GROSFICHIERS, TRANSACTION_PERMANENTLY_DELETE_FILES).await {
+        Ok(_) => session.commit_transaction().await?,
+        Err(e) => {
+            session.abort_transaction().await?;
+            Err(e)?
+        }
+    }
+    Ok(())
 }

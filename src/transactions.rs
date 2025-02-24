@@ -2624,15 +2624,15 @@ async fn recycle_files<M>(middleware: &M, session: &mut ClientSession, user_id: 
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PermanentlyDeleteFilesTransaction {
-    pub fuuids: Vec<String>,
-    pub tuuids: Option<Vec<String>>,
+    pub tuuids: Vec<String>,
+    pub fuuids: Option<Vec<String>>,
 }
 
 async fn transaction_permanently_delete_files<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
-    debug!("transaction_permanently_delete_files Run ransaction id:{}", transaction.transaction.id);
+    debug!("transaction_permanently_delete_files Run transaction id:{}", transaction.transaction.id);
     if ! transaction.certificat.verifier_exchanges(vec![Securite::L3Protege])? {
         Err(format!("transaction_permanently_delete_files Transaction id:{} unauthorized, not L3Protege", transaction.transaction.id))?;
     } else if ! transaction.certificat.verifier_domaines(vec![DOMAINE_NOM_GROSFICHIERS.to_string()])? {
@@ -2641,22 +2641,22 @@ async fn transaction_permanently_delete_files<M>(middleware: &M, transaction: Tr
 
     let content: PermanentlyDeleteFilesTransaction = serde_json::from_str(transaction.transaction.contenu.as_str())?;
 
-    if let Some(tuuids) = content.tuuids {
-        // Delete from fichierrep
-        let filtre_tuuids = doc!{"tuuid": {"$in": tuuids}};
-        let collection_fichiersrep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-        collection_fichiersrep.delete_many_with_session(filtre_tuuids, None, session).await?;
+    // Delete from fichierrep
+    let filtre_tuuids = doc!{"tuuid": {"$in": content.tuuids}};
+    let collection_fichiersrep = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    collection_fichiersrep.delete_many_with_session(filtre_tuuids, None, session).await?;
+
+    if let Some(fuuids) = content.fuuids {
+        let filtre_fuuids = doc! {"fuuid": {"$in": fuuids}};
+
+        // Delete from the media collection
+        let collection_media = middleware.get_collection(NOM_COLLECTION_MEDIA)?;
+        collection_media.delete_many_with_session(filtre_fuuids.clone(), None, session).await?;
+
+        // Delete from the versions collection
+        let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+        collection_versions.delete_many_with_session(filtre_fuuids, None, session).await?;
     }
-
-    let filtre_fuuids = doc!{"fuuid": {"$in": content.fuuids}};
-
-    // Delete from the media collection
-    let collection_media = middleware.get_collection(NOM_COLLECTION_MEDIA)?;
-    collection_media.delete_many_with_session(filtre_fuuids.clone(), None, session).await?;
-
-    // Delete from the versions collection
-    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    collection_versions.delete_many_with_session(filtre_fuuids, None, session).await?;
 
     Ok(None)
 }
