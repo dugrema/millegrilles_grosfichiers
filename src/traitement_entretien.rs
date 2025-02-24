@@ -86,7 +86,7 @@ pub async fn reclamer_fichiers<M>(middleware: &M, gestionnaire: &GrosFichiersDom
 {
     let mut session = middleware.get_session().await?;
     start_transaction_regular(&mut session).await?;
-    match reclamer_fichiers_session(middleware, gestionnaire, nouveau, &mut session).await {
+    match verifier_visites_nouvelles(middleware, gestionnaire, &mut session).await {
         Ok(()) => {
             session.commit_transaction().await?;
             Ok(())
@@ -96,28 +96,6 @@ pub async fn reclamer_fichiers<M>(middleware: &M, gestionnaire: &GrosFichiersDom
             Err(e)
         }
     }
-
-}
-
-pub async fn reclamer_fichiers_session<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, nouveau: bool, session: &mut ClientSession)
-    -> Result<(), CommonError>
-    where M: GenerateurMessages + MongoDao
-{
-    debug!("verifier_visites Debut");
-
-    if let Err(e) = verifier_visites_nouvelles(middleware, gestionnaire, session).await {
-        error!("verifier_visites Erreur entretien visites nouveaux: {:?}", e);
-    }
-
-    // if ! nouveau {
-    //     // Detecter fichiers
-    //     if let Err(e) = verifier_visites_expirees_session(middleware, session).await {
-    //         error!("verifier_visites Erreur entretien visites fichiers: {:?}", e);
-    //     }
-    // }
-
-    debug!("verifier_visites Fin");
-    Ok(())
 }
 
 #[derive(Deserialize)]
