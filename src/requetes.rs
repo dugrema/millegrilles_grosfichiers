@@ -537,10 +537,11 @@ async fn get_complete_files<M>(middleware: &M, mut filtre: Document, changed_sin
     let mut cursor = collection_fichierrep.aggregate(pipeline, None).await?;
     while cursor.advance().await? {
         let row = cursor.deserialize_current()?;
+        let tuuid = row.get_str("tuuid").unwrap_or("UNKNOWN").to_string();
         let row: CompleteFileRow = match convertir_bson_deserializable(row) {
             Ok(inner) => inner,
             Err(e) => {
-                warn!("get_complete_files Deserialization error on row: {:?}", e);
+                warn!("get_complete_files Deserialization error on tuuid {}: {:?}", tuuid, e);
                 continue    // Skip this entry
             }
         };
