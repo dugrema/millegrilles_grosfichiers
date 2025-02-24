@@ -741,7 +741,8 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
         info!("reclamer_fichiers for new files DONE");
     }
 
-    if hours % 3 == 1 && minutes == 6
+    // if hours % 3 == 1 && minutes == 6
+    if minutes % 10 == 6
     {
         if let Err(e) = maintain_deleted_files(middleware, gestionnaire).await {
             error!("maintain_deleted_files Error: {:?}", e);
