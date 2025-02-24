@@ -2,9 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use log::{debug, error, info, warn};
 
-use millegrilles_common_rust::bson::{doc, Bson};
+use millegrilles_common_rust::bson::{doc, Bson, Document};
 use millegrilles_common_rust::{bson, chrono};
-use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::certificats::ValidateurX509;
+use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, start_transaction_regular, ChampIndex, IndexOptions, MongoDao};
 use millegrilles_common_rust::tokio_stream::StreamExt;
@@ -12,7 +13,9 @@ use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable_v2;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
+
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::mongodb::options::{CountOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::TypeMessage;
@@ -24,9 +27,10 @@ use crate::commandes::VisitWorkRow;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::declencher_traitement_nouveau_fuuid;
 use crate::grosfichiers_constantes::*;
+use crate::transactions::{NodeFichierRepOwned, NodeFichierVersionOwned, PermanentlyDeleteFilesTransaction};
 
 pub async fn calculer_quotas<M>(middleware: &M)
--> Result<(), CommonError>
+                                -> Result<(), CommonError>
 where M: MongoDao
 {
     calculer_quotas_fichiers_usagers(middleware).await
@@ -99,7 +103,7 @@ pub async fn reclamer_fichiers<M>(middleware: &M, gestionnaire: &GrosFichiersDom
 }
 
 #[derive(Deserialize)]
-struct FuuidRow {
+struct FuuidReclamesRow {
     fuuids_reclames: Vec<String>
 }
 
@@ -123,7 +127,7 @@ where M: GenerateurMessages + MongoDao
         "tuuids.0": {"$exists": true},  // Check if at least one tuuid is linked (means not deleted)
     };
 
-    let collection_versions = middleware.get_collection_typed::<FuuidRow>(NOM_COLLECTION_VERSIONS)?;
+    let collection_versions = middleware.get_collection_typed::<FuuidReclamesRow>(NOM_COLLECTION_VERSIONS)?;
     let options = FindOptions::builder()
         .limit(VISIT_BATCH_SIZE as i64)
         .hint(Hint::Name("last_visits".to_string()))  // Sorts by last_visit ASC
@@ -184,7 +188,7 @@ where M: GenerateurMessages + MongoDao
         .projection(doc!{"fuuids_reclames": 1})
         .build();
 
-    let collection_versions = middleware.get_collection_typed::<FuuidRow>(NOM_COLLECTION_VERSIONS)?;
+    let collection_versions = middleware.get_collection_typed::<FuuidReclamesRow>(NOM_COLLECTION_VERSIONS)?;
     let mut cursor = collection_versions.find(filtre, options).await?;
     let mut visits = Vec::with_capacity(VISIT_BATCH_SIZE);
     let mut batch_no = 0;
@@ -494,4 +498,97 @@ pub async fn process_visits<M>(middleware: &M) -> Result<(), CommonError>
     collection_work.drop(None).await?;
 
     Ok(())
+}
+
+pub async fn maintain_deleted_files<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager) -> Result<(), CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    if let Err(e) = maintain_delete_versions_fichiers(middleware, gestionnaire).await {
+        error!("maintain_deleted_files Error during maintain_delete_versions_fichiers: {:?}", e);
+    }
+
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct FuuidRow { fuuid: String }
+
+async fn maintain_delete_versions_fichiers<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager) -> Result<(), CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    // Get up to 1000 fuuids that have already been deleted from filehosts
+    let filtre = doc!{
+        "$and": [
+            {"$or": [{"tuuids": []}, {"tuuids": null}]},
+            {"$or": [{"visites": {}}, {"visites": null}]},
+        ]
+    };
+    let projection = doc!{"fuuid": 1};
+    let options = FindOptions::builder().projection(projection).limit(1000).build();
+    let collection_versions = middleware.get_collection_typed::<FuuidRow>(NOM_COLLECTION_VERSIONS)?;
+    let mut cursor = collection_versions.find(filtre, options).await?;
+
+    let mut fuuids = Vec::new();
+
+    let mut session = middleware.get_session().await?;
+
+    while cursor.advance().await? {
+        let row = cursor.deserialize_current()?;
+        fuuids.push(row.fuuid.clone());
+
+        const BATCH_SIZE: usize = 50;
+        if fuuids.len() > BATCH_SIZE {
+            let tuuids = find_deleted_tuuids_for_fuuids(middleware, &fuuids).await?;
+            let transaction = PermanentlyDeleteFilesTransaction {
+                fuuids,
+                tuuids: Some(tuuids),
+            };
+            debug!("maintain_delete_versions_fichiers: Transaction {:?}", transaction);
+            start_transaction_regular(&mut session).await?;
+            match sauvegarder_traiter_transaction_serializable_v2(middleware, &transaction, gestionnaire, &mut session, DOMAINE_NOM_GROSFICHIERS, TRANSACTION_PERMANENTLY_DELETE_FILES).await {
+                Ok(_) => session.commit_transaction().await?,
+                Err(e) => {
+                    session.abort_transaction().await?;
+                    Err(e)?
+                }
+            }
+
+            fuuids = Vec::new();    // New batch
+        }
+    }
+
+    if fuuids.len() > 0 {
+        let tuuids = find_deleted_tuuids_for_fuuids(middleware, &fuuids).await?;
+        let transaction = PermanentlyDeleteFilesTransaction {
+            fuuids,
+            tuuids: Some(tuuids),
+        };
+        debug!("maintain_delete_versions_fichiers: Transaction {:?}", transaction);
+        start_transaction_regular(&mut session).await?;
+        match sauvegarder_traiter_transaction_serializable_v2(middleware, &transaction, gestionnaire, &mut session, DOMAINE_NOM_GROSFICHIERS, TRANSACTION_PERMANENTLY_DELETE_FILES).await {
+            Ok(_) => session.commit_transaction().await?,
+            Err(e) => {
+                session.abort_transaction().await?;
+                Err(e)?
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn find_deleted_tuuids_for_fuuids<M>(middleware: &M, fuuids: &Vec<String>) -> Result<Vec<String>, Error>
+    where M: MongoDao
+{
+    let mut tuuids = Vec::with_capacity(fuuids.len());
+
+    let filtre_reps = doc! {"fuuids_versions": {"$in": fuuids}, "supprime": true};
+    let collection_fichiersreps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+    let mut cursor_reps = collection_fichiersreps.find(filtre_reps, None).await?;
+    while cursor_reps.advance().await? {
+        let row_fichierrep = cursor_reps.deserialize_current()?;
+        tuuids.push(row_fichierrep.tuuid);
+    }
+
+    Ok(tuuids)
 }

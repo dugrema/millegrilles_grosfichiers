@@ -98,6 +98,7 @@ pub const TRANSACTION_SUPPRIMER_ORPHELINS: &str = "supprimerOrphelins";
 pub const TRANSACTION_DELETE_V2: &str = "deleteV2";
 pub const TRANSACTION_MOVE_V2: &str = "moveV2";
 pub const TRANSACTION_COPY_V2: &str = "copyV2";
+pub const TRANSACTION_PERMANENTLY_DELETE_FILES: &str = "permanentlyDeleteFiles";
 
 pub const COMMANDE_REINDEXER: &str = "reindexerFichiers";
 pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";

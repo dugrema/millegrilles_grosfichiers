@@ -26,7 +26,7 @@ use crate::grosfichiers_constantes::*;
 use crate::commandes::consommer_commande;
 use crate::requetes::consommer_requete;
 use crate::evenements::{consommer_evenement, HandlerEvenements};
-use crate::traitement_entretien::{calculer_quotas, reclamer_fichiers, claim_all_files, process_visits};
+use crate::traitement_entretien::{calculer_quotas, reclamer_fichiers, claim_all_files, process_visits, maintain_deleted_files};
 use crate::traitement_index::IndexationJobHandler;
 use crate::traitement_jobs::{create_missing_jobs, entretien_jobs_expirees, maintenance_impossible_jobs};
 // use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
@@ -739,6 +739,13 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
             error!("reclamer_fichiers Error: {:?}", e);
         }
         info!("reclamer_fichiers for new files DONE");
+    }
+
+    if hours % 3 == 2 && minutes == 53
+    {
+        if let Err(e) = maintain_deleted_files(middleware, gestionnaire).await {
+            error!("maintain_deleted_files Error: {:?}", e);
+        }
     }
 
     Ok(())
