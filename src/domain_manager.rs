@@ -724,14 +724,17 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
         }
     }
 
-    if minutes % 4 == 2
+    if minutes % 30 == 13
     {
         info!("create_missing_jobs STARTING");
         if let Err(e) = create_missing_jobs(middleware).await {  // Creer jobs media/indexation manquantes (recovery)
             info!("create_missing_jobs Error: {:?}", e);
         }
         info!("create_missing_jobs DONE");
+    }
 
+    if minutes % 4 == 2
+    {
         // Restart expired media jobs
         info!("entretien_jobs_expirees STARTING");
         let fetch_filehosts = minutes == 2;  // Once an hour
