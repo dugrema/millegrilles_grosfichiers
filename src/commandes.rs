@@ -37,7 +37,7 @@ use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids, verifier_acces_usager_media};
-use crate::traitement_entretien::{verifier_visites_topologies, RequeteGetVisitesFuuidsResponse};
+use crate::traitement_entretien::{claim_all_files, verifier_visites_topologies, RequeteGetVisitesFuuidsResponse};
 use crate::traitement_index::{reset_flag_indexe, sauvegarder_job_index, set_flag_index_traite};
 use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
 use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_images, sauvegarder_job_video, set_flag_image_traitee, set_flag_video_traite};
@@ -100,6 +100,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         // Sync
         COMMANDE_RECLAMER_FUUIDS => evenement_fichiers_syncpret(middleware, m, &mut session).await,
         COMMAND_VISITS => command_receive_visits(middleware, m, &mut session).await,
+        COMMAND_CLAIM_ALL_FILES => command_claim_all_files(middleware, m).await,
 
         COMMANDE_JOB_GET_KEY => commande_get_job_key(middleware, m, &mut session).await,
         COMMANDE_COMPLETER_PREVIEWS => commande_completer_previews(middleware, m, &mut session).await,
@@ -3013,6 +3014,21 @@ async fn command_receive_visits<M>(middleware: &M, m: MessageValide, session: &m
             collection.insert_many(batch, None).await?;
         }
     }
+
+    Ok(Some(middleware.reponse_ok(None, None)?))
+}
+
+async fn command_claim_all_files<M>(middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+    where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    if ! m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
+        Err("command_claim_all_files Command is not from admin, ignoring")?;
+    }
+
+    info!("command_claim_all_files BEGIN");
+    claim_all_files(middleware).await?;
+    info!("command_claim_all_files All claim done, visits to be processed later");
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }

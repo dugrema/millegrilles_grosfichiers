@@ -176,7 +176,7 @@ where M: GenerateurMessages + MongoDao
 pub async fn claim_all_files<M>(middleware: &M) -> Result<(), CommonError>
 where M: GenerateurMessages + MongoDao
 {
-    debug!("claim_all_files Claim fuuids");
+    info!("claim_all_files Claim fuuids");
 
     // Faire une reclamation des fichiers regulierement (tous les jours) pour eviter qu'ils soient
     // consideres comme orphelins (et supprimes).
@@ -231,6 +231,8 @@ where M: GenerateurMessages + MongoDao
     }
     if ! reponse.ok {
         warn!("claim_all_files Error on last batch of claims: {:?}", reponse.err);
+    } else {
+        info!("claim_all_files Done with {} batches completed.", batch_no);
     }
 
     // let options = FindOptions::builder()

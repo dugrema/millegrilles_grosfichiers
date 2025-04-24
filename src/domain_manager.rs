@@ -243,6 +243,7 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         TRANSACTION_VIDEO_SUPPRIMER_JOB_V2,
         TRANSACTION_CONFIRMER_FICHIER_INDEXE,
         COMMAND_VISITS,
+        COMMAND_CLAIM_ALL_FILES,
     ];
     for cmd in commandes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});

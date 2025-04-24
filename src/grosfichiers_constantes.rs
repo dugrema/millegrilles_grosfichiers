@@ -114,8 +114,10 @@ pub const COMMANDE_FUUIDS_DOMAINE_LISTE: &str = "fuuidsDomaineListe";
 pub const COMMANDE_GET_CLE_JOB_CONVERSION: &str = "getCleJobConversion";
 pub const COMMAND_VISITS: &str = "visits";
 
+pub const COMMAND_CLAIM_ALL_FILES: &str = "claimAllFiles";
+
 // pub const COMMANDE_INDEXATION_GET_JOB: &str = "getJobIndexation";
-pub const COMMANDE_RECLAMER_FUUIDS: &str = "reclamerFuuids";
+pub const COMMANDE_RECLAMER_FUUIDS: &str = "reclamerFuuids";  // Really sync with filehosts
 
 // pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
 pub const EVENEMENT_MAJ_COLLECTION: &str = "majCollection";
