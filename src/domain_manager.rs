@@ -679,6 +679,51 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     let minutes = date_epoch.minute();
     let hours = date_epoch.hour();
 
+    // Process the log of filehost visits received from batch transfers
+    if minutes % 6 == 5
+    // if minutes % 5 == 3
+    {
+        if let Err(e) = process_visits(middleware).await {
+            error!("process_visits Error processing filehost visits log: {:?}", e);
+        }
+    }
+
+    // Claim all files to avoid having them being deleted from filehosts.
+    if hours % 8 == 1 && minutes == 14
+    // if minutes % 5 == 0
+    {
+        if let Err(e) = claim_all_files(middleware).await {
+            error!("verifier_visites Erreur entretien visites fichiers: {:?}", e);
+        }
+    }
+
+    // Check if new files have been transferred to filehosts - this complements the newFuuid event.
+    {
+        info!("reclamer_fichiers for new files STARTING");
+        if let Err(e) = reclamer_fichiers(middleware, gestionnaire, true).await {
+            error!("reclamer_fichiers Error: {:?}", e);
+        }
+        info!("reclamer_fichiers for new files DONE");
+    }
+
+    if hours % 3 == 2 && minutes == 27
+    {
+        // Remove media/indexation jobs that will never complete
+        info!("maintenance_impossible_jobs STARTING");
+        if let Err(e) = maintenance_impossible_jobs(middleware, gestionnaire).await {
+            error!("maintenance_impossible_jobs Error: {:?}", e);
+        }
+        info!("maintenance_impossible_jobs DONE");
+    }
+
+    if hours % 6 == 1 && minutes == 6
+    // if minutes % 5 == 1
+    {
+        if let Err(e) = maintain_deleted_files(middleware, gestionnaire).await {
+            error!("maintain_deleted_files Error: {:?}", e);
+        }
+    }
+
     if minutes % 4 == 2
     {
         info!("create_missing_jobs STARTING");
@@ -695,15 +740,6 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
         }
         info!("entretien_jobs_expirees DONE");
     }
-    if hours % 3 == 2 && minutes == 27
-    {
-        // Remove media/indexation jobs that will never complete
-        info!("maintenance_impossible_jobs STARTING");
-        if let Err(e) = maintenance_impossible_jobs(middleware, gestionnaire).await {
-            error!("maintenance_impossible_jobs Error: {:?}", e);
-        }
-        info!("maintenance_impossible_jobs DONE");
-    }
 
     // Recalculer les quotas a toutes les 3 heures
     if hours % 3 == 1 && minutes == 14
@@ -713,41 +749,6 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
             error!("calculer_quotas Error: {:?}", e);
         };
         info!("calculer_quotas DONE");
-    }
-
-    // Claim all files to avoid having them being deleted from filehosts.
-    if hours % 8 == 1 && minutes == 14
-    // if minutes % 5 == 0
-    {
-        if let Err(e) = claim_all_files(middleware).await {
-            error!("verifier_visites Erreur entretien visites fichiers: {:?}", e);
-        }
-    }
-
-    // Process the log of filehost visits received from batch transfers
-    if minutes % 20 == 19
-    // if minutes % 5 == 3
-    {
-        if let Err(e) = process_visits(middleware).await {
-            error!("process_visits Error processing filehost visits log: {:?}", e);
-        }
-    }
-
-    // Check if new files have been transferred to filehosts - this complements the newFuuid event.
-    {
-        info!("reclamer_fichiers for new files STARTING");
-        if let Err(e) = reclamer_fichiers(middleware, gestionnaire, true).await {
-            error!("reclamer_fichiers Error: {:?}", e);
-        }
-        info!("reclamer_fichiers for new files DONE");
-    }
-
-    if hours % 6 == 1 && minutes == 6
-    // if minutes % 5 == 1
-    {
-        if let Err(e) = maintain_deleted_files(middleware, gestionnaire).await {
-            error!("maintain_deleted_files Error: {:?}", e);
-        }
     }
 
     Ok(())

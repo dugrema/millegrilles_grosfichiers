@@ -17,7 +17,7 @@ use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serial
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 
 use millegrilles_common_rust::mongodb::ClientSession;
-use millegrilles_common_rust::mongodb::options::{CountOptions, FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongodb::options::{CountOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::TypeMessage;
 use millegrilles_common_rust::redis::SetOptions;
 use millegrilles_common_rust::tokio::time::sleep;
@@ -427,9 +427,8 @@ pub async fn process_visits<M>(middleware: &M) -> Result<(), CommonError>
     // Check if we have some records to process
     let collection_temp_visits = middleware.get_collection(NOM_COLLECTION_TEMP_VISITS)?;
     {
-        let count_options = CountOptions::builder().limit(1).build();
-        let result = collection_temp_visits.count_documents(doc! {}, count_options).await?;
-        if result == 0 {
+        let result = collection_temp_visits.find_one(None, None).await?;
+        if result.is_none() {
             debug!("process_visits No entries to process");
             return Ok(())
         }  // Nothing to do
