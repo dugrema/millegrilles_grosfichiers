@@ -647,15 +647,20 @@ where M: MongoDao + GenerateurMessages
     }
 
     if leases.len() > 0 {
+        info!("lease_batch_fichiersrep Fetching decryption keys for {} leases for borrower {}", leases.len(), borrower);
         // Get all decrypted keys for the files
         let mut cle_ids = HashSet::with_capacity(leases.len());
         for lease in &leases {
             if let Some(cle_id) = lease.metadata.cle_id.as_ref() {
                 cle_ids.insert(cle_id);
+            } else if let Some(ref_hachage_bytes) = lease.metadata.ref_hachage_bytes.as_ref() {
+                cle_ids.insert(ref_hachage_bytes);  // Legacy
             }
             if let Some(version) = lease.version.as_ref() {
                 if let Some(cle_id) = version.cle_id.as_ref() {
                     cle_ids.insert(cle_id);
+                } else {
+                    cle_ids.insert(&version.fuuid);  // Legacy
                 }
             }
         }

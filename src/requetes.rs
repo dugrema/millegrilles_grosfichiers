@@ -3471,17 +3471,21 @@ pub async fn get_file_keys<M>(middleware: &M, cle_ids: HashSet<&String>)
     if let Some(TypeMessage::Valide(response)) = middleware.transmettre_requete(routage, key_request).await? {
         let message_ref = response.message.parse()?;
         let enveloppe_privee = middleware.get_enveloppe_signature();
+        if message_ref.dechiffrage.is_none() {
+            // This is an error message
+            Err(format!("get_file_keys Error from keymaster: {:?}", message_ref.contenu_string()?))?
+        }
         let mut reponse_dechiffrage: ReponseRequeteDechiffrageV2 = message_ref.dechiffrer(enveloppe_privee.as_ref())?;
         if !reponse_dechiffrage.ok {
-            error!("request_sync_directory Error loading keys: {:?}", reponse_dechiffrage.err);
-            Err("Error fetching decryption keys")?;
+            error!("get_file_keys Error loading keys: {:?}", reponse_dechiffrage.err);
+            Err("get_file_keys Error fetching decryption keys")?;
         }
         match reponse_dechiffrage.cles.take() {
             Some(inner) => Ok(inner),
-            None => Err("request_sync_directory No keys received")?
+            None => Err("get_file_keys No keys received")?
         }
     } else {
-        Err("request_sync_directory Unable to get decryption keys - wrong response type")?
+        Err("get_file_keys Unable to get decryption keys - wrong response type")?
     }
 }
 

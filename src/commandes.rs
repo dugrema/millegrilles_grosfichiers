@@ -3053,6 +3053,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     let batch_size = 5;
     // Iterate through files that have a flag_rag == false or undefined.
     let filtre = doc!{
+        CHAMP_SUPPRIME: false,
         "$or": [
             {"flag_rag": {"$exists": false}},
             {"flag_rag": false},
