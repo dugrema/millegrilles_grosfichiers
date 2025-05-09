@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::iter::Map;
 use std::str::from_utf8;
-
+use std::time::Duration;
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::{chrono, get_replyq_correlation, serde_json, serde_json::json};
-use millegrilles_common_rust::bson::{Bson, doc, to_bson_with_options, SerializerOptions};
+use millegrilles_common_rust::bson::{Bson, doc, to_bson_with_options, SerializerOptions, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
 use millegrilles_common_rust::chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
@@ -38,7 +38,7 @@ use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids, verifier_acces_usager_media};
 use crate::traitement_entretien::{claim_all_files, verifier_visites_topologies, RequeteGetVisitesFuuidsResponse};
-use crate::traitement_index::{reset_flag_indexe, sauvegarder_job_index, set_flag_index_traite};
+use crate::traitement_index::{lease_batch_fichiersrep, reset_flag_indexe, sauvegarder_job_index, set_flag_index_traite};
 use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
 use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_images, sauvegarder_job_video, set_flag_image_traitee, set_flag_video_traite};
 use crate::transactions::*;
@@ -113,6 +113,8 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         // Indexation
         COMMANDE_REINDEXER => commande_reindexer(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_CONFIRMER_FICHIER_INDEXE => commande_confirmer_fichier_indexe(middleware, m, &mut session).await,
+        COMMAND_LEASE_FOR_RAG => command_lease_files_for_rag(middleware, m).await,
+        COMMAND_CONFIRM_RAG => command_confirm_rag(middleware, m).await,
 
         // Partage de collections
         TRANSACTION_AJOUTER_CONTACT_LOCAL => commande_ajouter_contact_local(middleware, m, gestionnaire, &mut session).await,
@@ -3029,6 +3031,71 @@ async fn command_claim_all_files<M>(middleware: &M, m: MessageValide)
     info!("command_claim_all_files BEGIN");
     claim_all_files(middleware).await?;
     info!("command_claim_all_files All claim done, visits to be processed later");
+
+    Ok(Some(middleware.reponse_ok(None, None)?))
+}
+
+#[derive(Deserialize)]
+struct RequestLeaseForRag {
+    batch_size: Option<usize>,
+}
+
+/// Lease a batch of files for RAG (AI indexing)
+async fn command_lease_files_for_rag<M>(middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    if ! m.certificat.verifier_roles_string(vec![ROLE_OLLAMA_RELAI.to_string()])? {
+        return Ok(Some(middleware.reponse_err(Some(403), None, Some("Certificate role refused"))?));
+    }
+
+    let expiry = Utc::now() - Duration::from_secs(300);
+    let batch_size = 5;
+    // Iterate through files that have a flag_rag == false or undefined.
+    let filtre = doc!{
+        "$or": [
+            {"flag_rag": {"$exists": false}},
+            {"flag_rag": false},
+        ]
+    };
+    const BORROWER: &str = "flag_rag";
+    match lease_batch_fichiersrep(middleware, &expiry, BORROWER, filtre, batch_size).await? {
+        Some(inner) => {
+            // Encrypt response, it contains secret keys
+            Ok(Some(middleware.build_reponse_chiffree(inner, &m.certificat)?.0))
+        },
+        None => Ok(Some(middleware.reponse_ok(Some(1), Some("No files available"))?))
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct RequestConfirmRagIndex {
+    pub tuuid: String,
+    pub user_id: String,
+}
+
+async fn command_confirm_rag<M>(middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    let command: RequestConfirmRagIndex = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
+    // Authorization : Must be ollama_relai
+    match m.certificat.verifier_roles_string(vec![ROLE_OLLAMA_RELAI.to_string()])? {
+        true => Ok(()),
+        false => Err(format!("commandes.command_confirm_rag: Invalid authorization {:?}", m.type_message)),
+    }?;
+
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let filtre = doc!{"tuuid": &command.tuuid, "user_id": &command.user_id};
+    let ops = doc!{
+        "$set": {"flag_rag": true},
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    collection.update_one(filtre, ops, None).await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }

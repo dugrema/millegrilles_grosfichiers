@@ -1,5 +1,5 @@
 use std::borrow::Borrow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::ops::Deref;
 use std::sync::Mutex;
@@ -11,14 +11,15 @@ use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chiffrage_cle::{InformationCle, ReponseDechiffrageCles};
 use millegrilles_common_rust::chrono::{DateTime, Duration, Utc};
-use millegrilles_common_rust::common_messages::{verifier_reponse_ok, RequeteDechiffrage};
+use millegrilles_common_rust::common_messages::{verifier_reponse_ok, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
 use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::dechiffrage::DataChiffre;
 use millegrilles_common_rust::domaines::GestionnaireDomaine;
 use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction_serializable, sauvegarder_traiter_transaction_serializable_v2};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, start_transaction_regeneration, start_transaction_regular, MongoDao};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, start_transaction_regeneration, start_transaction_regular, verifier_erreur_duplication_mongo, MongoDao};
 use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
@@ -28,6 +29,7 @@ use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::tokio::time::timeout;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
+use crate::requetes::get_file_keys;
 use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job, JobTrigger, reactiver_jobs, create_missing_jobs_indexing};
 use crate::transactions::{NodeFichierRepBorrowed, NodeFichierRepOwned, NodeFichierVersionOwned, TransactionSupprimerOrphelins};
 
@@ -581,4 +583,117 @@ where M: MongoDao + GenerateurMessages
     };
 
     sauvegarder_job(middleware, job, Some(trigger), NOM_COLLECTION_INDEXATION_JOBS, "solrrelai", "processIndex", session).await
+}
+
+#[derive(Serialize)]
+pub struct LeaseResponse {
+    tuuid: String,
+    user_id: String,
+    metadata: DataChiffre,
+    mimetype: Option<String>,
+    version: Option<NodeFichierVersionOwned>,  // Option for folders, no file content
+}
+
+#[derive(Serialize)]
+pub struct LeasesResponse {
+    ok: bool,
+    leases: Vec<LeaseResponse>,
+    secret_keys: Vec<ResponseRequestDechiffrageV2Cle>,
+}
+
+/// Lease a batch of files based on a FichiersRep filtre.
+pub async fn lease_batch_fichiersrep<M>(middleware: &M, expiry: &DateTime<Utc>, borrower: &str, filtre: Document, batch_size: usize)
+    -> Result<Option<LeasesResponse>, CommonError>
+where M: MongoDao + GenerateurMessages
+{
+    let collection = middleware.get_collection_typed::<NodeFichierRepBorrowed>(NOM_COLLECTION_FICHIERS_REP)?;
+    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    let mut cursor = collection.find(filtre, None).await?;
+    let mut leases = Vec::with_capacity(batch_size);
+    while cursor.advance().await? {
+        let file = cursor.deserialize_current()?;
+
+        // Attempt a lease on the file
+        if lease_file(middleware, file.user_id, file.tuuid, borrower, expiry).await? {
+            let fuuid = match file.fuuids_versions {
+                Some(fuuids) => match fuuids.get(0) {
+                    Some(fuuid) => Some(fuuid.to_string()),
+                    None => continue  // Deleted file
+                },
+                None => None  // A directory, no content to process
+            };
+
+            let version = match fuuid.as_ref() {
+                Some(fuuid) => {
+                    let filtre_version = doc!{"fuuid": &fuuid};
+                    collection_versions.find_one(filtre_version, None).await?
+                }
+                None => None
+            };
+
+            // Add the file to leases
+            leases.push(LeaseResponse {
+                tuuid: file.tuuid.to_string(),
+                user_id: file.user_id.to_string(),
+                metadata: file.metadata.into(),
+                mimetype: match file.mimetype { Some(inner) => Some(inner.to_string()), None => None},
+                version,
+            });
+        }
+
+        if leases.len() >= batch_size {
+            break
+        }
+    }
+
+    if leases.len() > 0 {
+        // Get all decrypted keys for the files
+        let mut cle_ids = HashSet::with_capacity(leases.len());
+        for lease in &leases {
+            if let Some(cle_id) = lease.metadata.cle_id.as_ref() {
+                cle_ids.insert(cle_id);
+            }
+            if let Some(version) = lease.version.as_ref() {
+                if let Some(cle_id) = version.cle_id.as_ref() {
+                    cle_ids.insert(cle_id);
+                }
+            }
+        }
+        let secret_keys = get_file_keys(middleware, cle_ids).await?;
+        Ok(Some(LeasesResponse { ok: true, leases, secret_keys }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Leases a file. Returns true when successful.
+async fn lease_file<M>(middleware: &M, user_id: &str, tuuid: &str, borrower: &str, expiry: &DateTime<Utc>) -> Result<bool, CommonError>
+    where M: MongoDao
+{
+    let filtre = doc!{
+        "tuuid": tuuid,
+        "user_id": user_id,
+        "borrower": borrower,
+        "lease_date": {"$lt": expiry},
+    };
+    let ops = doc!{
+        "$currentDate": {"lease_date": true}
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_JOBS_LEASES)?;
+    let options = UpdateOptions::builder().upsert(true).build();
+    match collection.update_one(filtre, ops, options).await {
+        Ok(inner) => {
+            // Returns true when a lease record is added or updated - this means the lease is successful
+            Ok(inner.modified_count == 1 || inner.upserted_id.is_some())
+        },
+        Err(err) => {
+            if verifier_erreur_duplication_mongo(&err.kind) {
+                // The existing record is not expired - this caused a duplication on upsert
+                Ok(false)
+            } else {
+                Err(err)?
+            }
+        }
+    }
 }

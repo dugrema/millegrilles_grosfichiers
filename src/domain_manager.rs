@@ -26,7 +26,7 @@ use crate::grosfichiers_constantes::*;
 use crate::commandes::consommer_commande;
 use crate::requetes::consommer_requete;
 use crate::evenements::{consommer_evenement, HandlerEvenements};
-use crate::traitement_entretien::{calculer_quotas, reclamer_fichiers, claim_all_files, process_visits, maintain_deleted_files};
+use crate::traitement_entretien::{calculer_quotas, reclamer_fichiers, claim_all_files, process_visits, maintain_deleted_files, run_cleanup_leases};
 use crate::traitement_index::IndexationJobHandler;
 use crate::traitement_jobs::{create_missing_jobs, entretien_jobs_expirees, maintenance_impossible_jobs};
 // use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
@@ -71,6 +71,8 @@ impl GestionnaireDomaineV2 for GrosFichiersDomainManager {
             String::from(NOM_COLLECTION_DOCUMENTS),
             String::from(NOM_COLLECTION_PARTAGE_CONTACT),
             String::from(NOM_COLLECTION_MEDIA),
+            // Volatile but need to reset
+            String::from(NOM_COLLECTION_JOBS_LEASES),
         ])
     }
 
@@ -244,6 +246,8 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         TRANSACTION_CONFIRMER_FICHIER_INDEXE,
         COMMAND_VISITS,
         COMMAND_CLAIM_ALL_FILES,
+        COMMAND_LEASE_FOR_RAG,
+        COMMAND_CONFIRM_RAG,
     ];
     for cmd in commandes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
@@ -656,6 +660,19 @@ where M: MongoDao + ConfigMessages
         Some(options_unique_shared_collections)
     ).await?;
 
+    let options_unique_job_leases = IndexOptions {nom_index: Some("lease_id".to_string()), unique: true};
+    let champs_index_job_leases  = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
+        ChampIndex {nom_champ: String::from(CHAMP_USER_ID), direction: 1},
+        ChampIndex {nom_champ: String::from("borrower"), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_JOBS_LEASES,
+        champs_index_job_leases,
+        Some(options_unique_job_leases)
+    ).await?;
+
     Ok(())
 }
 
@@ -752,6 +769,12 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
             error!("calculer_quotas Error: {:?}", e);
         };
         info!("calculer_quotas DONE");
+    }
+
+    if minutes % 12 == 2 {
+        if let Err(e) = run_cleanup_leases(middleware).await {
+            error!("run_cleanup_leases Error: {:?}", e);
+        }
     }
 
     Ok(())

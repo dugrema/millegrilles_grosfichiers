@@ -726,3 +726,17 @@ async fn run_delete_tuuids_transaction<M>(middleware: &M, gestionnaire: &GrosFic
     }
     Ok(())
 }
+
+pub async fn run_cleanup_leases<M>(middleware: &M)
+-> Result<(), Error>
+where M: MongoDao
+{
+    // All file leases are expired after 1 hour
+    let expired = Utc::now() - Duration::from_secs(3600);
+    let filtre = doc!{
+        "lease_date": {"$lt": expired}
+    };
+    let collection = middleware.get_collection(NOM_COLLECTION_JOBS_LEASES)?;
+    collection.delete_many(filtre, None).await?;
+    Ok(())
+}

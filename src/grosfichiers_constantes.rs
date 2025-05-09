@@ -25,6 +25,7 @@ pub const NOM_COLLECTION_PARTAGE_CONTACT: &str = "GrosFichiers/partage/contacts"
 pub const NOM_COLLECTION_PARTAGE_COLLECTIONS: &str = "GrosFichiers/partage/collections";
 pub const NOM_COLLECTION_QUOTAS_USAGERS: &str = "GrosFichiers/quotas/usagers";
 pub const NOM_COLLECTION_TEMP_VISITS: &str = "GrosFichiers/temp/visits";
+pub const NOM_COLLECTION_JOBS_LEASES: &str = "GrosFichiers/jobs/leases";
 
 pub const NOM_INDEX_ETAT_JOBS: &str = "etat_jobs_2";
 pub const NOM_INDEX_USER_ID_TUUIDS: &str = "user_id_tuuids";
@@ -118,6 +119,8 @@ pub const COMMAND_CLAIM_ALL_FILES: &str = "claimAllFiles";
 
 // pub const COMMANDE_INDEXATION_GET_JOB: &str = "getJobIndexation";
 pub const COMMANDE_RECLAMER_FUUIDS: &str = "reclamerFuuids";  // Really sync with filehosts
+pub const COMMAND_LEASE_FOR_RAG: &str = "leaseForRag";
+pub const COMMAND_CONFIRM_RAG: &str = "confirmRag";
 
 // pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
 pub const EVENEMENT_MAJ_COLLECTION: &str = "majCollection";

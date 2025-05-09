@@ -3452,7 +3452,7 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     Ok(Some(response))
 }
 
-async fn get_file_keys<M>(middleware: &M, cle_ids: HashSet<&String>)
+pub async fn get_file_keys<M>(middleware: &M, cle_ids: HashSet<&String>)
     -> Result<Vec<ResponseRequestDechiffrageV2Cle>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
