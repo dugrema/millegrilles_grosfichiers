@@ -50,7 +50,7 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
 
     let filtre = doc! {};
     let ops = doc! {
-        "$set": { CHAMP_FLAG_INDEX: false },
+        "$set": { CHAMP_FLAG_INDEX: false, "flag_rag": false },
         "$unset": { CHAMP_FLAG_INDEX_ERREUR: true },
         "$currentDate": { CHAMP_MODIFICATION: true },
     };
