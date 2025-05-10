@@ -3049,8 +3049,13 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         return Ok(Some(middleware.reponse_err(Some(403), None, Some("Certificate role refused"))?));
     }
 
+    let command: RequestLeaseForRag = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
     let expiry = Utc::now() - Duration::from_secs(300);
-    let batch_size = 5;
+    let batch_size = command.batch_size.unwrap_or(5);
     // Iterate through files that have a flag_rag == false or undefined.
     let filtre = doc!{
         CHAMP_SUPPRIME: false,
