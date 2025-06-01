@@ -338,9 +338,9 @@ pub async fn sauvegarder_job<'a, M>(middleware: &M, job: &BackgroundJob, trigger
 pub async fn create_missing_jobs<M>(middleware: &M) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages
 {
-    if let Err(e) = create_missing_jobs_indexing(middleware).await {
-        error!("create_missing_jobs Erreur creation jobs manquantes indexing: {:?}", e);
-    }
+    // if let Err(e) = create_missing_jobs_indexing(middleware).await {
+    //     error!("create_missing_jobs Erreur creation jobs manquantes indexing: {:?}", e);
+    // }
     if let Err(e) = create_missing_jobs_media(middleware, NOM_COLLECTION_IMAGES_JOBS, CHAMP_FLAG_MEDIA_TRAITE).await {
         error!("create_missing_jobs Erreur creation jobs manquantes images: {:?}", e);
     }
@@ -736,9 +736,9 @@ pub async fn entretien_jobs_expirees<M>(middleware: &M, fetch_filehosts: bool) -
     if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_VIDEO_JOBS, 600, 100, "media", "processVideo", fetch_filehosts).await {
         error!("entretien_jobs_expirees Erreur entretien videos: {:?}", e);
     }
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 180, 2000, "solrrelai", "processIndex", fetch_filehosts).await {
-        error!("entretien_jobs_expirees Erreur entretien index: {:?}", e);
-    }
+    // if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_INDEXATION_JOBS, 180, 2000, "solrrelai", "processIndex", fetch_filehosts).await {
+    //     error!("entretien_jobs_expirees Erreur entretien index: {:?}", e);
+    // }
     Ok(())
 }
 

@@ -246,6 +246,8 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         TRANSACTION_CONFIRMER_FICHIER_INDEXE,
         COMMAND_VISITS,
         COMMAND_CLAIM_ALL_FILES,
+        COMMAND_LEASE_FOR_INDEX,
+        COMMAND_CONFIRM_INDEX,
         COMMAND_LEASE_FOR_RAG,
         COMMAND_CONFIRM_RAG,
     ];
@@ -569,43 +571,43 @@ where M: MongoDao + ConfigMessages
         Some(options_video_user_id_tuuids)
     ).await?;
 
-    // Index indexation contenu
-    let options_indexation_jobs = IndexOptions {
-        nom_index: Some(NOM_INDEX_ETAT_JOBS.to_string()),
-        unique: false
-    };
-    let champs_indexation_jobs = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_ETAT_JOB), direction: 1},
-        ChampIndex {nom_champ: String::from(CHAMP_FLAG_DB_RETRY), direction: 1},
-        ChampIndex {nom_champ: String::from(CHAMP_INSTANCES), direction: 1},
-    );
-    middleware.create_index(
-        middleware,
-        NOM_COLLECTION_INDEXATION_JOBS,
-        champs_indexation_jobs,
-        Some(options_indexation_jobs)
-    ).await?;
+    // // Index indexation contenu
+    // let options_indexation_jobs = IndexOptions {
+    //     nom_index: Some(NOM_INDEX_ETAT_JOBS.to_string()),
+    //     unique: false
+    // };
+    // let champs_indexation_jobs = vec!(
+    //     ChampIndex {nom_champ: String::from(CHAMP_ETAT_JOB), direction: 1},
+    //     ChampIndex {nom_champ: String::from(CHAMP_FLAG_DB_RETRY), direction: 1},
+    //     ChampIndex {nom_champ: String::from(CHAMP_INSTANCES), direction: 1},
+    // );
+    // middleware.create_index(
+    //     middleware,
+    //     NOM_COLLECTION_INDEXATION_JOBS,
+    //     champs_indexation_jobs,
+    //     Some(options_indexation_jobs)
+    // ).await?;
+    // 
+    // let options_job_id = IndexOptions {nom_index: Some("job_id".to_string()), unique: true};
+    // let champs_job_id_params = vec!(
+    //     ChampIndex {nom_champ: String::from("job_id"), direction: 1},
+    // );
+    // middleware.create_index(middleware, NOM_COLLECTION_INDEXATION_JOBS, champs_job_id_params, Some(options_job_id)).await?;
 
-    let options_job_id = IndexOptions {nom_index: Some("job_id".to_string()), unique: true};
-    let champs_job_id_params = vec!(
-        ChampIndex {nom_champ: String::from("job_id"), direction: 1},
-    );
-    middleware.create_index(middleware, NOM_COLLECTION_INDEXATION_JOBS, champs_job_id_params, Some(options_job_id)).await?;
-
-    let options_indexation_user_id_tuuids = IndexOptions {
-        nom_index: Some(NOM_INDEX_USER_ID_TUUIDS.to_string()),
-        unique: false
-    };
-    let champs_indexation_user_id_tuuids = vec!(
-        ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
-        ChampIndex {nom_champ: String::from(CHAMP_USER_ID), direction: 1},
-    );
-    middleware.create_index(
-        middleware,
-        NOM_COLLECTION_INDEXATION_JOBS,
-        champs_indexation_user_id_tuuids,
-        Some(options_indexation_user_id_tuuids)
-    ).await?;
+    // let options_indexation_user_id_tuuids = IndexOptions {
+    //     nom_index: Some(NOM_INDEX_USER_ID_TUUIDS.to_string()),
+    //     unique: false
+    // };
+    // let champs_indexation_user_id_tuuids = vec!(
+    //     ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
+    //     ChampIndex {nom_champ: String::from(CHAMP_USER_ID), direction: 1},
+    // );
+    // middleware.create_index(
+    //     middleware,
+    //     NOM_COLLECTION_INDEXATION_JOBS,
+    //     champs_indexation_user_id_tuuids,
+    //     Some(options_indexation_user_id_tuuids)
+    // ).await?;
 
     let options_indexation_quotas_user_id = IndexOptions {
         nom_index: Some(NOM_INDEX_USER_ID.to_string()),

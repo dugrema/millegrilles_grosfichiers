@@ -113,6 +113,8 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         // Indexation
         COMMANDE_REINDEXER => commande_reindexer(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_CONFIRMER_FICHIER_INDEXE => commande_confirmer_fichier_indexe(middleware, m, &mut session).await,
+        COMMAND_LEASE_FOR_INDEX => command_lease_files_for_indexing(middleware, m).await,
+        COMMAND_CONFIRM_INDEX => command_confirm_index(middleware, m).await,
         COMMAND_LEASE_FOR_RAG => command_lease_files_for_rag(middleware, m).await,
         COMMAND_CONFIRM_RAG => command_confirm_rag(middleware, m).await,
 
@@ -3036,20 +3038,21 @@ async fn command_claim_all_files<M>(middleware: &M, m: MessageValide)
 }
 
 #[derive(Deserialize)]
-struct RequestLeaseForRag {
+struct RequestLeaseForBatchOperation {
     batch_size: Option<usize>,
+    filehost_id: Option<String>,
 }
 
-/// Lease a batch of files for RAG (AI indexing)
-async fn command_lease_files_for_rag<M>(middleware: &M, m: MessageValide)
+/// Lease a batch of files for indexing (AI indexing)
+async fn get_batch_of_fichiersrep_leases<M>(middleware: &M, m: MessageValide, borrower: &str, roles: &Vec<String>)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    if ! m.certificat.verifier_roles_string(vec![ROLE_OLLAMA_RELAI.to_string()])? {
+    if ! m.certificat.verifier_roles_string(roles.clone())? {
         return Ok(Some(middleware.reponse_err(Some(403), None, Some("Certificate role refused"))?));
     }
 
-    let command: RequestLeaseForRag = {
+    let command: RequestLeaseForBatchOperation = {
         let message_ref = m.message.parse()?;
         message_ref.contenu()?.deserialize()?
     };
@@ -3060,12 +3063,11 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     let filtre = doc!{
         CHAMP_SUPPRIME: false,
         "$or": [
-            {"flag_rag": {"$exists": false}},
-            {"flag_rag": false},
+            {borrower: {"$exists": false}},
+            {borrower: false},
         ]
     };
-    const BORROWER: &str = "flag_rag";
-    match lease_batch_fichiersrep(middleware, &expiry, BORROWER, filtre, batch_size).await? {
+    match lease_batch_fichiersrep(middleware, &expiry, borrower, filtre, batch_size, command.filehost_id).await? {
         Some(inner) => {
             // Encrypt response, it contains secret keys
             Ok(Some(middleware.build_reponse_chiffree(inner, &m.certificat)?.0))
@@ -3074,34 +3076,68 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     }
 }
 
+/// Lease a batch of files for indexing (Solr)
+async fn command_lease_files_for_indexing<M>(middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_INDEX, &vec![ROLE_SOLR_RELAI.to_string()]).await
+}
+
+/// Lease a batch of files for RAG (AI indexing)
+async fn command_lease_files_for_rag<M>(middleware: &M, m: MessageValide)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    get_batch_of_fichiersrep_leases(middleware, m, "flag_rag", &vec![ROLE_OLLAMA_RELAI.to_string()]).await
+}
+
 #[derive(Clone, Debug, Deserialize)]
-pub struct RequestConfirmRagIndex {
+pub struct RequestReturnFichiersrepLease {
     pub tuuid: String,
     pub user_id: String,
 }
 
-async fn command_confirm_rag<M>(middleware: &M, m: MessageValide)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-where M: GenerateurMessages + MongoDao + ValidateurX509,
+async fn return_fichiersrep_lease<M>(middleware: &M, m: MessageValide, borrower: &str, roles: &Vec<String>)
+                                     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    let command: RequestConfirmRagIndex = {
+    let command: RequestReturnFichiersrepLease = {
         let message_ref = m.message.parse()?;
         message_ref.contenu()?.deserialize()?
     };
 
-    // Authorization : Must be ollama_relai
-    match m.certificat.verifier_roles_string(vec![ROLE_OLLAMA_RELAI.to_string()])? {
+    // Authorization : Must be in the list of roles
+    match m.certificat.verifier_roles_string(roles.clone())? {
         true => Ok(()),
         false => Err(format!("commandes.command_confirm_rag: Invalid authorization {:?}", m.type_message)),
     }?;
 
+    // Update flag in fichiersRep
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let filtre = doc!{"tuuid": &command.tuuid, "user_id": &command.user_id};
     let ops = doc!{
-        "$set": {"flag_rag": true},
+        "$set": {borrower: true},
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
     collection.update_one(filtre, ops, None).await?;
 
+    // Remove lease
+    let collection_leases = middleware.get_collection(NOM_COLLECTION_JOBS_LEASES)?;
+    let filtre = doc!{"tuuid": command.tuuid, "user_id": command.user_id, "borrower": borrower};
+    collection_leases.delete_one(filtre, None).await?;
+
     Ok(Some(middleware.reponse_ok(None, None)?))
+}
+
+async fn command_confirm_index<M>(middleware: &M, m: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    return_fichiersrep_lease(middleware, m, CHAMP_FLAG_INDEX, &vec![ROLE_SOLR_RELAI.to_string()]).await
+}
+
+async fn command_confirm_rag<M>(middleware: &M, m: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    return_fichiersrep_lease(middleware, m, "flag_rag", &vec![ROLE_OLLAMA_RELAI.to_string()]).await
 }

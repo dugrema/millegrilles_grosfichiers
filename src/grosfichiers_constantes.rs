@@ -119,8 +119,10 @@ pub const COMMAND_CLAIM_ALL_FILES: &str = "claimAllFiles";
 
 // pub const COMMANDE_INDEXATION_GET_JOB: &str = "getJobIndexation";
 pub const COMMANDE_RECLAMER_FUUIDS: &str = "reclamerFuuids";  // Really sync with filehosts
+pub const COMMAND_LEASE_FOR_INDEX: &str = "leaseForIndex";
 pub const COMMAND_LEASE_FOR_RAG: &str = "leaseForRag";
 pub const COMMAND_CONFIRM_RAG: &str = "confirmRag";
+pub const COMMAND_CONFIRM_INDEX: &str = "confirmIndex";
 
 // pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
 pub const EVENEMENT_MAJ_COLLECTION: &str = "majCollection";

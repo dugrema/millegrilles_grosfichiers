@@ -602,7 +602,7 @@ pub struct LeasesResponse {
 }
 
 /// Lease a batch of files based on a FichiersRep filtre.
-pub async fn lease_batch_fichiersrep<M>(middleware: &M, expiry: &DateTime<Utc>, borrower: &str, filtre: Document, batch_size: usize)
+pub async fn lease_batch_fichiersrep<M>(middleware: &M, expiry: &DateTime<Utc>, borrower: &str, filtre: Document, batch_size: usize, filehost_id: Option<String>)
     -> Result<Option<LeasesResponse>, CommonError>
 where M: MongoDao + GenerateurMessages
 {
@@ -613,24 +613,39 @@ where M: MongoDao + GenerateurMessages
     while cursor.advance().await? {
         let file = cursor.deserialize_current()?;
 
+        let fuuid = match file.fuuids_versions {
+            Some(fuuids) => match fuuids.get(0) {
+                Some(fuuid) => Some(fuuid.to_string()),
+                None => continue  // Deleted file
+            },
+            None => None  // A directory, no content to process
+        };
+
+        let version = match fuuid.as_ref() {
+            Some(fuuid) => {
+                let filtre_version = doc!{"fuuid": &fuuid};
+
+                let version = collection_versions.find_one(filtre_version, None).await?;
+
+                // If we have a filehost_id and a file (with version), ensure this file is available on the filehost
+                match filehost_id.as_ref() {
+                    Some(filehost_id) => match version.as_ref() {
+                        Some(version_inner) => {
+                            match version_inner.visites.get(filehost_id) {
+                                Some(_) => version,
+                                None => continue  // File not available, move to next entry
+                            }
+                        },
+                        None => None
+                    },
+                    None => version
+                }
+            }
+            None => None
+        };
+
         // Attempt a lease on the file
         if lease_file(middleware, file.user_id, file.tuuid, borrower, expiry).await? {
-            let fuuid = match file.fuuids_versions {
-                Some(fuuids) => match fuuids.get(0) {
-                    Some(fuuid) => Some(fuuid.to_string()),
-                    None => continue  // Deleted file
-                },
-                None => None  // A directory, no content to process
-            };
-
-            let version = match fuuid.as_ref() {
-                Some(fuuid) => {
-                    let filtre_version = doc!{"fuuid": &fuuid};
-                    collection_versions.find_one(filtre_version, None).await?
-                }
-                None => None
-            };
-
             // Add the file to leases
             leases.push(LeaseResponse {
                 tuuid: file.tuuid.to_string(),
