@@ -2955,6 +2955,7 @@ struct TransfertRequeteRechercheIndex {
     start: Option<i64>,
     limit: Option<i64>,
     cuuids_partages: Option<Vec<String>>,
+    cuuid: Option<String>,
 }
 
 impl TransfertRequeteRechercheIndex {
@@ -2966,7 +2967,8 @@ impl TransfertRequeteRechercheIndex {
             query: value.query,
             start: value.start,
             limit: value.limit,
-            cuuids_partages: None
+            cuuids_partages: None,
+            cuuid: None,
         }
     }
 
@@ -2978,7 +2980,8 @@ impl TransfertRequeteRechercheIndex {
             query: value.query,
             start: Some(0),
             limit: value.limit_count,
-            cuuids_partages: None
+            cuuids_partages: None,
+            cuuid: value.cuuid,
         }
     }
 }
@@ -3495,6 +3498,8 @@ struct RequestSearchIndexV2 {
     limit_count: Option<i64>,
     /// Size of the inital batch to return
     intitial_batch_size: Option<i64>,
+    /// Top-level directory, search all children
+    cuuid: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -3550,6 +3555,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
 
     let mut requete_transfert = TransfertRequeteRechercheIndex::new_v2(
         &user_id, request);
+
     if requete_transfert.limit.is_none() {
         requete_transfert.limit = Some(200);
     }

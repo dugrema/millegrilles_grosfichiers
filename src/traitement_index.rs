@@ -591,6 +591,7 @@ pub struct LeaseResponse {
     user_id: String,
     metadata: DataChiffre,
     mimetype: Option<String>,
+    cuuids: Option<Vec<String>>,
     version: Option<NodeFichierVersionOwned>,  // Option for folders, no file content
 }
 
@@ -647,10 +648,17 @@ where M: MongoDao + GenerateurMessages
         // Attempt a lease on the file
         if lease_file(middleware, file.user_id, file.tuuid, borrower, expiry).await? {
             // Add the file to leases
+            let cuuids = match file.path_cuuids {
+                None => None,
+                Some(cuuids) => {
+                    Some(cuuids.into_iter().map(|c| c.to_string()).collect())
+                }
+            };
             leases.push(LeaseResponse {
                 tuuid: file.tuuid.to_string(),
                 user_id: file.user_id.to_string(),
                 metadata: file.metadata.into(),
+                cuuids,
                 mimetype: match file.mimetype { Some(inner) => Some(inner.to_string()), None => None},
                 version,
             });
