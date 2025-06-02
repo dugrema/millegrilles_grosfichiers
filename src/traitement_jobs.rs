@@ -341,9 +341,9 @@ pub async fn create_missing_jobs<M>(middleware: &M) -> Result<(), CommonError>
     // if let Err(e) = create_missing_jobs_indexing(middleware).await {
     //     error!("create_missing_jobs Erreur creation jobs manquantes indexing: {:?}", e);
     // }
-    if let Err(e) = create_missing_jobs_media(middleware, NOM_COLLECTION_IMAGES_JOBS, CHAMP_FLAG_MEDIA_TRAITE).await {
-        error!("create_missing_jobs Erreur creation jobs manquantes images: {:?}", e);
-    }
+    // if let Err(e) = create_missing_jobs_media(middleware, NOM_COLLECTION_IMAGES_JOBS, CHAMP_FLAG_MEDIA_TRAITE).await {
+    //     error!("create_missing_jobs Erreur creation jobs manquantes images: {:?}", e);
+    // }
     if let Err(e) = create_missing_jobs_media(middleware, NOM_COLLECTION_VIDEO_JOBS, CHAMP_FLAG_VIDEO_TRAITE).await {
         error!("create_missing_jobs Erreur creation jobs manquantes videos: {:?}", e);
     }
@@ -730,9 +730,9 @@ where M: MongoDao + GenerateurMessages
 pub async fn entretien_jobs_expirees<M>(middleware: &M, fetch_filehosts: bool) -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
-    if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_IMAGES_JOBS, 180, 1000 , "media", "processImage", fetch_filehosts).await {
-        error!("entretien_jobs_expirees Erreur entretien images: {:?}", e);
-    }
+    // if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_IMAGES_JOBS, 180, 1000 , "media", "processImage", fetch_filehosts).await {
+    //     error!("entretien_jobs_expirees Erreur entretien images: {:?}", e);
+    // }
     if let Err(e) = reactiver_jobs(middleware, NOM_COLLECTION_VIDEO_JOBS, 600, 100, "media", "processVideo", fetch_filehosts).await {
         error!("entretien_jobs_expirees Erreur entretien videos: {:?}", e);
     }
@@ -767,15 +767,15 @@ async fn maintenance_impossible_jobs_session<M>(middleware: &M, gestionnaire: &G
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
     // Cleanup of jobs that will never complete
-    if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_IMAGES_JOBS, 1_000, "processImage", session).await {
-        error!("maintenance_impossible_jobs_session Erreur entretien images: {:?}", e);
-    }
+    // if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_IMAGES_JOBS, 1_000, "processImage", session).await {
+    //     error!("maintenance_impossible_jobs_session Erreur entretien images: {:?}", e);
+    // }
     if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_VIDEO_JOBS, 1_000, "processVideo", session).await {
         error!("maintenance_impossible_jobs_session Erreur entretien videos: {:?}", e);
     }
-    if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_INDEXATION_JOBS, 1_000, "processIndex", session).await {
-        error!("maintenance_impossible_jobs_session Erreur entretien index: {:?}", e);
-    }
+    // if let Err(e) = remove_impossible_jobs(middleware, gestionnaire, NOM_COLLECTION_INDEXATION_JOBS, 1_000, "processIndex", session).await {
+    //     error!("maintenance_impossible_jobs_session Erreur entretien index: {:?}", e);
+    // }
 
     Ok(())
 }
@@ -927,7 +927,7 @@ where M: MongoDao + GenerateurMessages + ValidateurX509 {
                     Some(fuuid) => {
                         // Create transaction to prevent job from running on restore.
                         let transaction = TransactionSupprimerJobImageV2 {
-                            tuuid: row.tuuid,
+                            // tuuid: row.tuuid,
                             fuuid: fuuid.to_owned(),
                             err: None,
                         };

@@ -733,10 +733,13 @@ where M: MongoDao
 {
     // All file leases are expired after 1 hour
     let expired = Utc::now() - Duration::from_secs(3600);
-    let filtre = doc!{
-        "lease_date": {"$lt": expired}
-    };
+    let filtre = doc!{"lease_date": {"$lt": expired}};
+
     let collection = middleware.get_collection(NOM_COLLECTION_JOBS_LEASES)?;
+    collection.delete_many(filtre.clone(), None).await?;
+
+    let collection = middleware.get_collection(NOM_COLLECTION_JOBS_VERSIONS_LEASES)?;
     collection.delete_many(filtre, None).await?;
+
     Ok(())
 }

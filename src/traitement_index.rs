@@ -634,12 +634,12 @@ where M: MongoDao + GenerateurMessages
                         Some(version_inner) => {
                             match version_inner.visites.get(filehost_id) {
                                 Some(_) => version,
-                                None => continue  // File not available, move to next entry
+                                None => continue  // File not available on filehost, move to next entry
                             }
                         },
                         None => None
                     },
-                    None => version
+                    None => version  // No filehost information provided, do not filter
                 }
             }
             None => None
@@ -723,5 +723,81 @@ async fn lease_file<M>(middleware: &M, user_id: &str, tuuid: &str, borrower: &st
                 Err(err)?
             }
         }
+    }
+}
+
+async fn lease_file_version<M>(middleware: &M, fuuid: &str, borrower: &str, expiry: &DateTime<Utc>) -> Result<bool, CommonError>
+where M: MongoDao
+{
+    let filtre = doc!{
+        "fuuid": fuuid,
+        "borrower": borrower,
+        "lease_date": {"$lt": expiry},
+    };
+    let ops = doc!{
+        "$currentDate": {"lease_date": true}
+    };
+
+    let collection = middleware.get_collection(NOM_COLLECTION_JOBS_VERSIONS_LEASES)?;
+    let options = UpdateOptions::builder().upsert(true).build();
+    match collection.update_one(filtre, ops, options).await {
+        Ok(inner) => {
+            // Returns true when a lease record is added or updated - this means the lease is successful
+            Ok(inner.modified_count == 1 || inner.upserted_id.is_some())
+        },
+        Err(err) => {
+            if verifier_erreur_duplication_mongo(&err.kind) {
+                // The existing record is not expired - this caused a duplication on upsert
+                Ok(false)
+            } else {
+                Err(err)?
+            }
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct VersionLeasesResponse {
+    ok: bool,
+    leases: Vec<NodeFichierVersionOwned>,
+    secret_keys: Vec<ResponseRequestDechiffrageV2Cle>,
+}
+
+/// Lease a batch of files based on a FichiersRep filtre.
+pub async fn lease_batch_fichiersversion<M>(middleware: &M, expiry: &DateTime<Utc>, borrower: &str, filtre: Document, batch_size: usize, filehost_id: Option<String>)
+    -> Result<Option<VersionLeasesResponse>, CommonError>
+where M: MongoDao + GenerateurMessages
+{
+    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    let mut cursor = collection_versions.find(filtre, None).await?;
+    let mut leases = Vec::with_capacity(batch_size);
+    while cursor.advance().await? {
+        let file = cursor.deserialize_current()?;
+
+        // Attempt a lease on the file
+        if lease_file_version(middleware, &file.fuuid, borrower, expiry).await? {
+            leases.push(file);
+        }
+
+        if leases.len() >= batch_size {
+            break
+        }
+    }
+
+    if leases.len() > 0 {
+        info!("lease_batch_fichiersrep Fetching decryption keys for {} leases for borrower {}", leases.len(), borrower);
+        // Get all decrypted keys for the files
+        let mut cle_ids = HashSet::with_capacity(leases.len());
+        for lease in &leases {
+            if let Some(cle_id) = lease.cle_id.as_ref() {
+                cle_ids.insert(cle_id);
+            } else {
+                cle_ids.insert(&lease.fuuid);  // Legacy
+            }
+        }
+        let secret_keys = get_file_keys(middleware, cle_ids).await?;
+        Ok(Some(VersionLeasesResponse { ok: true, leases, secret_keys }))
+    } else {
+        Ok(None)
     }
 }

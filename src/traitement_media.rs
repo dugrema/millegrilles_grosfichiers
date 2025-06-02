@@ -370,7 +370,7 @@ pub async fn commande_supprimer_job_image<M>(middleware: &M, m: MessageValide, g
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct CommandeSupprimerJobImageV2 {tuuid: String, fuuid: String, job_id: String}
+struct CommandeSupprimerJobImageV2 {fuuid: String}
 
 pub async fn commande_supprimer_job_image_v2<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
@@ -388,9 +388,14 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     debug!("commande_supprimer_job_image_v2 Supprimer job fuuid : {:?}", commande.fuuid);
     sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
 
-    let filtre = doc! {"job_id": commande.job_id};
-    let collection = middleware.get_collection(NOM_COLLECTION_IMAGES_JOBS)?;
-    collection.delete_one_with_session(filtre, None, session).await?;
+    // let filtre = doc! {"job_id": commande.job_id};
+    // let collection = middleware.get_collection(NOM_COLLECTION_IMAGES_JOBS)?;
+    // collection.delete_one_with_session(filtre, None, session).await?;
+
+    // Remove lease
+    let lease_collection = middleware.get_collection(NOM_COLLECTION_JOBS_VERSIONS_LEASES)?;
+    let lease_filtre = doc!{CHAMP_FUUID: commande.fuuid, "borrower": CHAMP_FLAG_MEDIA_TRAITE};
+    lease_collection.delete_one_with_session(lease_filtre, None, session).await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -495,11 +500,11 @@ fn job_video_supportee<S>(mimetype: S) -> bool
     is_mimetype_video(mimetype)
 }
 
-pub async fn set_flag_image_traitee<M,S>(middleware: &M, tuuid_in: Option<S>, fuuid: &str, session: &mut ClientSession)
+pub async fn set_flag_image_traitee<M>(middleware: &M, fuuid: &str, session: &mut ClientSession)
     -> Result<(), CommonError>
-    where M: MongoDao, S: ToString
+    where M: MongoDao
 {
-    let tuuid = match &tuuid_in {Some(inner)=>Some(inner.to_string()), None=>None};
+    // let tuuid = match &tuuid_in {Some(inner)=>Some(inner.to_string()), None=>None};
 
     // Set flag versionFichiers
     let filtre = doc! {"fuuid": fuuid};
@@ -510,13 +515,13 @@ pub async fn set_flag_image_traitee<M,S>(middleware: &M, tuuid_in: Option<S>, fu
     };
     collection.update_many_with_session(filtre, ops, None, session).await?;
 
-    // Supprimer job image
-    let mut filtre = doc! {"fuuid": fuuid};
-    if let Some(tuuid) = tuuid.as_ref() {
-        filtre.insert("tuuid", tuuid);
-    }
-    let collection = middleware.get_collection(NOM_COLLECTION_IMAGES_JOBS)?;
-    collection.delete_many_with_session(filtre, None, session).await?;
+    // // Supprimer job image
+    // let mut filtre = doc! {"fuuid": fuuid};
+    // if let Some(tuuid) = tuuid.as_ref() {
+    //     filtre.insert("tuuid", tuuid);
+    // }
+    // let collection = middleware.get_collection(NOM_COLLECTION_IMAGES_JOBS)?;
+    // collection.delete_many_with_session(filtre, None, session).await?;
 
     Ok(())
 }

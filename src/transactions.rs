@@ -1442,27 +1442,28 @@ fn obsolete() -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError> {
 }
 
 /// Fait un touch sur les fichiers_rep identifies. User_id optionnel (e.g. pour ops systeme comme visites)
-pub async fn touch_fichiers_rep<M,U,S,V>(middleware: &M, user_id: Option<U>, fuuids_in: V, session: &mut ClientSession) -> Result<(), CommonError>
+pub async fn touch_fichiers_rep<M,S,V>(middleware: &M, fuuids_in: V, session: &mut ClientSession) -> Result<(), CommonError>
     where
         M: GenerateurMessages + MongoDao,
-        U: AsRef<str>,
         S: AsRef<str>,
         V: Borrow<Vec<S>>,
 {
     let fuuids_in = fuuids_in.borrow();
     let fuuids: Vec<&str> = fuuids_in.iter().map(|s| s.as_ref()).collect();
 
-    let filtre = match user_id {
-        Some(user_id) => {
-            doc! {
-                CHAMP_USER_ID: user_id.as_ref(),
-                CHAMP_FUUIDS_VERSIONS: {"$in": fuuids},
-            }
-        },
-        None => {
-            doc! { CHAMP_FUUIDS_VERSIONS: {"$in": fuuids } }
-        }
-    };
+    // let filtre = match user_id {
+    //     Some(user_id) => {
+    //         doc! {
+    //             CHAMP_USER_ID: user_id.as_ref(),
+    //             CHAMP_FUUIDS_VERSIONS: {"$in": fuuids},
+    //         }
+    //     },
+    //     None => {
+    //         doc! { CHAMP_FUUIDS_VERSIONS: {"$in": fuuids } }
+    //     }
+    // };
+
+    let filtre = doc! { CHAMP_FUUIDS_VERSIONS: {"$in": fuuids } };
 
     let ops = doc! {
         "$currentDate": { CHAMP_MODIFICATION: true }
@@ -1480,11 +1481,11 @@ async fn transaction_associer_conversions<M>(middleware: &M, transaction: Transa
     debug!("transaction_associer_conversions Consommer transaction : {}", transaction.transaction.id);
     let transaction_mappee: TransactionAssocierConversions = serde_json::from_str(transaction.transaction.contenu.as_str())?;
 
-    let tuuid = transaction_mappee.tuuid.clone();
-    let user_id = match transaction_mappee.user_id.as_ref() {
-        Some(inner) => Some(inner.as_str()),
-        None => None
-    };
+    // let tuuid = transaction_mappee.tuuid.clone();
+    // let user_id = match transaction_mappee.user_id.as_ref() {
+    //     Some(inner) => Some(inner.as_str()),
+    //     None => None
+    // };
     let fuuid = transaction_mappee.fuuid.as_str();
 
     // Mapper tous les fuuids avec leur mimetype
@@ -1499,84 +1500,101 @@ async fn transaction_associer_conversions<M>(middleware: &M, transaction: Transa
     };
 
     {
-        let user_id = match user_id {
-            Some(inner) => inner.to_string(),
-            None => {
-                // Find the user id
-                let filtre_reps = match tuuid.as_ref() {
-                    // Best approach with tuuid (unique index)
-                    Some(tuuid) => doc! { CHAMP_TUUID: tuuid },
-                    // Legacy support
-                    None => {
-                        match user_id {
-                            Some(user_id) => doc! { "fuuids_versions": fuuid, CHAMP_USER_ID: user_id },
-                            // Note : legacy, supporte ancienne transaction (pre 2023.6) qui n'avait pas le user_id
-                            None => doc! { "fuuids_versions": fuuid }
-                        }
-                    },
-                };
-                let collection_reps = middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
-                let mut cursor = collection_reps.find_with_session(filtre_reps, None, session).await?;
-                if cursor.advance(session).await? {
-                    let row = cursor.deserialize_current()?;
-                    row.user_id
-                } else {
-                    Err(format!("transaction_associer_conversions No match for fuuid {}", fuuid))?
+        // let user_id = match user_id {
+        //     Some(inner) => inner.to_string(),
+        //     None => {
+        //         // Find the user id
+        //         let filtre_reps = match tuuid.as_ref() {
+        //             // Best approach with tuuid (unique index)
+        //             Some(tuuid) => doc! { CHAMP_TUUID: tuuid },
+        //             // Legacy support
+        //             None => {
+        //                 match user_id {
+        //                     Some(user_id) => doc! { "fuuids_versions": fuuid, CHAMP_USER_ID: user_id },
+        //                     // Note : legacy, supporte ancienne transaction (pre 2023.6) qui n'avait pas le user_id
+        //                     None => doc! { "fuuids_versions": fuuid }
+        //                 }
+        //             },
+        //         };
+        //         let collection_reps = middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
+        //         let mut cursor = collection_reps.find_with_session(filtre_reps, None, session).await?;
+        //         if cursor.advance(session).await? {
+        //             let row = cursor.deserialize_current()?;
+        //             row.user_id
+        //         } else {
+        //             Err(format!("transaction_associer_conversions No match for fuuid {}", fuuid))?
+        //         }
+        //     }
+        // };
+
+        // Fetch matching user_ids for this fuuid
+        let user_ids = {
+            let filtre_reps = doc! {CHAMP_FUUIDS_VERSIONS: fuuid};
+            let collection_reps = middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
+            let mut cursor = collection_reps.find_with_session(filtre_reps, None, session).await?;
+            let mut user_ids = HashSet::with_capacity(20);
+            if cursor.advance(session).await? {
+                let row = cursor.deserialize_current()?;
+                user_ids.insert(row.user_id);
+            } else {
+                Err(format!("transaction_associer_conversions No match for fuuid {}", fuuid))?
+            }
+            user_ids
+        };
+
+        for user_id in user_ids {
+            // Map with the struct (acts as data validation)
+            let media_row = MediaOwnedRow {
+                fuuid: transaction_mappee.fuuid.clone(),
+                user_id,
+                creation: Utc::now(),
+                derniere_modification: Utc::now(),
+                // mimetype: transaction_mappee.mimetype,
+                height: transaction_mappee.height,
+                width: transaction_mappee.width,
+                duration: transaction_mappee.duration,
+                video_codec: transaction_mappee.video_codec.clone(),
+                anime: transaction_mappee.anime.unwrap_or(false),
+                images: None,
+                video: None,
+                audio: None,
+                subtitles: None,
+            };
+
+            let mut set_ops = doc! {
+                // "mimetype": media_row.mimetype,
+                "height": media_row.height,
+                "width": media_row.width,
+                "duration": media_row.duration,
+                "videoCodec": media_row.video_codec,
+                "anime": media_row.anime,
+                // "images": convertir_to_bson(transaction_mappee.images)?,
+            };
+
+            if transaction_mappee.images.len() > 0 {
+                for (key, value) in &transaction_mappee.images {
+                    set_ops.insert(format!("images.{}", key), convertir_to_bson(value)?);
                 }
+            };
+
+            if let Some(audio) = transaction_mappee.audio.as_ref() {
+                set_ops.insert("audio", convertir_to_bson_array(audio)?);
             }
-        };
-
-        // Map with the struct (acts as data validation)
-        let media_row = MediaOwnedRow {
-            fuuid: transaction_mappee.fuuid.clone(),
-            user_id,
-            creation: Utc::now(),
-            derniere_modification: Utc::now(),
-            // mimetype: transaction_mappee.mimetype,
-            height: transaction_mappee.height,
-            width: transaction_mappee.width,
-            duration: transaction_mappee.duration,
-            video_codec: transaction_mappee.video_codec.clone(),
-            anime: transaction_mappee.anime.unwrap_or(false),
-            images: None,
-            video: None,
-            audio: None,
-            subtitles: None,
-        };
-
-        let mut set_ops = doc!{
-            // "mimetype": media_row.mimetype,
-            "height": media_row.height,
-            "width": media_row.width,
-            "duration": media_row.duration,
-            "videoCodec": media_row.video_codec,
-            "anime": media_row.anime,
-            // "images": convertir_to_bson(transaction_mappee.images)?,
-        };
-
-        if transaction_mappee.images.len() > 0 {
-            for (key, value) in transaction_mappee.images.into_iter() {
-                set_ops.insert(format!("images.{}", key), convertir_to_bson(value)?);
+            if let Some(subtitles) = transaction_mappee.subtitles.as_ref() {
+                set_ops.insert("subtitles", convertir_to_bson_array(subtitles)?);
             }
-        };
 
-        if let Some(audio) = transaction_mappee.audio {
-            set_ops.insert("audio", convertir_to_bson_array(audio)?);
+            // Insert into the media table.
+            let collection_media = middleware.get_collection(NOM_COLLECTION_MEDIA)?;
+            let filtre_media = doc! {"fuuid": media_row.fuuid, "user_id": media_row.user_id};
+            let ops = doc! {
+                "$set": set_ops,
+                "$setOnInsert": {CHAMP_CREATION: Utc::now()},
+                "$currentDate": {CHAMP_MODIFICATION: true},
+            };
+            let options = UpdateOptions::builder().upsert(true).build();
+            collection_media.update_one_with_session(filtre_media, ops, options, session).await?;
         }
-        if let Some(subtitles) = transaction_mappee.subtitles {
-            set_ops.insert("subtitles", convertir_to_bson_array(subtitles)?);
-        }
-
-        // Insert into the media table.
-        let collection_media = middleware.get_collection(NOM_COLLECTION_MEDIA)?;
-        let filtre_media = doc! {"fuuid": media_row.fuuid, "user_id": media_row.user_id};
-        let ops = doc! {
-            "$set": set_ops,
-            "$setOnInsert": {CHAMP_CREATION: Utc::now()},
-            "$currentDate": {CHAMP_MODIFICATION: true},
-        };
-        let options = UpdateOptions::builder().upsert(true).build();
-        collection_media.update_one_with_session(filtre_media, ops, options, session).await?;
 
         // Update the versions table
         let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
@@ -1845,7 +1863,7 @@ async fn transaction_supprimer_video<M>(middleware: &M, transaction: Transaction
         }
     }
 
-    if let Err(e) = touch_fichiers_rep(middleware, Some(&user_id), vec![fuuid], session).await {
+    if let Err(e) = touch_fichiers_rep(middleware, vec![fuuid], session).await {
         error!("transaction_favoris_creerpath Erreur touch_fichiers_rep {:?}/{:?} : {:?}", user_id, fuuid, e);
     }
 
@@ -1863,10 +1881,10 @@ where M: GenerateurMessages + MongoDao
     debug!("transaction_supprimer_job_image Consommer transaction : {}", transaction.transaction.id);
     let transaction_supprimer_job: TransactionSupprimerJobImageV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
     let fuuid = &transaction_supprimer_job.fuuid;
-    let tuuid = &transaction_supprimer_job.tuuid;
+    // let tuuid = &transaction_supprimer_job.tuuid;
 
     // Indiquer que la job a ete completee et ne doit pas etre redemarree.
-    if let Err(e) = set_flag_image_traitee(middleware, Some(tuuid), fuuid, session).await {
+    if let Err(e) = set_flag_image_traitee(middleware, fuuid, session).await {
         Err(format!("transactions.transaction_supprimer_job_image Erreur set_flag image : {:?}", e))?
     }
 
@@ -2478,7 +2496,7 @@ async fn copy_media_file<M,S,T>(middleware: &M, session: &mut ClientSession, use
     let filtre_media = doc! {"fuuid": {"$in": &fuuids_versions}, "user_id": original_user_id};
     let mut cursor = collection_media.find_with_session(filtre_media, None, session).await?;
     while cursor.advance(session).await? {
-        let mut row = cursor.deserialize_current()?;
+        let row = cursor.deserialize_current()?;
         let filtre = doc! {"fuuid": &row.fuuid, "user_id": user_id};
 
         let mut set_on_insert = doc! {

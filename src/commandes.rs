@@ -38,7 +38,7 @@ use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids, verifier_acces_usager_media};
 use crate::traitement_entretien::{claim_all_files, verifier_visites_topologies, RequeteGetVisitesFuuidsResponse};
-use crate::traitement_index::{lease_batch_fichiersrep, reset_flag_indexe, sauvegarder_job_index, set_flag_index_traite};
+use crate::traitement_index::{lease_batch_fichiersrep, lease_batch_fichiersversion, reset_flag_indexe, sauvegarder_job_index, set_flag_index_traite};
 use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
 use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_images, sauvegarder_job_video, set_flag_image_traitee, set_flag_video_traite};
 use crate::transactions::*;
@@ -113,6 +113,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         // Indexation
         COMMANDE_REINDEXER => commande_reindexer(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_CONFIRMER_FICHIER_INDEXE => commande_confirmer_fichier_indexe(middleware, m, &mut session).await,
+        COMMAND_LEASE_FOR_IMAGE => command_lease_files_for_image(middleware, m).await,
         COMMAND_LEASE_FOR_INDEX => command_lease_files_for_indexing(middleware, m).await,
         COMMAND_CONFIRM_INDEX => command_confirm_index(middleware, m).await,
         COMMAND_LEASE_FOR_RAG => command_lease_files_for_rag(middleware, m).await,
@@ -333,14 +334,14 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
             let mimetype = row.mimetype.clone();
             let filehost_ids: Vec<&String> = row.visites.keys().collect();
             let job = BackgroundJob::new_index(tuuid, Some(fuuid), &user_id, mimetype, &filehost_ids, cle_id, format, nonce);
-            sauvegarder_job_index(middleware, &job, session).await?;
+            // sauvegarder_job_index(middleware, &job, session).await?;  // Obsolete
 
             if ! flag_video_traite {
                 // Create video job
                 sauvegarder_job_video(middleware, &job, session).await?;
             } else if ! flag_media_traite {
                 // Create media job
-                sauvegarder_job_images(middleware, &job, session).await?;
+                // sauvegarder_job_images(middleware, &job, session).await?;    // Obsolete
             }
         }
     }
@@ -460,27 +461,44 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gest
         Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas media) pour message {:?}", m.type_message))?
     }
 
-    if commande.tuuid.is_none() {
-        Err(format!("grosfichiers.commande_associer_conversions: Tuuid obligatoire depuis version 2024.9 {:?}", m.type_message))?
-    }
-    let tuuid = commande.tuuid.expect("tuuid");
-    let user_id = commande.user_id;
+    // if commande.tuuid.is_none() {
+    //     Err(format!("grosfichiers.commande_associer_conversions: Tuuid obligatoire depuis version 2024.9 {:?}", m.type_message))?
+    // }
+    // let tuuid = commande.tuuid.expect("tuuid");
+    // let user_id = commande.user_id;
 
     // Traiter la transaction
     let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
 
-    if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), &vec![commande.fuuid.as_str()], session).await {
-        error!("commande_associer_conversions Erreur touch_fichiers_rep {:?}/{} : {:?}", user_id, commande.fuuid, e);
+    if let Err(e) = touch_fichiers_rep(middleware, &vec![commande.fuuid.as_str()], session).await {
+        error!("commande_associer_conversions Erreur touch_fichiers_rep {} : {:?}", commande.fuuid, e);
     }
 
     let fuuid = &commande.fuuid;
-    if let Err(e) = set_flag_image_traitee(middleware, Some(tuuid.as_str()), fuuid, session).await {
-        error!("transaction_associer_conversions Erreur set flag true pour traitement job images {:?}/{} : {:?}", user_id, fuuid, e);
+    if let Err(e) = set_flag_image_traitee(middleware, fuuid, session).await {
+        error!("transaction_associer_conversions Erreur set flag true pour traitement job images {} : {:?}", fuuid, e);
     }
 
-    // Emettre fichier pour que tous les clients recoivent la mise a jour
-    if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION, session).await {
-        warn!("commande_associer_conversions Erreur emettre_evenement_maj_fichier : {:?}", e);
+    // Job done, commit then emit events
+    session.commit_transaction().await?;
+    start_transaction_regular(session).await?;
+    
+    // Remove lease
+    let lease_collection = middleware.get_collection(NOM_COLLECTION_JOBS_VERSIONS_LEASES)?;
+    let lease_filtre = doc!{CHAMP_FUUID: fuuid, "borrower": CHAMP_FLAG_MEDIA_TRAITE};
+    lease_collection.delete_one(lease_filtre, None).await?;
+
+    // Emit all tuuids matching this file to ensure listeners get notified
+    {
+        let filtre_reps = doc! {CHAMP_FUUIDS_VERSIONS: fuuid, CHAMP_SUPPRIME: false};
+        let collection_reps = middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
+        let mut cursor = collection_reps.find_with_session(filtre_reps, None, session).await?;
+        if cursor.advance(session).await? {
+            let row = cursor.deserialize_current()?;
+            if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &row.tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION, session).await {
+                warn!("commande_associer_conversions Erreur emettre_evenement_maj_fichier {}: {:?}", fuuid, e);
+            }
+        }
     }
 
     // Emit file claim - allows it to be synchronized to all filehosts immediately
@@ -494,7 +512,7 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gest
 
     if ! image_fuuids.is_empty() {
         if let Err(e) = verifier_visites_topologies(middleware, &image_fuuids).await {
-            warn!("commande_associer_conversions Error claiming images for file {}: {:?}", tuuid, e);
+            warn!("commande_associer_conversions Error claiming images for file {}: {:?}", fuuid, e);
         }
     }
 
@@ -529,7 +547,7 @@ async fn commande_associer_video<M>(middleware: &M, m: MessageValide, gestionnai
     set_flag_video_traite(middleware, commande.tuuid.as_ref(), fuuid, job_id, session).await?;
 
     // Touch - s'assure que le client va voir que le fichier a ete modifie (sync)
-    if let Err(e) = touch_fichiers_rep(middleware, user_id.as_ref(), vec![fuuid], session).await {
+    if let Err(e) = touch_fichiers_rep(middleware, vec![fuuid], session).await {
         error!("commande_associer_video Erreur touch_fichiers_rep {:?}/{:?} : {:?}", user_id, fuuid, e);
     }
 
@@ -3037,10 +3055,57 @@ async fn command_claim_all_files<M>(middleware: &M, m: MessageValide)
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
+
 #[derive(Deserialize)]
 struct RequestLeaseForBatchOperation {
     batch_size: Option<usize>,
     filehost_id: Option<String>,
+}
+
+async fn get_batch_of_fichiersversion_leases<M>(middleware: &M, m: MessageValide, borrower: &str, roles: &Vec<String>)
+    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    if ! m.certificat.verifier_roles_string(roles.clone())? {
+        return Ok(Some(middleware.reponse_err(Some(403), None, Some("Certificate role refused"))?));
+    }
+
+    let command: RequestLeaseForBatchOperation = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
+    let expiry = Utc::now() - Duration::from_secs(300);
+    let batch_size = command.batch_size.unwrap_or(5);
+
+    // Iterate through files that have a flag_rag == false or undefined.
+    let filtre = match command.filehost_id.as_ref() {
+        Some(filehost_id) => {
+            doc!{
+                "tuuids.0": {"$exists": true},
+                format!("visites.{}", filehost_id): {"$exists": true},
+                "$or": [
+                    {borrower: {"$exists": false}},
+                    {borrower: false},
+                ]
+            }
+        },
+        None => doc!{
+            "tuuids.0": {"$exists": true},
+            "$or": [
+                {borrower: {"$exists": false}},
+                {borrower: false},
+            ]
+        }
+    };
+
+    match lease_batch_fichiersversion(middleware, &expiry, borrower, filtre, batch_size, command.filehost_id).await? {
+        Some(inner) => {
+            // Encrypt response, it contains secret keys
+            Ok(Some(middleware.build_reponse_chiffree(inner, &m.certificat)?.0))
+        },
+        None => Ok(Some(middleware.reponse_ok(Some(1), Some("No files available"))?))
+    }
 }
 
 /// Lease a batch of files for indexing (AI indexing)
@@ -3076,6 +3141,12 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     }
 }
 
+async fn command_lease_files_for_image<M>(middleware: &M, m: MessageValide) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    get_batch_of_fichiersversion_leases(middleware, m, CHAMP_FLAG_MEDIA_TRAITE, &vec![ROLE_MEDIA.to_string()]).await
+}
+
 /// Lease a batch of files for indexing (Solr)
 async fn command_lease_files_for_indexing<M>(middleware: &M, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
@@ -3094,8 +3165,10 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RequestReturnFichiersrepLease {
+    pub ok: Option<bool>,
     pub tuuid: String,
     pub user_id: String,
+    pub err: Option<String>,
 }
 
 async fn return_fichiersrep_lease<M>(middleware: &M, m: MessageValide, borrower: &str, roles: &Vec<String>)
