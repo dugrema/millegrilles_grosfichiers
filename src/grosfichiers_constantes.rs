@@ -176,6 +176,7 @@ pub const CHAMP_FAVORIS: &str = "favoris";
 pub const CHAMP_TYPE_NODE: &str = "type_node";
 // pub const CHAMP_FUUID_MIMETYPES: &str = "fuuidMimetypes";
 pub const CHAMP_FLAG_INDEX: &str = "flag_index";
+pub const CHAMP_FLAG_RAG: &str = "flag_rag";
 pub const CHAMP_FLAG_INDEX_RETRY: &str = "index_retry";
 pub const CHAMP_FLAG_INDEX_ERREUR: &str = "flag_index_erreur";
 pub const CHAMP_INDEX_START: &str = "index_start";

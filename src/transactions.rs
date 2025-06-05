@@ -292,6 +292,7 @@ pub struct NodeFichierRepRow<'a> {
     #[serde(default, rename="_mg-creation", with="chrono_datetime_as_bson_datetime")]
     pub date_creation: DateTime<Utc>,
     pub flag_index: bool,
+    pub flag_rag: Option<bool>,
     pub supprime: bool,
     pub supprime_indirect: bool,
     pub metadata: DataChiffreBorrow<'a>,
@@ -317,6 +318,7 @@ pub struct NodeFichierRepOwned {
     pub supprime_indirect: bool,
     pub metadata: DataChiffre,
     pub flag_index: bool,
+    pub flag_rag: Option<bool>,
 
     // Champs pour type_node Fichier
     pub mimetype: Option<String>,
@@ -546,6 +548,7 @@ async fn transaction_nouvelle_version<M>(middleware: &M, transaction: Transactio
             derniere_modification: Utc::now(),
             date_creation: Utc::now(),
             flag_index: false,
+            flag_rag: Some(false),
             supprime: false,
             supprime_indirect: false,
             metadata: transaction_fichier.metadata.borrow(),
@@ -620,6 +623,7 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, transaction: Transac
         CHAMP_FAVORIS: favoris,
         CHAMP_TYPE_NODE: type_node,
         CHAMP_FLAG_INDEX: false,
+        CHAMP_FLAG_RAG: false,
     };
     debug!("grosfichiers.transaction_nouvelle_collection Ajouter nouvelle collection doc : {:?}", doc_collection);
 
