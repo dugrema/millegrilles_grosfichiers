@@ -27,6 +27,7 @@ use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::tokio::time::timeout;
+use crate::data_structs::CompleteFileRow;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::get_file_keys;
@@ -608,45 +609,48 @@ pub async fn lease_batch_fichiersrep<M>(middleware: &M, expiry: &DateTime<Utc>, 
 where M: MongoDao + GenerateurMessages
 {
     let collection = middleware.get_collection_typed::<NodeFichierRepBorrowed>(NOM_COLLECTION_FICHIERS_REP)?;
-    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
-    let mut cursor = collection.find(filtre, None).await?;
+    // let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    info!("lease_batch_fichiersrep Getting batch for {}, batch size: {}", borrower, batch_size);
+    
+    // Built aggregation pipeline on fichiers_rep joining on versions for files
+    let mut pipeline = vec![doc! {"$match": filtre}]; // Match on fichiers_rep
+
+    // Move all content under fichierrep doc for easier mapping to CompleteFileRow
+    pipeline.push(doc!{"$replaceRoot": {"newRoot": {"fichierrep": "$$ROOT"}}});
+
+    // Join version information
+    pipeline.push(doc!{"$lookup": {
+            "from": NOM_COLLECTION_VERSIONS,
+            "localField": "fichierrep.fuuids_versions.0",
+            "foreignField": "fuuid",
+            "as": "versions",
+        }}
+    );
+    pipeline.push(doc!{"$addFields": {
+        "tuuid": "$fichierrep.tuuid",   // Used for troubleshooting deserialization errors
+        "current_version": {"$arrayElemAt": ["$versions", 0]},
+    }});
+    pipeline.push(doc!{"$unset": "versions"});
+
     let mut leases = Vec::with_capacity(batch_size);
+
+    let mut cursor = collection.aggregate(pipeline, None).await?;
     while cursor.advance().await? {
-        let file = cursor.deserialize_current()?;
-
-        let fuuid = match file.fuuids_versions {
-            Some(fuuids) => match fuuids.get(0) {
-                Some(fuuid) => Some(fuuid.to_string()),
-                None => continue  // Deleted file
-            },
-            None => None  // A directory, no content to process
-        };
-
-        let version = match fuuid.as_ref() {
-            Some(fuuid) => {
-                let filtre_version = doc!{"fuuid": &fuuid};
-
-                let version = collection_versions.find_one(filtre_version, None).await?;
-
-                // If we have a filehost_id and a file (with version), ensure this file is available on the filehost
-                match filehost_id.as_ref() {
-                    Some(filehost_id) => match version.as_ref() {
-                        Some(version_inner) => {
-                            match version_inner.visites.get(filehost_id) {
-                                Some(_) => version,
-                                None => continue  // File not available on filehost, move to next entry
-                            }
-                        },
-                        None => None
-                    },
-                    None => version  // No filehost information provided, do not filter
-                }
+        let row = cursor.deserialize_current()?;
+        let tuuid = row.get_str("tuuid").unwrap_or("UNKNOWN").to_string();
+        let row: CompleteFileRow = match convertir_bson_deserializable(row) {
+            Ok(inner) => inner,
+            Err(e) => {
+                warn!("get_complete_files Deserialization error on tuuid {}: {:?}", tuuid, e);
+                continue    // Skip this entry
             }
-            None => None
         };
+        
+        let file = row.fichierrep;
+        let version = row.current_version;
 
         // Attempt a lease on the file
-        if lease_file(middleware, file.user_id, file.tuuid, borrower, expiry).await? {
+        if lease_file(middleware, file.user_id.as_str(), file.tuuid.as_str(), borrower, expiry).await? {
             // Add the file to leases
             let cuuids = match file.path_cuuids {
                 None => None,
@@ -668,6 +672,8 @@ where M: MongoDao + GenerateurMessages
             break
         }
     }
+
+    info!("lease_batch_fichiersrep Batch for {} ready: {} leases", borrower, leases.len());
 
     if leases.len() > 0 {
         info!("lease_batch_fichiersrep Fetching decryption keys for {} leases for borrower {}", leases.len(), borrower);

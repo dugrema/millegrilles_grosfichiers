@@ -35,7 +35,7 @@ use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
 use millegrilles_common_rust::mongo_dao::{opt_chrono_datetime_as_bson_datetime, map_chrono_datetime_as_bson_datetime};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
-use crate::data_structs::{AudioDetail, MediaOwnedRow, ResponseVersionCourante, SubtitleDetail, VideoDetail};
+use crate::data_structs::{AudioDetail, CompleteFileRow, MediaOwnedRow, ResponseVersionCourante, SubtitleDetail, VideoDetail};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::traitement_index::{ParametresGetClesStream, ParametresGetPermission, ParametresRecherche, ResultatHits, ResultatHitsDetail};
@@ -456,13 +456,6 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
     debug!("requete_documents_par_tuuid Reponse {:?}", serde_json::to_string(&reponse)?);
 
     Ok(Some(middleware.build_reponse(&reponse)?.0))
-}
-
-#[derive(Deserialize)]
-struct CompleteFileRow {
-    fichierrep: NodeFichierRepOwned,
-    current_version: Option<NodeFichierVersionOwned>,
-    media: Option<MediaOwnedRow>
 }
 
 /// Fetches complete file content from fichierrep, versions and media. Supports paging.

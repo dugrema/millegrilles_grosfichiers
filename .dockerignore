@@ -1,6 +1,10 @@
 millegrilles_common_rust/
 src/
-target/debug
+target/debug/.fingerprint
+target/debug/build
+target/debug/deps
+target/debug/examples
+target/debug/incremental
 target/release/.fingerprint
 target/release/build
 target/release/deps

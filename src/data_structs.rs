@@ -6,6 +6,7 @@ use millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datet
 use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::mapstringepochseconds;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{FormatChiffrage, optionformatchiffragestr};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
+use crate::transactions::{NodeFichierRepOwned, NodeFichierVersionOwned};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MediaOwnedRow {
@@ -165,4 +166,11 @@ pub struct ResponseVersionCourante {
     pub nonce: Option<String>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub verification: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct CompleteFileRow {
+    pub fichierrep: NodeFichierRepOwned,
+    pub current_version: Option<NodeFichierVersionOwned>,
+    pub media: Option<MediaOwnedRow>
 }
