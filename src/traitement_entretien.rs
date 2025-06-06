@@ -122,12 +122,17 @@ where M: GenerateurMessages + MongoDao
 
     debug!("verifier_visites_nouvelles Verifier nouveaux (visites.nouveau, epoch {} et plus recent)", expiration);
 
+    // Cleanup of all expired entries
+    let collection_versions = middleware.get_collection_typed::<FuuidReclamesRow>(NOM_COLLECTION_VERSIONS)?;
+    let filtre_expire = doc!{"visites.nouveau": {"$lt": expiration}};
+    let ops = doc!{"$unset": {"visites.nouveau": true}, "$currentDate": {CHAMP_MODIFICATION: true}};
+    collection_versions.update_many(filtre_expire, ops, None).await?;
+    
     let filtre = doc!{
         "visites.nouveau": {"$gte": expiration},
         "tuuids.0": {"$exists": true},  // Check if at least one tuuid is linked (means not deleted)
     };
 
-    let collection_versions = middleware.get_collection_typed::<FuuidReclamesRow>(NOM_COLLECTION_VERSIONS)?;
     let options = FindOptions::builder()
         .limit(VISIT_BATCH_SIZE as i64)
         .hint(Hint::Name("last_visits".to_string()))  // Sorts by last_visit ASC

@@ -733,7 +733,7 @@ where M: MiddlewareMessages + BackupStarter + MongoDao
     }
 
     // Check if new files have been transferred to filehosts - this complements the newFuuid event.
-    {
+    if minutes % 6 == 0 {
         info!("reclamer_fichiers for new files STARTING");
         if let Err(e) = reclamer_fichiers(middleware, gestionnaire, true).await {
             error!("reclamer_fichiers Error: {:?}", e);
