@@ -233,6 +233,7 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         COMMANDE_COMPLETER_PREVIEWS,
 
         // media
+        COMMAND_LEASE_FOR_IMAGE,
         COMMANDE_JOB_GET_KEY,
         TRANSACTION_ASSOCIER_CONVERSIONS,
         TRANSACTION_ASSOCIER_VIDEO,
@@ -253,7 +254,7 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         TRANSACTION_CONFIRMER_FICHIER_INDEXE,
         COMMAND_VISITS,
         COMMAND_CLAIM_ALL_FILES,
-        COMMAND_LEASE_FOR_IMAGE,
+        // COMMAND_LEASE_FOR_IMAGE,
         COMMAND_LEASE_FOR_INDEX,
         COMMAND_CONFIRM_INDEX,
         COMMAND_LEASE_FOR_RAG,
