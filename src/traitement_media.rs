@@ -381,16 +381,12 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         message_ref.contenu()?.deserialize()?
     };
 
-    if ! m.certificat.verifier_roles(vec![RolesCertificats::Media])? && m.certificat.verifier_exchanges(vec![Securite::L3Protege])? {
-        Err(format!("traitement_media.commande_supprimer_job_image_v2 Certificat doit avoir L3Protege et role media"))?;
+    if ! m.certificat.verifier_roles(vec![RolesCertificats::Media])? && m.certificat.verifier_exchanges(vec![Securite::L2Prive])? {
+        Err(format!("traitement_media.commande_supprimer_job_image_v2 Certificat doit avoir L2Prive et role media"))?;
     }
 
     debug!("commande_supprimer_job_image_v2 Supprimer job fuuid : {:?}", commande.fuuid);
     sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
-
-    // let filtre = doc! {"job_id": commande.job_id};
-    // let collection = middleware.get_collection(NOM_COLLECTION_IMAGES_JOBS)?;
-    // collection.delete_one_with_session(filtre, None, session).await?;
 
     // Remove lease
     let lease_collection = middleware.get_collection(NOM_COLLECTION_JOBS_VERSIONS_LEASES)?;
@@ -559,16 +555,16 @@ pub async fn set_flag_video_traite<M,S>(middleware: &M, tuuid_in: Option<S>, fuu
     Ok(())
 }
 
-pub async fn sauvegarder_job_images<M>(middleware: &M, job: &BackgroundJob, session: &mut ClientSession) -> Result<Option<BackgroundJob>, CommonError>
-where M: GenerateurMessages + MongoDao
-{
-    let mimetype = job.mimetype.as_str();
-    if job_image_supportee(mimetype) {
-        Ok(Some(sauvegarder_job(middleware, job, None, NOM_COLLECTION_IMAGES_JOBS, "media", "processImage", session).await?))
-    } else {
-        Ok(None)
-    }
-}
+// pub async fn sauvegarder_job_images<M>(middleware: &M, job: &BackgroundJob, session: &mut ClientSession) -> Result<Option<BackgroundJob>, CommonError>
+// where M: GenerateurMessages + MongoDao
+// {
+//     let mimetype = job.mimetype.as_str();
+//     if job_image_supportee(mimetype) {
+//         Ok(Some(sauvegarder_job(middleware, job, None, NOM_COLLECTION_IMAGES_JOBS, "media", "processImage", session).await?))
+//     } else {
+//         Ok(None)
+//     }
+// }
 
 pub async fn sauvegarder_job_video<M>(middleware: &M, job: &BackgroundJob, session: &mut ClientSession) -> Result<Option<BackgroundJob>, CommonError>
 where M: GenerateurMessages + MongoDao
@@ -586,7 +582,7 @@ where M: GenerateurMessages, T: Into<JobTrigger<'a>> {
     // let trigger = JobTrigger::from(background_job);
     let trigger = trigger.into();
     if trigger.filehost_ids.is_empty() {
-        let routage = RoutageMessageAction::builder(domain, action, vec![Securite::L3Protege])
+        let routage = RoutageMessageAction::builder(domain, action, vec![Securite::L2Prive])
             .blocking(false)
             .build();
         if let Err(e) = middleware.transmettre_commande(routage, &trigger).await {
@@ -594,7 +590,7 @@ where M: GenerateurMessages, T: Into<JobTrigger<'a>> {
         }
     } else {
         for filehost_id in trigger.filehost_ids {
-            let routage = RoutageMessageAction::builder(domain, action, vec![Securite::L3Protege])
+            let routage = RoutageMessageAction::builder(domain, action, vec![Securite::L2Prive])
                 .partition(filehost_id)
                 .blocking(false)
                 .build();

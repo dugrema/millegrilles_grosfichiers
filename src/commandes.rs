@@ -38,9 +38,9 @@ use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{ContactRow, mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_tuuids, verifier_acces_usager_media};
 use crate::traitement_entretien::{claim_all_files, verifier_visites_topologies, RequeteGetVisitesFuuidsResponse};
-use crate::traitement_index::{lease_batch_fichiersrep, lease_batch_fichiersversion, reset_flag_indexe, sauvegarder_job_index, set_flag_index_traite};
+use crate::traitement_index::{lease_batch_fichiersrep, lease_batch_fichiersversion, reset_flag_indexe, set_flag_index_traite};
 use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
-use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_images, sauvegarder_job_video, set_flag_image_traitee, set_flag_video_traite};
+use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_video, set_flag_image_traitee, set_flag_video_traite};
 use crate::transactions::*;
 
 const REQUETE_MAITREDESCLES_VERIFIER_PREUVE: &str = "verifierPreuve";
@@ -103,7 +103,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         COMMAND_CLAIM_ALL_FILES => command_claim_all_files(middleware, m).await,
 
         COMMANDE_JOB_GET_KEY => commande_get_job_key(middleware, m, &mut session).await,
-        COMMANDE_COMPLETER_PREVIEWS => commande_completer_previews(middleware, m, &mut session).await,
+        // COMMANDE_COMPLETER_PREVIEWS => commande_completer_previews(middleware, m, &mut session).await,
         TRANSACTION_IMAGE_SUPPRIMER_JOB_V2 => commande_supprimer_job_image_v2(middleware, m, gestionnaire, &mut session).await,
 
         // Video
@@ -416,16 +416,16 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, g
 
     // Declencher indexation
     let tuuid = &message_owned.id;
-    let metadata = commande.metadata;
-    if metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
-        let user_id = user_id.as_str();
-        let cle_id = metadata.cle_id.expect("cle_id");
-        let format = metadata.format.expect("format");
-        let nonce = metadata.nonce.expect("nonce");
-        let filehost_ids: Vec<&str> = Vec::new();
-        let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, "", &filehost_ids, cle_id, format, nonce);
-        sauvegarder_job_index(middleware, &job, session).await?;
-    }
+    // let metadata = commande.metadata;
+    // if metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
+    //     let user_id = user_id.as_str();
+    //     let cle_id = metadata.cle_id.expect("cle_id");
+    //     let format = metadata.format.expect("format");
+    //     let nonce = metadata.nonce.expect("nonce");
+    //     let filehost_ids: Vec<&str> = Vec::new();
+    //     let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, "", &filehost_ids, cle_id, format, nonce);
+    //     sauvegarder_job_index(middleware, &job, session).await?;
+    // }
 
     // Emettre fichier pour que tous les clients recoivent la mise a jour
     emettre_evenement_maj_collection(middleware, gestionnaire, &tuuid, &user_id, session).await?;
@@ -452,20 +452,13 @@ async fn commande_associer_conversions<M>(middleware: &M, m: MessageValide, gest
         message_ref.contenu()?.deserialize()?
     };
 
-    if ! m.certificat.verifier_exchanges(vec![L4Secure])? {
-        Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas L4Secure) pour message {:?}", m.type_message))?
-    }
-
-    // Autorisation - doit etre signe par media
+    // Autorisation - doit etre signe par media/2.prive
     if ! m.certificat.verifier_roles(vec![RolesCertificats::Media])? {
-        Err(format!("grosfichiers.commande_associer_conversions: Autorisation invalide (pas media) pour message {:?}", m.type_message))?
+        Err(format!("commande_associer_conversions: Autorisation invalide (pas media) pour message {:?}", m.type_message))?
     }
-
-    // if commande.tuuid.is_none() {
-    //     Err(format!("grosfichiers.commande_associer_conversions: Tuuid obligatoire depuis version 2024.9 {:?}", m.type_message))?
-    // }
-    // let tuuid = commande.tuuid.expect("tuuid");
-    // let user_id = commande.user_id;
+    if ! m.certificat.verifier_exchanges(vec![L2Prive])? {
+        Err(format!("commande_associer_conversions: Autorisation invalide (pas L4Secure) pour message {:?}", m.type_message))?
+    }
 
     // Traiter la transaction
     let response = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
@@ -528,12 +521,14 @@ async fn commande_associer_video<M>(middleware: &M, m: MessageValide, gestionnai
         let message_ref = m.message.parse()?;
         message_ref.contenu()?.deserialize()?
     };
-    // let commande: TransactionAssocierVideo = m.message.get_msg().map_contenu()?;
     debug!("Commande commande_associer_video versions parsed : {:?}", commande);
 
     // Autorisation
+    if ! m.certificat.verifier_roles(vec![RolesCertificats::Media])? {
+        Err(format!("commande_associer_video: Autorisation invalide (pas media) pour message {:?}", m.type_message))?
+    }
     if ! m.certificat.verifier_exchanges(vec![L2Prive])? {
-        Err(format!("grosfichiers.commande_associer_video: Autorisation invalide pour message {:?}", m.type_message))?
+        Err(format!("commande_associer_video: Autorisation invalide pour message {:?}", m.type_message))?
     }
 
     let user_id = m.certificat.get_user_id()?;
@@ -1650,17 +1645,17 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestio
 
     // Declencher indexation
     let tuuid = &commande.tuuid;
-    if let Some(metadata) = commande.metadata {
-        if metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
-            let user_id = user_id.as_str();
-            let cle_id = metadata.cle_id.expect("cle_id");
-            let format = metadata.format.expect("format");
-            let nonce = metadata.nonce.expect("nonce");
-            let filehost_ids: Vec<&str> = Vec::new();
-            let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, "", &filehost_ids, cle_id, format, nonce);
-            sauvegarder_job_index(middleware, &job, session).await?;
-        }
-    }
+    // if let Some(metadata) = commande.metadata {
+    //     if metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
+    //         let user_id = user_id.as_str();
+    //         let cle_id = metadata.cle_id.expect("cle_id");
+    //         let format = metadata.format.expect("format");
+    //         let nonce = metadata.nonce.expect("nonce");
+    //         let filehost_ids: Vec<&str> = Vec::new();
+    //         let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, "", &filehost_ids, cle_id, format, nonce);
+    //         sauvegarder_job_index(middleware, &job, session).await?;
+    //     }
+    // }
 
     let filtre = doc! { CHAMP_TUUID: tuuid };
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
@@ -1876,80 +1871,80 @@ struct ReponseCommandeReindexer {
     ok: bool,
 }
 
-async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
-{
-    debug!("commande_completer_previews Consommer commande : {:?}", & m.type_message);
-    let commande: CommandeCompleterPreviews = {
-        let message_ref = m.message.parse()?;
-        message_ref.contenu()?.deserialize()?
-    };
-
-    // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
-    // Verifier si on a un certificat delegation globale ou prive
-    let user_id = match m.certificat.get_user_id()? {
-        Some(inner) => inner,
-        None => {
-            warn!("commande_completer_previews User_id n'est pas fourni, commande refusee");
-            // let reponse = middleware.formatter_reponse(json!({"ok": false, "err": "Acces refuse (user_id)"}), None)?;
-            // return Ok(Some(reponse))
-            return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (user_id)"))?))
-        }
-    };
-
-    // Parcourir tous les fuuids demandes pour le user_id
-    let filtre = match commande.fuuids {
-        Some(fuuids) => {
-            doc! {CHAMP_FUUID: {"$in": fuuids}}
-        },
-        None => {
-            warn!("commande_completer_previews Aucuns fuuids, pas d'effet.");
-            // let reponse = middleware.formatter_reponse(json!({"ok": true, "message": "Aucun effet (pas de fuuids fournis)"}), None)?;
-            // return Ok(Some(reponse))
-            return Ok(Some(middleware.reponse_err(None, None, Some("Aucun effet (pas de fuuids fournis)"))?))
-        }
-    };
-
-    let collection_reps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
-
-    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
-    let mut curseur = collection_versions.find_with_session(filtre, None, session).await?;
-    while curseur.advance(session).await? {
-        let fichier_version = match curseur.deserialize_current() {
-            Ok(inner) => inner,
-            Err(e) => {
-                error!("commande_completer_previews Erreur mapping fichier version, SKIP");
-                continue
-            }
-        };
-
-        let fuuid = fichier_version.fuuid;
-        let mimetype= fichier_version.mimetype;
-
-        let filtre_rep = doc!{"fuuids_versions": fuuid, "user_id": &user_id};
-        let file_rep = match collection_reps.find_one_with_session(filtre_rep, None, session).await? {
-            Some(inner) => inner,
-            None => {
-                info!("No matching file_rep for fuuid:{}/user_id:{} - SKIP", fuuid, user_id);
-                continue
-            }
-        };
-        let tuuid = file_rep.tuuid;
-
-        if fichier_version.cle_id.is_some() && fichier_version.format.is_some() && fichier_version.nonce.is_some() {
-            let cle_id = fichier_version.cle_id.expect("cle_id");
-            let format: &str = fichier_version.format.expect("format").into();
-            let nonce = fichier_version.nonce.expect("nonce");
-            let filehost_ids: Vec<&String> = fichier_version.visites.keys().collect();
-            let job = BackgroundJob::new(tuuid, fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
-            sauvegarder_job_images(middleware, &job, session).await?;
-        }
-    }
-
-    // Reponse generer preview
-    Ok(Some(middleware.reponse_ok(None, None)?))
-}
+// async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
+//     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+//     where M: GenerateurMessages + MongoDao + ValidateurX509,
+// {
+//     debug!("commande_completer_previews Consommer commande : {:?}", & m.type_message);
+//     let commande: CommandeCompleterPreviews = {
+//         let message_ref = m.message.parse()?;
+//         message_ref.contenu()?.deserialize()?
+//     };
+// 
+//     // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
+//     // Verifier si on a un certificat delegation globale ou prive
+//     let user_id = match m.certificat.get_user_id()? {
+//         Some(inner) => inner,
+//         None => {
+//             warn!("commande_completer_previews User_id n'est pas fourni, commande refusee");
+//             // let reponse = middleware.formatter_reponse(json!({"ok": false, "err": "Acces refuse (user_id)"}), None)?;
+//             // return Ok(Some(reponse))
+//             return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (user_id)"))?))
+//         }
+//     };
+// 
+//     // Parcourir tous les fuuids demandes pour le user_id
+//     let filtre = match commande.fuuids {
+//         Some(fuuids) => {
+//             doc! {CHAMP_FUUID: {"$in": fuuids}}
+//         },
+//         None => {
+//             warn!("commande_completer_previews Aucuns fuuids, pas d'effet.");
+//             // let reponse = middleware.formatter_reponse(json!({"ok": true, "message": "Aucun effet (pas de fuuids fournis)"}), None)?;
+//             // return Ok(Some(reponse))
+//             return Ok(Some(middleware.reponse_err(None, None, Some("Aucun effet (pas de fuuids fournis)"))?))
+//         }
+//     };
+// 
+//     let collection_reps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+// 
+//     let collection_versions = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
+//     let mut curseur = collection_versions.find_with_session(filtre, None, session).await?;
+//     while curseur.advance(session).await? {
+//         let fichier_version = match curseur.deserialize_current() {
+//             Ok(inner) => inner,
+//             Err(e) => {
+//                 error!("commande_completer_previews Erreur mapping fichier version, SKIP");
+//                 continue
+//             }
+//         };
+// 
+//         let fuuid = fichier_version.fuuid;
+//         let mimetype= fichier_version.mimetype;
+// 
+//         let filtre_rep = doc!{"fuuids_versions": fuuid, "user_id": &user_id};
+//         let file_rep = match collection_reps.find_one_with_session(filtre_rep, None, session).await? {
+//             Some(inner) => inner,
+//             None => {
+//                 info!("No matching file_rep for fuuid:{}/user_id:{} - SKIP", fuuid, user_id);
+//                 continue
+//             }
+//         };
+//         let tuuid = file_rep.tuuid;
+// 
+//         if fichier_version.cle_id.is_some() && fichier_version.format.is_some() && fichier_version.nonce.is_some() {
+//             let cle_id = fichier_version.cle_id.expect("cle_id");
+//             let format: &str = fichier_version.format.expect("format").into();
+//             let nonce = fichier_version.nonce.expect("nonce");
+//             let filehost_ids: Vec<&String> = fichier_version.visites.keys().collect();
+//             let job = BackgroundJob::new(tuuid, fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
+//             sauvegarder_job_images(middleware, &job, session).await?;
+//         }
+//     }
+// 
+//     // Reponse generer preview
+//     Ok(Some(middleware.reponse_ok(None, None)?))
+// }
 
 #[derive(Clone, Deserialize)]
 struct RowTuuid {
@@ -2599,10 +2594,11 @@ async fn commande_get_job_key<M>(middleware: &M, m: MessageValide, session: &mut
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
+    // Supported for Media/2.prive and SolrRelai/3.protege
     if ! m.certificat.verifier_roles(vec![RolesCertificats::Media, RolesCertificats::SolrRelai])? {
         return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access denied"))?))
     }
-    if ! m.certificat.verifier_exchanges(vec![Securite::L3Protege])? {
+    if ! m.certificat.verifier_exchanges(vec![Securite::L2Prive, Securite::L3Protege])? {
         return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access denied"))?))
     }
 
@@ -2612,9 +2608,9 @@ async fn commande_get_job_key<M>(middleware: &M, m: MessageValide, session: &mut
     };
 
     let (collection_name, timeout) = match commande.queue.as_str() {
-        "image" => (NOM_COLLECTION_IMAGES_JOBS, 180),
+        // "image" => (NOM_COLLECTION_IMAGES_JOBS, 180),
         "video" => (NOM_COLLECTION_VIDEO_JOBS, 600),
-        "index" => (NOM_COLLECTION_INDEXATION_JOBS, 180),
+        // "index" => (NOM_COLLECTION_INDEXATION_JOBS, 180),
         _ => return Ok(Some(middleware.reponse_err(Some(2), None, Some("Unsupported processing queue"))?))
     };
 

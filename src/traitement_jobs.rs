@@ -357,133 +357,133 @@ struct MissingJobIndexMapping {
     jobs: Vec<BackgroundJob>,
 }
 
-/// Create missing jobs for all entries not already indexed.
-pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), CommonError>
-    where M: MongoDao + GenerateurMessages
-{
-    let collection_reps = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(NOM_COLLECTION_INDEXATION_JOBS)?;
-
-    // Remove all file indexing jobs with empty filehosts ([]). They will get recreated. Ignore directories (fuuid is null).
-    let filtre_empty = doc!{"filehost_ids.0": {"$exists": false}, "fuuid": {"$exists": true}};
-    collection_jobs.delete_many(filtre_empty, None).await?;
-
-    let pipeline = vec![
-        doc! { "$match": {CHAMP_SUPPRIME: false, CHAMP_FLAG_INDEX: false} },
-        doc! { "$replaceRoot": {"newRoot": {"_id": "$tuuid", "fichierrep": "$$ROOT"}}},
-        doc! { "$lookup": {
-            "from": NOM_COLLECTION_INDEXATION_JOBS,
-            "localField": "fichierrep.tuuid",
-            "foreignField": "tuuid",
-            "as": "jobs",
-        }},
-        // Filter out files that already have a job
-        doc! { "$match": {"jobs.0": {"$exists": false} } },
-        // Get version when present
-        doc! { "$lookup": {
-            "from": NOM_COLLECTION_VERSIONS,
-            "localField": "fichierrep.fuuids_versions",
-            "foreignField": "fuuid",
-            "as": "versions",
-        }},
-    ];
-    debug!("create_missing_jobs_indexing Pipeline: {:?}", pipeline);
-
-    let mut batch = Vec::with_capacity(50);
-    let mut cursor = collection_reps.aggregate(pipeline, None).await?;
-    while cursor.advance().await? {
-        let row = cursor.deserialize_current()?;
-        let mut row: MissingJobIndexMapping = convertir_bson_deserializable(row)?;
-        // debug!("Mapping job: {:?}", row);
-        let row_reps = row.fichierrep;
-        let row_version = row.versions.first();
-
-        let tuuid = row_reps.tuuid.as_str();
-        let user_id = row_reps.user_id.as_str();
-
-        match row_version {
-            Some(fichier_version) => {
-                // This is a file with associated content
-                let fuuid = fichier_version.fuuid.as_str();
-                let mimetype = match row_reps.mimetype {
-                    Some(inner) => inner,
-                    None => fichier_version.mimetype.to_owned()
-                };
-
-                let visites: Vec<&String> = fichier_version.visites.keys().collect();
-                // Ensure the "nouveau" visit is not counted
-                let visites = visites.into_iter().filter(|v| v.as_str() != "nouveau").collect();
-
-                // File
-                if fichier_version.cle_id.is_some() && fichier_version.format.is_some() && fichier_version.nonce.is_some() {
-                    // Current format with cle_id directly available
-                    let cle_id = fichier_version.cle_id.as_ref().expect("cle_id").to_owned();
-                    let format: &str = fichier_version.format.clone().expect("format").into();
-                    let nonce = fichier_version.nonce.as_ref().expect("nonce").to_owned();
-
-                    let mut job = BackgroundJob::new(tuuid, fuuid, mimetype, &visites, cle_id, format, nonce);
-                    job.user_id = Some(user_id.to_string());
-                    batch.push(job);
-                } else {
-                    // Old format. The keymaster has the key where cle_id == fuuid.
-                    let cle_id = fuuid;
-
-                    // Values for format and header (nonce) are available directly from the key.
-                    let mut key_information = get_decrypted_keys(middleware, vec![cle_id.to_owned()]).await?;
-                    if key_information.len() == 1 {
-                        let key = key_information.pop().expect("pop key_information");
-                        if key.format.is_some() && key.nonce.is_some() {
-                            debug!("Cle_id {} information recovered successfully from keymaster", cle_id);
-                            let format: &str = key.format.expect("format").into();
-                            let nonce = key.nonce.expect("nonce");
-                            let job = BackgroundJob::new_index(tuuid, Some(fuuid), user_id, mimetype, &visites, cle_id, format, nonce);
-                            batch.push(job);
-                        }
-                    }
-                }
-            }
-            None => {
-                // Directory/Collection
-                let metadata = row_reps.metadata;
-                if metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
-                    let cle_id = metadata.cle_id.expect("cle_id");
-                    let format = metadata.format.expect("format");
-                    let nonce = metadata.nonce.expect("nonce");
-                    let mimetype = row_reps.mimetype.unwrap_or_else(|| "application/octet-stream".to_string());
-                    let visites: Vec<&String> = vec![];
-                    let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, mimetype, &visites, cle_id, format, nonce);
-                    batch.push(job);
-                } else if metadata.format.is_some() && metadata.header.is_some() && metadata.ref_hachage_bytes.is_some() {
-                    // Old format. The keymaster has the key where cle_id == ref_hachage_bytes.
-                    let cle_id = metadata.ref_hachage_bytes.expect("ref_hachage_bytes");
-                    let format = metadata.format.expect("format");
-                    let header = metadata.header.expect("header");
-                    let nonce = &header[1..]; // Remove multibase marker
-                    let mimetype = row_reps.mimetype.unwrap_or_else(|| "application/octet-stream".to_string());
-                    let visites: Vec<&String> = vec![];
-                    let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, mimetype, &visites, cle_id, format, nonce);
-                    batch.push(job);
-                }
-            }
-        }
-
-        if batch.len() >= 50 {
-            // Save batch to database
-            debug!("Saving batch of index jobs");
-            collection_jobs.insert_many(&batch, None).await?;
-            batch.clear();
-        }
-    }
-
-    if batch.len() > 0 {
-        // Save last batch to database
-        debug!("Saving last batch of {} index jobs", batch.len());
-        collection_jobs.insert_many(batch, None).await?;
-        batch = Vec::new();
-    }
-
-    Ok(())
-}
+// /// Create missing jobs for all entries not already indexed.
+// pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), CommonError>
+//     where M: MongoDao + GenerateurMessages
+// {
+//     let collection_reps = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+//     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(NOM_COLLECTION_INDEXATION_JOBS)?;
+// 
+//     // Remove all file indexing jobs with empty filehosts ([]). They will get recreated. Ignore directories (fuuid is null).
+//     let filtre_empty = doc!{"filehost_ids.0": {"$exists": false}, "fuuid": {"$exists": true}};
+//     collection_jobs.delete_many(filtre_empty, None).await?;
+// 
+//     let pipeline = vec![
+//         doc! { "$match": {CHAMP_SUPPRIME: false, CHAMP_FLAG_INDEX: false} },
+//         doc! { "$replaceRoot": {"newRoot": {"_id": "$tuuid", "fichierrep": "$$ROOT"}}},
+//         doc! { "$lookup": {
+//             "from": NOM_COLLECTION_INDEXATION_JOBS,
+//             "localField": "fichierrep.tuuid",
+//             "foreignField": "tuuid",
+//             "as": "jobs",
+//         }},
+//         // Filter out files that already have a job
+//         doc! { "$match": {"jobs.0": {"$exists": false} } },
+//         // Get version when present
+//         doc! { "$lookup": {
+//             "from": NOM_COLLECTION_VERSIONS,
+//             "localField": "fichierrep.fuuids_versions",
+//             "foreignField": "fuuid",
+//             "as": "versions",
+//         }},
+//     ];
+//     debug!("create_missing_jobs_indexing Pipeline: {:?}", pipeline);
+// 
+//     let mut batch = Vec::with_capacity(50);
+//     let mut cursor = collection_reps.aggregate(pipeline, None).await?;
+//     while cursor.advance().await? {
+//         let row = cursor.deserialize_current()?;
+//         let mut row: MissingJobIndexMapping = convertir_bson_deserializable(row)?;
+//         // debug!("Mapping job: {:?}", row);
+//         let row_reps = row.fichierrep;
+//         let row_version = row.versions.first();
+// 
+//         let tuuid = row_reps.tuuid.as_str();
+//         let user_id = row_reps.user_id.as_str();
+// 
+//         match row_version {
+//             Some(fichier_version) => {
+//                 // This is a file with associated content
+//                 let fuuid = fichier_version.fuuid.as_str();
+//                 let mimetype = match row_reps.mimetype {
+//                     Some(inner) => inner,
+//                     None => fichier_version.mimetype.to_owned()
+//                 };
+// 
+//                 let visites: Vec<&String> = fichier_version.visites.keys().collect();
+//                 // Ensure the "nouveau" visit is not counted
+//                 let visites = visites.into_iter().filter(|v| v.as_str() != "nouveau").collect();
+// 
+//                 // File
+//                 if fichier_version.cle_id.is_some() && fichier_version.format.is_some() && fichier_version.nonce.is_some() {
+//                     // Current format with cle_id directly available
+//                     let cle_id = fichier_version.cle_id.as_ref().expect("cle_id").to_owned();
+//                     let format: &str = fichier_version.format.clone().expect("format").into();
+//                     let nonce = fichier_version.nonce.as_ref().expect("nonce").to_owned();
+// 
+//                     let mut job = BackgroundJob::new(tuuid, fuuid, mimetype, &visites, cle_id, format, nonce);
+//                     job.user_id = Some(user_id.to_string());
+//                     batch.push(job);
+//                 } else {
+//                     // Old format. The keymaster has the key where cle_id == fuuid.
+//                     let cle_id = fuuid;
+// 
+//                     // Values for format and header (nonce) are available directly from the key.
+//                     let mut key_information = get_decrypted_keys(middleware, vec![cle_id.to_owned()]).await?;
+//                     if key_information.len() == 1 {
+//                         let key = key_information.pop().expect("pop key_information");
+//                         if key.format.is_some() && key.nonce.is_some() {
+//                             debug!("Cle_id {} information recovered successfully from keymaster", cle_id);
+//                             let format: &str = key.format.expect("format").into();
+//                             let nonce = key.nonce.expect("nonce");
+//                             let job = BackgroundJob::new_index(tuuid, Some(fuuid), user_id, mimetype, &visites, cle_id, format, nonce);
+//                             batch.push(job);
+//                         }
+//                     }
+//                 }
+//             }
+//             None => {
+//                 // Directory/Collection
+//                 let metadata = row_reps.metadata;
+//                 if metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
+//                     let cle_id = metadata.cle_id.expect("cle_id");
+//                     let format = metadata.format.expect("format");
+//                     let nonce = metadata.nonce.expect("nonce");
+//                     let mimetype = row_reps.mimetype.unwrap_or_else(|| "application/octet-stream".to_string());
+//                     let visites: Vec<&String> = vec![];
+//                     let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, mimetype, &visites, cle_id, format, nonce);
+//                     batch.push(job);
+//                 } else if metadata.format.is_some() && metadata.header.is_some() && metadata.ref_hachage_bytes.is_some() {
+//                     // Old format. The keymaster has the key where cle_id == ref_hachage_bytes.
+//                     let cle_id = metadata.ref_hachage_bytes.expect("ref_hachage_bytes");
+//                     let format = metadata.format.expect("format");
+//                     let header = metadata.header.expect("header");
+//                     let nonce = &header[1..]; // Remove multibase marker
+//                     let mimetype = row_reps.mimetype.unwrap_or_else(|| "application/octet-stream".to_string());
+//                     let visites: Vec<&String> = vec![];
+//                     let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, mimetype, &visites, cle_id, format, nonce);
+//                     batch.push(job);
+//                 }
+//             }
+//         }
+// 
+//         if batch.len() >= 50 {
+//             // Save batch to database
+//             debug!("Saving batch of index jobs");
+//             collection_jobs.insert_many(&batch, None).await?;
+//             batch.clear();
+//         }
+//     }
+// 
+//     if batch.len() > 0 {
+//         // Save last batch to database
+//         debug!("Saving last batch of {} index jobs", batch.len());
+//         collection_jobs.insert_many(batch, None).await?;
+//         batch = Vec::new();
+//     }
+// 
+//     Ok(())
+// }
 
 #[derive(Deserialize, Debug)]
 struct MissingMediaJobMapping {

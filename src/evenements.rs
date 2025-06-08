@@ -23,13 +23,12 @@ use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use crate::domain_manager::GrosFichiersDomainManager;
-// use crate::grosfichiers::{emettre_evenement_contenu_collection, emettre_evenement_maj_fichier, EvenementContenuCollection};
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::mapper_fichier_db;
-use crate::traitement_index::{entretien_supprimer_fichiersrep, sauvegarder_job_index};
+use crate::traitement_index::entretien_supprimer_fichiersrep;
 use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams};
-use crate::traitement_media::{sauvegarder_job_images, sauvegarder_job_video};
+use crate::traitement_media::sauvegarder_job_video;
 use crate::transactions::{NodeFichierRepOwned, NodeFichierRepRow, NodeFichierVersionRow};
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
@@ -431,10 +430,10 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
             };
 
             if let Some(mut job) = job {
-                if !image_traitee {
-                    // Note : La job est uniquement creee si le format est une image. Exclus les videos.
-                    sauvegarder_job_images(middleware, &job, session).await?;
-                }
+                // if !image_traitee {
+                //     // Note : La job est uniquement creee si le format est une image. Exclus les videos.
+                //     sauvegarder_job_images(middleware, &job, session).await?;
+                // }
 
                 if !video_traite {
                     // Note : La job est uniquement creee si le format est video
@@ -459,11 +458,11 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
                     sauvegarder_job_video(middleware, &job, session).await?;
                 }
 
-                if !rep.flag_index {
-                    let user_id = rep.user_id.clone();
-                    job.user_id = Some(user_id);
-                    sauvegarder_job_index(middleware, &job, session).await?;
-                }
+                // if !rep.flag_index {
+                //     let user_id = rep.user_id.clone();
+                //     job.user_id = Some(user_id);
+                //     sauvegarder_job_index(middleware, &job, session).await?;
+                // }
             }
         }
     }

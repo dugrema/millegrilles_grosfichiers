@@ -231,6 +231,12 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         // COMMANDE_VIDEO_ARRETER_CONVERSION,
         // COMMANDE_VIDEO_GET_JOB,
         COMMANDE_COMPLETER_PREVIEWS,
+
+        // media
+        COMMANDE_JOB_GET_KEY,
+        TRANSACTION_ASSOCIER_CONVERSIONS,
+        TRANSACTION_ASSOCIER_VIDEO,
+        TRANSACTION_IMAGE_SUPPRIMER_JOB_V2,
     ];
     for cmd in commandes_privees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L2Prive});
@@ -239,10 +245,10 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
     let commandes_protegees: Vec<&str> = vec![
         COMMANDE_REINDEXER,
         COMMANDE_GET_CLE_JOB_CONVERSION,
-        COMMANDE_JOB_GET_KEY,
-        TRANSACTION_ASSOCIER_CONVERSIONS,
-        TRANSACTION_ASSOCIER_VIDEO,
-        TRANSACTION_IMAGE_SUPPRIMER_JOB_V2,
+        // COMMANDE_JOB_GET_KEY,
+        // TRANSACTION_ASSOCIER_CONVERSIONS,
+        // TRANSACTION_ASSOCIER_VIDEO,
+        // TRANSACTION_IMAGE_SUPPRIMER_JOB_V2,
         TRANSACTION_VIDEO_SUPPRIMER_JOB_V2,
         TRANSACTION_CONFIRMER_FICHIER_INDEXE,
         COMMAND_VISITS,
@@ -257,7 +263,7 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
     }
 
-    // RK 2.prive
+    // RK 3.protege/4.secure
     let requetes_protegees: Vec<&str> = vec![
         REQUETE_SYNC_COLLECTION,
         REQUETE_SYNC_RECENTS,
@@ -268,15 +274,14 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("requete.{}.{}", DOMAINE_NOM, req), exchange: Securite::L4Secure});
     }
 
+    // Events
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_FICHIERS_SYNCPRET), exchange: Securite::L2Prive});
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_FICHIERS_VISITER_FUUIDS), exchange: Securite::L2Prive});
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_FICHIERS_CONSIGNE), exchange: Securite::L2Prive});
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.*.{}", DOMAINE_MEDIA_NOM, EVENEMENT_TRANSCODAGE_PROGRES), exchange: Securite::L2Prive});
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FICHIERS_NOM, EVENEMENT_FICHIERS_SYNC_PRIMAIRE), exchange: Securite::L2Prive});
-
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", DOMAINE_FILECONTROLER_NOM, EVENEMENT_FILEHOST_NEWFUUID), exchange: Securite::L1Public});
     rk_volatils.push(ConfigRoutingExchange {routing_key: format!("evenement.{}.{}", TOPOLOGIE_NOM_DOMAINE, EVENEMENT_RESET_VISITS_CLAIMS), exchange: Securite::L1Public});
-
 
     let mut queues = Vec::new();
 
