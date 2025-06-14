@@ -1,4 +1,4 @@
-FROM ubuntu as stage1
+FROM ubuntu:24.04 as stage1
 
 ENV APP_FOLDER=/usr/src/app \
     RUST_LOG=warn \
