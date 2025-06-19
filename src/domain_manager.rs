@@ -223,6 +223,7 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         TRANSACTION_PARTAGER_COLLECTIONS,
         TRANSACTION_SUPPRIMER_PARTAGE_USAGER,
         TRANSACTION_SUPPRIMER_ORPHELINS,
+        TRANSACTION_UPDATE_FILE_TEXT_CONTENT,
 
         COMMANDE_RECLAMER_FUUIDS,
 
@@ -683,8 +684,6 @@ where M: MongoDao + ConfigMessages
         Some(options_unique_job_leases)
     ).await?;
 
-
-
     let options_unique_job_version_leases = IndexOptions {nom_index: Some("lease_id".to_string()), unique: true};
     let champs_index_job_version_leases = vec!(
         ChampIndex {nom_champ: String::from(CHAMP_FUUID), direction: 1},
@@ -695,6 +694,18 @@ where M: MongoDao + ConfigMessages
         NOM_COLLECTION_JOBS_VERSIONS_LEASES,
         champs_index_job_version_leases,
         Some(options_unique_job_version_leases)
+    ).await?;
+
+    let options_unique_file_comments = IndexOptions {nom_index: Some("comment_id".to_string()), unique: true};
+    let champs_index_file_comments = vec!(
+        ChampIndex {nom_champ: String::from(CHAMP_TUUID), direction: 1},
+        ChampIndex {nom_champ: String::from("comment_id"), direction: 1},
+    );
+    middleware.create_index(
+        middleware,
+        NOM_COLLECTION_FILE_COMMENTS,
+        champs_index_file_comments,
+        Some(options_unique_file_comments)
     ).await?;
 
     Ok(())

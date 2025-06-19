@@ -32,10 +32,11 @@ use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epochseconds, optionepochseconds};
 use millegrilles_common_rust::mongo_dao::{opt_chrono_datetime_as_bson_datetime, map_chrono_datetime_as_bson_datetime};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
-use crate::data_structs::{AudioDetail, CompleteFileRow, MediaOwnedRow, ResponseVersionCourante, SubtitleDetail, VideoDetail};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
+use crate::data_structs::{AudioDetail, CompleteFileRow, FileComment, MediaOwnedRow, ResponseVersionCourante, SubtitleDetail, VideoDetail};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::traitement_index::{ParametresGetClesStream, ParametresGetPermission, ParametresRecherche, ResultatHits, ResultatHitsDetail};
@@ -293,6 +294,24 @@ struct Favoris {
     // titre: Option<HashMap<String, CommonError>>,
 }
 
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct FileCommentResponse {
+    pub encrypted_data: EncryptedDocument,
+    #[serde(default, with="epochseconds")]
+    pub date: DateTime<Utc>,
+    pub user_id: Option<String>,
+}
+
+impl From<FileComment> for FileCommentResponse {
+    fn from(value: FileComment) -> Self {
+        Self {
+            encrypted_data: value.encrypted_data,
+            date: value.date,
+            user_id: value.user_id,
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 pub struct ReponseFichierRepVersion {
     pub tuuid: String,
@@ -313,6 +332,10 @@ pub struct ReponseFichierRepVersion {
     /// Path des cuuids parents (inverse, parent immediat est index 0)
     #[serde(skip_serializing_if="Option::is_none")]
     pub path_cuuids: Option<Vec<String>>,
+
+    // pub language: Option<String>,
+    pub comments: Option<Vec<FileCommentResponse>>,
+    pub tags: Option<Vec<EncryptedDocument>>,
 
     // Champs recuperes a partir de la version courante
     #[serde(skip_serializing_if="Option::is_none")]
@@ -340,7 +363,6 @@ pub struct ReponseFichierRepVersion {
 
 impl From<NodeFichierRepOwned> for ReponseFichierRepVersion {
     fn from(mut value: NodeFichierRepOwned) -> Self {
-        // value.map_date_modification();
         Self {
             tuuid: value.tuuid,
             user_id: value.user_id,
@@ -351,6 +373,8 @@ impl From<NodeFichierRepOwned> for ReponseFichierRepVersion {
             mimetype: value.mimetype,
             fuuids_versions: value.fuuids_versions,
             path_cuuids: value.path_cuuids,
+            comments: None,
+            tags: None,
             version_courante: None,
             derniere_modification: value.derniere_modification,
             date_creation: value.date_creation,
@@ -498,6 +522,15 @@ async fn get_complete_files<M>(middleware: &M, mut filtre: Document, changed_sin
     }});
     pipeline.push(doc!{"$unset": "versions"});
 
+    // Join comments
+    pipeline.push(doc!{"$lookup": {
+            "from": NOM_COLLECTION_FILE_COMMENTS,
+            "localField": "fichierrep.tuuid",
+            "foreignField": "tuuid",
+            "as": "comments",
+        }}
+    );
+
     if let Some(changed_since) = changed_since {
         // Filter on changed date. Use max value for file between fichierrep and versions collections.
         pipeline.push(doc!{"$addFields": {"changed_since": {"$max": [format!("$fichierrep.{}", CHAMP_MODIFICATION), format!("$current_version.{}", CHAMP_MODIFICATION)]}}});
@@ -543,6 +576,11 @@ async fn get_complete_files<M>(middleware: &M, mut filtre: Document, changed_sin
         };
 
         let mut fichier_rep: ReponseFichierRepVersion = row.fichierrep.into();
+
+        if let Some(comments) = row.comments {
+            let mapped_comments = comments.into_iter().map(|c| c.into()).collect();
+            fichier_rep.comments = Some(mapped_comments);
+        }
 
         if let Some(mut version) = row.current_version {
             // Map the version to response format

@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 
-use crate::data_structs::{ImageDetail, MediaOwnedRow, VideoDetail};
+use crate::data_structs::{FileComment, ImageDetail, MediaOwnedRow, VideoDetail};
 use crate::domain_manager::GrosFichiersDomainManager;
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime;
@@ -29,7 +29,7 @@ use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::{bson, bson::doc};
 use millegrilles_common_rust::{hex, serde_json, serde_json::json};
-
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{verifier_acces_usager_tuuids, ContactRow};
 use crate::traitement_media::{set_flag_image_traitee, set_flag_video_traite};
@@ -61,6 +61,7 @@ pub async fn aiguillage_transaction<M, T>(_gestionnaire: &GrosFichiersDomainMana
         TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, transaction, session).await,
         TRANSACTION_DECRIRE_FICHIER => transaction_decrire_fichier(middleware, transaction, session).await,
         TRANSACTION_DECRIRE_COLLECTION => transaction_decrire_collection(middleware, transaction, session).await,
+        TRANSACTION_UPDATE_FILE_TEXT_CONTENT =>  transaction_update_file_text_content(middleware, transaction, session).await,
 
         // Moving files
         TRANSACTION_DEPLACER_FICHIERS_COLLECTION => transaction_deplacer_fichiers_collection(middleware, transaction, session).await,
@@ -174,6 +175,16 @@ pub struct TransactionSupprimerDocuments {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionChangerFavoris {
     pub favoris: HashMap<String, bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionUpdateFileTextContent {
+    pub tuuid: String,
+    pub file_language: Option<String>,
+    pub tags: Option<EncryptedDocument>,
+    pub comment: Option<EncryptedDocument>,
+    /// Comment_id allows to replace an existing comment
+    pub comment_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -317,8 +328,10 @@ pub struct NodeFichierRepOwned {
     pub supprime: bool,
     pub supprime_indirect: bool,
     pub metadata: DataChiffre,
+
     pub flag_index: bool,
     pub flag_rag: Option<bool>,
+    pub flag_summary: Option<bool>,
 
     // Champs pour type_node Fichier
     pub mimetype: Option<String>,
@@ -329,6 +342,10 @@ pub struct NodeFichierRepOwned {
     /// Path des cuuids parents (inverse, parent immediat est index 0)
     pub path_cuuids: Option<Vec<String>>,
 
+    // pub language: Option<String>,
+    // pub comments: Option<Vec<FileComment>>,
+    // pub tags: Option<Vec<EncryptedDocument>>,
+
     // Mapping date - requis pour sync
     #[serde(default, rename(deserialize="_mg-derniere-modification"), skip_serializing_if = "Option::is_none",
     serialize_with="optionepochseconds::serialize",
@@ -338,7 +355,6 @@ pub struct NodeFichierRepOwned {
         serialize_with="optionepochseconds::serialize",
         deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
     pub date_creation: Option<DateTime<Utc>>,
-
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2681,4 +2697,92 @@ async fn transaction_permanently_delete_files<M>(middleware: &M, transaction: Tr
     }
 
     Ok(None)
+}
+
+async fn transaction_update_file_text_content<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
+                                                 -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao
+{
+    debug!("transaction_update_file_text_content Transaction : {}", transaction.transaction.id);
+    let transaction_mappee: TransactionUpdateFileTextContent = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+
+    let user_id = match transaction.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(format!("transaction_update_file_text_content Missing user_id from certificate for id:{}", transaction.transaction.id))?
+    };
+
+    let tuuid = transaction_mappee.tuuid.as_str();
+
+    // Modifier metadata
+    if let Some(inner) = transaction_mappee.file_language {
+        todo!("Put in versions");
+        // set_ops.insert("language", inner);
+    }
+
+    if let Some(inner) = transaction_mappee.tags {
+        todo!("Where do they go?")
+        // let inner_bson = match bson::to_bson(&inner) {
+        //     Ok(inner) => inner,
+        //     Err(e) => Err(format!("transaction_update_file_text_content Error converting file_language to bson : {:?}", e))?
+        // };
+        // set_ops.insert("tags", inner_bson);
+    }
+
+    if let Some(comment) = transaction_mappee.comment {
+        let collection_comments = middleware.get_collection_typed::<FileComment>(NOM_COLLECTION_FILE_COMMENTS)?;
+        match transaction_mappee.comment_id {
+            Some(comment_id) => {
+                // Update
+                todo!("Update comment");
+            }
+            None => {
+                // Insert
+                let comment_entry = FileComment {
+                    tuuid: tuuid.to_string(),
+                    comment_id: transaction.transaction.id.clone(),
+                    encrypted_data: comment,
+                    date: transaction.transaction.estampille,
+                    user_id: Some(user_id),
+                };
+                collection_comments.insert_one(comment_entry, None).await?;
+            }
+        }
+    }
+
+    // let mut push_to_array_ops = doc!{};
+    //
+    // if let Some(comment) = transaction_mappee.comment {
+    //     let comment_entry = FileComment {
+    //         encrypted_data: comment,
+    //         date: transaction.transaction.estampille,
+    //         user_id: Some(user_id),
+    //     };
+    //     let comment_bson = match bson::to_bson(&comment_entry) {
+    //         Ok(inner) => inner,
+    //         Err(e) => Err(format!("transaction_update_file_text_content Error converting comment to bson : {:?}", e))?
+    //     };
+    //     match transaction_mappee.comment_idx {
+    //         Some(idx) => {
+    //             set_ops.insert(format!("comments.{}", idx), comment_bson);
+    //         }
+    //         None => {
+    //             push_to_array_ops.insert("comments".to_string(), comment_bson);
+    //         }
+    //     }
+    // }
+    //
+    // let mut ops = doc! {
+    //     "$set": set_ops,
+    //     "$currentDate": { CHAMP_MODIFICATION: true }
+    // };
+    // if push_to_array_ops.len() > 0 {
+    //     ops.insert("$push", push_to_array_ops);
+    // }
+    //
+    // let collection = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+    // if let Err(e) = collection.find_one_and_update_with_session(filtre, ops, None, session).await {
+    //     Err(format!("transaction_update_file_text_content Erreur update description : {:?}", e))?
+    // }
+
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }

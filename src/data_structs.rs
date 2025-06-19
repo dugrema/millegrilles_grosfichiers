@@ -5,6 +5,7 @@ use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::mapstringepochseconds;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::{FormatChiffrage, optionformatchiffragestr};
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::optionepochseconds;
 use crate::transactions::{NodeFichierRepOwned, NodeFichierVersionOwned};
 
@@ -172,5 +173,21 @@ pub struct ResponseVersionCourante {
 pub struct CompleteFileRow {
     pub fichierrep: NodeFichierRepOwned,
     pub current_version: Option<NodeFichierVersionOwned>,
-    pub media: Option<MediaOwnedRow>
+    pub media: Option<MediaOwnedRow>,
+    pub comments: Option<Vec<FileComment>>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct FileComment {
+    /// File being referenced
+    pub tuuid: String,
+    /// Unique comment id - comes from transaction id
+    pub comment_id: String,
+    /// Encrypted comment data. Format is dict, e.g. {comment: "My comment"}
+    pub encrypted_data: EncryptedDocument,
+    #[serde(default, with="chrono_datetime_as_bson_datetime")]
+    /// Transaction data
+    pub date: DateTime<Utc>,
+    /// User_id from the transaction certificate. None implies this is a system comment.
+    pub user_id: Option<String>,
 }
