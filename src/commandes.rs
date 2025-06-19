@@ -155,10 +155,10 @@ async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gest
     let cuuid = commande.cuuid.as_str();
 
     // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = match m.certificat.get_user_id()? {
-        Some(inner) => inner,
-        None => Err(CommonError::Str("commandes.commande_nouvelle_version user_id manquant du certificat - SKIP"))?
-    };
+    if m.certificat.get_user_id()?.is_none() {
+        Err(CommonError::Str("commandes.commande_nouvelle_version user_id manquant du certificat - SKIP"))?
+    }
+
     let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
     if role_prive {
         // Ok
@@ -295,7 +295,7 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
     let (flag_media_traite, flag_video_traite) = if changement_media {
         if let Some(mimetype) = commande.mimetype.as_ref() {
             // Ajouter flags media au fichier si approprie
-            let (flag_media_traite, flag_video_traite, _) = get_flags_media(
+            let (flag_media_traite, flag_video_traite, _, flag_summary) = get_flags_media(
                 mimetype.as_str());
             let filtre = doc! {CHAMP_FUUID: &fuuid};
             let ops = doc! {
@@ -303,6 +303,7 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
                     // CHAMP_FLAG_MEDIA: flag_media,
                     CHAMP_FLAG_MEDIA_TRAITE: flag_media_traite,
                     CHAMP_FLAG_VIDEO_TRAITE: flag_video_traite,
+                    CHAMP_FLAG_SUMMARY: flag_summary,
                 },
                 "$currentDate": {CHAMP_MODIFICATION: true}
             };

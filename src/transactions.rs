@@ -331,7 +331,6 @@ pub struct NodeFichierRepOwned {
 
     pub flag_index: bool,
     pub flag_rag: Option<bool>,
-    pub flag_summary: Option<bool>,
 
     // Champs pour type_node Fichier
     pub mimetype: Option<String>,
@@ -402,6 +401,7 @@ pub struct NodeFichierVersionRow<'a> {
     pub flag_media_retry: Option<i32>,
     pub flag_media_traite: bool,
     pub flag_video_traite: bool,
+    pub flag_summary: Option<bool>,
 
     // Information de chiffrage symmetrique (depuis 2024.3.0)
     #[serde(skip_serializing_if="Option::is_none")]
@@ -456,25 +456,29 @@ pub struct NodeFichierVersionOwned {
     pub verification: Option<String>,
 }
 
-pub fn get_flags_media(mimetype: &str) -> (bool, bool, Option<String>) {
+pub fn get_flags_media(mimetype: &str) -> (bool, bool, Option<String>, bool) {
     let mut flag_media_traite = true;
     let mut flag_video_traite = true;
     let mut flag_media = None;
+    let mut flag_summary = true;
 
     // Information optionnelle pour accelerer indexation/traitement media
-    if mimetype.starts_with("image") {
+    if mimetype.starts_with("image/") {
         flag_media_traite = false;
         flag_media = Some("image".to_string());
+        flag_summary = false;
     } else if is_mimetype_video(mimetype) {
-        // flag_media_traite = false;
         flag_media_traite = true;  // Thumbnails generes avec le video depuis 2024.9
         flag_video_traite = false;
         flag_media = Some("video".to_string());
     } else if mimetype == "application/pdf" {
         flag_media_traite = false;
         flag_media = Some("poster".to_string());
+        flag_summary = false;
+    } else if mimetype.starts_with("text/") {
+        flag_summary = true;
     }
-    (flag_media_traite, flag_video_traite, flag_media)
+    (flag_media_traite, flag_video_traite, flag_media, flag_summary)
 }
 
 async fn transaction_nouvelle_version<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
@@ -521,7 +525,7 @@ async fn transaction_nouvelle_version<M>(middleware: &M, transaction: Transactio
 
     // Inserer document de version
     {
-        let (flag_media_traite, flag_video_traite, flag_media) = get_flags_media(transaction_fichier.mimetype.as_str());
+        let (flag_media_traite, flag_video_traite, flag_media, flag_summary) = get_flags_media(transaction_fichier.mimetype.as_str());
 
         let mut visites = HashMap::new();
         visites.insert("nouveau".to_string(), Utc::now());
@@ -543,6 +547,7 @@ async fn transaction_nouvelle_version<M>(middleware: &M, transaction: Transactio
             flag_media_retry: None,
             flag_media_traite,
             flag_video_traite,
+            flag_summary: Some(flag_summary),
             cle_id: transaction_fichier.cle_id.as_ref().map(|x|x.as_str()),
             format: transaction_fichier.format,
             nonce: transaction_fichier.nonce.as_ref().map(|x|x.as_str()),
