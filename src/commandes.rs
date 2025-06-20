@@ -3109,7 +3109,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
 }
 
 /// Lease a batch of files for indexing (AI indexing)
-async fn get_batch_of_fichiersrep_leases<M>(middleware: &M, m: MessageValide, borrower: &str, roles: &Vec<String>, include_media: bool)
+async fn get_batch_of_fichiersrep_leases<M>(middleware: &M, m: MessageValide, borrower: &str, roles: &Vec<String>, include_media: bool, include_comments: bool)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -3132,7 +3132,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
             {borrower: false},
         ]
     };
-    match lease_batch_fichiersrep(middleware, &expiry, borrower, filtre, batch_size, command.filehost_id, include_media).await? {
+    match lease_batch_fichiersrep(middleware, &expiry, borrower, filtre, batch_size, command.filehost_id, include_media, include_comments).await? {
         Some(inner) => {
             // Encrypt response, it contains secret keys
             Ok(Some(middleware.build_reponse_chiffree(inner, &m.certificat)?.0))
@@ -3152,7 +3152,7 @@ async fn command_lease_files_for_indexing<M>(middleware: &M, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_INDEX, &vec![ROLE_SOLR_RELAI.to_string()], false).await
+    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_INDEX, &vec![ROLE_SOLR_RELAI.to_string()], false, true).await
 }
 
 /// Lease a batch of files for RAG (AI indexing)
@@ -3160,14 +3160,14 @@ async fn command_lease_files_for_rag<M>(middleware: &M, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_RAG, &vec![ROLE_OLLAMA_RELAI.to_string()], false).await
+    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_RAG, &vec![ROLE_OLLAMA_RELAI.to_string()], false, false).await
 }
 
 async fn command_lease_files_for_summary<M>(middleware: &M, m: MessageValide)
                                         -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_SUMMARY, &vec![ROLE_OLLAMA_RELAI.to_string()], true).await
+    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_SUMMARY, &vec![ROLE_OLLAMA_RELAI.to_string()], true, false).await
 }
 
 #[derive(Clone, Debug, Deserialize)]

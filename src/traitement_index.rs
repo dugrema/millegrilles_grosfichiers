@@ -30,7 +30,7 @@ use millegrilles_common_rust::tokio::time::timeout;
 use crate::data_structs::{CompleteFileRow, MediaOwnedRow};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
-use crate::requetes::get_file_keys;
+use crate::requetes::{get_file_keys, FileCommentResponse};
 use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job, JobTrigger, reactiver_jobs};
 use crate::transactions::{NodeFichierRepBorrowed, NodeFichierRepOwned, NodeFichierVersionOwned, TransactionSupprimerOrphelins};
 
@@ -595,6 +595,7 @@ pub struct LeaseResponse {
     cuuids: Option<Vec<String>>,
     version: Option<NodeFichierVersionOwned>,  // Option for folders, no file content
     media: Option<MediaOwnedRow>,
+    comments: Option<Vec<FileCommentResponse>>,
 }
 
 #[derive(Serialize)]
@@ -606,7 +607,8 @@ pub struct LeasesResponse {
 
 /// Lease a batch of files based on a FichiersRep filtre.
 pub async fn lease_batch_fichiersrep<M>(middleware: &M, expiry: &DateTime<Utc>, borrower: &str,
-                                        filtre: Document, batch_size: usize, filehost_id: Option<String>, include_media: bool)
+                                        filtre: Document, batch_size: usize, filehost_id: Option<String>,
+                                        include_media: bool, include_comments: bool)
     -> Result<Option<LeasesResponse>, CommonError>
 where M: MongoDao + GenerateurMessages
 {
@@ -649,6 +651,17 @@ where M: MongoDao + GenerateurMessages
         pipeline.push(doc! {"$unset": "medias"})
     }
 
+    if include_comments {
+        // Join media information
+        pipeline.push(doc! {"$lookup": {
+                "from": NOM_COLLECTION_FILE_COMMENTS,
+                "localField": "fichierrep.tuuid",
+                "foreignField": "tuuid",
+                "as": "comments",
+            }}
+        );
+    }
+
     let mut leases = Vec::with_capacity(batch_size);
 
     let mut cursor = collection.aggregate(pipeline, None).await?;
@@ -675,6 +688,13 @@ where M: MongoDao + GenerateurMessages
                     Some(cuuids.into_iter().map(|c| c.to_string()).collect())
                 }
             };
+            let comments = match row.comments {
+                None => None,
+                Some(comments) => {
+                    Some(comments.into_iter().map(|c| c.into()).collect())
+                }
+            };
+            
             leases.push(LeaseResponse {
                 tuuid: file.tuuid.to_string(),
                 user_id: file.user_id.to_string(),
@@ -683,6 +703,7 @@ where M: MongoDao + GenerateurMessages
                 mimetype: match file.mimetype { Some(inner) => Some(inner.to_string()), None => None},
                 version,
                 media: row.media,
+                comments,
             });
         }
 

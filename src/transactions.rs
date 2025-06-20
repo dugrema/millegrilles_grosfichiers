@@ -32,6 +32,7 @@ use millegrilles_common_rust::{hex, serde_json, serde_json::json};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{verifier_acces_usager_tuuids, ContactRow};
+use crate::traitement_index::{reset_flag_indexe, set_flag_index_traite};
 use crate::traitement_media::{set_flag_image_traitee, set_flag_video_traite};
 
 pub async fn aiguillage_transaction<M, T>(_gestionnaire: &GrosFichiersDomainManager, middleware: &M, transaction: T, session: &mut ClientSession)
@@ -2770,12 +2771,20 @@ where M: GenerateurMessages + MongoDao
                     comment_id: transaction.transaction.id.clone(),
                     encrypted_data: comment,
                     date: transaction.transaction.estampille,
-                    user_id: Some(user_id),
+                    user_id: Some(user_id.clone()),
                 };
                 collection_comments.insert_one(comment_entry, None).await?;
             }
         }
     }
+
+    let filtre = doc! {"tuuid": tuuid, "user_id": &user_id};
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let ops = doc! {
+        "$set": {CHAMP_FLAG_INDEX: false},
+        "$currentDate": {CHAMP_MODIFICATION: true},
+    };
+    collection.update_one_with_session(filtre, ops, None, session).await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
@@ -2825,9 +2834,10 @@ where M: GenerateurMessages + MongoDao
         }
     }
 
+    // Set summary flag to true, reset index flag for reindexing with updated content.
     let filtre = doc!{"tuuid": tuuid};
     let ops = doc!{
-        "$set": {CHAMP_FLAG_SUMMARY: true},
+        "$set": {CHAMP_FLAG_SUMMARY: true, CHAMP_FLAG_INDEX: false},
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
     let collection_reps = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
