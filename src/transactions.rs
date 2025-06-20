@@ -62,6 +62,7 @@ pub async fn aiguillage_transaction<M, T>(_gestionnaire: &GrosFichiersDomainMana
         TRANSACTION_DECRIRE_FICHIER => transaction_decrire_fichier(middleware, transaction, session).await,
         TRANSACTION_DECRIRE_COLLECTION => transaction_decrire_collection(middleware, transaction, session).await,
         TRANSACTION_UPDATE_FILE_TEXT_CONTENT =>  transaction_update_file_text_content(middleware, transaction, session).await,
+        TRANSACTION_FILE_SUMMARY => transaction_set_file_summary(middleware, transaction, session).await,
 
         // Moving files
         TRANSACTION_DEPLACER_FICHIERS_COLLECTION => transaction_deplacer_fichiers_collection(middleware, transaction, session).await,
@@ -185,6 +186,19 @@ pub struct TransactionUpdateFileTextContent {
     pub comment: Option<EncryptedDocument>,
     /// Comment_id allows to replace an existing comment
     pub comment_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionFileSummary {
+    pub fuuid: String,
+    /// Tuuid provided only if operation is for a single user
+    pub tuuids: Option<Vec<String>>,
+    /// Detected file language
+    pub file_language: Option<String>,
+    /// Generated tags
+    pub tags: Option<EncryptedDocument>,
+    /// The comment contains the summary
+    pub comment: Option<EncryptedDocument>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2790,4 +2804,70 @@ where M: GenerateurMessages + MongoDao
     // }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
+}
+
+async fn transaction_set_file_summary<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
+                                         -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao
+{
+    debug!("transaction_update_file_text_content Transaction : {}", transaction.transaction.id);
+    let transaction_mappee: TransactionFileSummary = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+
+    let fuuid = transaction_mappee.fuuid.as_str();
+
+    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+
+    // Modifier metadata
+    if let Some(inner) = transaction_mappee.file_language {
+        todo!("Put in versions");
+        // set_ops.insert("language", inner);
+    }
+
+    if let Some(inner) = transaction_mappee.tags {
+        todo!("Where do they go?")
+        // let inner_bson = match bson::to_bson(&inner) {
+        //     Ok(inner) => inner,
+        //     Err(e) => Err(format!("transaction_update_file_text_content Error converting file_language to bson : {:?}", e))?
+        // };
+        // set_ops.insert("tags", inner_bson);
+    }
+
+    if let Some(comment) = transaction_mappee.comment {
+        let tuuids = match transaction_mappee.tuuids {
+            Some(tuuids) => tuuids,
+            None => {
+                // Apply to all tuuids that match the file
+                let filtre = doc!{"fuuid": fuuid};
+                let mut cursor = collection_versions.find(filtre, None).await?;
+                let mut tuuids = Vec::new();
+                while cursor.advance().await? {
+                    let row = cursor.deserialize_current()?;
+                    tuuids.extend(row.tuuids);
+                }
+                tuuids
+            }
+        };
+
+        let collection_comments = middleware.get_collection_typed::<FileComment>(NOM_COLLECTION_FILE_COMMENTS)?;
+        // Insert
+        for tuuid in tuuids {
+            let comment_entry = FileComment {
+                tuuid: tuuid.to_string(),
+                comment_id: transaction.transaction.id.clone(),
+                encrypted_data: comment.clone(),
+                date: transaction.transaction.estampille,
+                user_id: None,
+            };
+            collection_comments.insert_one(comment_entry, None).await?;
+        }
+    }
+
+    let filtre = doc!{"fuuid": fuuid};
+    let ops = doc!{
+        "$set": {CHAMP_FLAG_SUMMARY: true},
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    collection_versions.update_one(filtre, ops, None).await?;
+
+    Ok(None)
 }

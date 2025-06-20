@@ -31,7 +31,7 @@ use millegrilles_common_rust::redis::Client;
 use millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 
-use crate::data_structs::MediaOwnedRow;
+use crate::data_structs::{FileComment, MediaOwnedRow};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, evenement_fichiers_syncpret, EvenementContenuCollection};
 
@@ -119,6 +119,8 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         COMMAND_CONFIRM_INDEX => command_confirm_index(middleware, m).await,
         COMMAND_LEASE_FOR_RAG => command_lease_files_for_rag(middleware, m).await,
         COMMAND_CONFIRM_RAG => command_confirm_rag(middleware, m).await,
+        COMMAND_LEASE_FOR_SUMMARY => command_lease_files_for_summary(middleware, m).await,
+        TRANSACTION_FILE_SUMMARY => command_file_summary(middleware, m, gestionnaire, &mut session).await,
 
         // Partage de collections
         TRANSACTION_AJOUTER_CONTACT_LOCAL => commande_ajouter_contact_local(middleware, m, gestionnaire, &mut session).await,
@@ -3158,7 +3160,14 @@ async fn command_lease_files_for_rag<M>(middleware: &M, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    get_batch_of_fichiersrep_leases(middleware, m, "flag_rag", &vec![ROLE_OLLAMA_RELAI.to_string()]).await
+    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_RAG, &vec![ROLE_OLLAMA_RELAI.to_string()]).await
+}
+
+async fn command_lease_files_for_summary<M>(middleware: &M, m: MessageValide)
+                                        -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    get_batch_of_fichiersversion_leases(middleware, m, CHAMP_FLAG_SUMMARY, &vec![ROLE_OLLAMA_RELAI.to_string()]).await
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -3254,4 +3263,49 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
     }
 
     Ok(resultat)
+}
+
+async fn command_file_summary<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession) -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509,
+{
+    let command: TransactionFileSummary = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
+    let fuuid = command.fuuid.as_str();
+
+    // Authorization : Must be in the list of roles
+    match m.certificat.verifier_roles_string(vec!["ollama_relai".to_string()])? &&
+        m.certificat.verifier_exchanges(vec![Securite::L3Protege])?
+    {
+        true => Ok(()),
+        false => Err(format!("command_file_summary: Invalid authorization {:?}", m.type_message)),
+    }?;
+
+    sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
+
+    // Job done, commit then emit events
+    session.commit_transaction().await?;
+    start_transaction_regular(session).await?;
+
+    // Remove lease
+    let lease_collection = middleware.get_collection(NOM_COLLECTION_JOBS_VERSIONS_LEASES)?;
+    let lease_filtre = doc!{CHAMP_FUUID: fuuid, "borrower": CHAMP_FLAG_SUMMARY};
+    lease_collection.delete_one(lease_filtre, None).await?;
+
+    // Emit all tuuids matching this file to ensure listeners get notified
+    {
+        let filtre_reps = doc! {CHAMP_FUUIDS_VERSIONS: fuuid, CHAMP_SUPPRIME: false};
+        let collection_reps = middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
+        let mut cursor = collection_reps.find_with_session(filtre_reps, None, session).await?;
+        if cursor.advance(session).await? {
+            let row = cursor.deserialize_current()?;
+            if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &row.tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION, session).await {
+                warn!("commande_associer_conversions Erreur emettre_evenement_maj_fichier {}: {:?}", fuuid, e);
+            }
+        }
+    }
+
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }

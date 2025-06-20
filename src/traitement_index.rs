@@ -27,7 +27,7 @@ use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::tokio::time::timeout;
-use crate::data_structs::CompleteFileRow;
+use crate::data_structs::{CompleteFileRow, MediaOwnedRow};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::get_file_keys;
@@ -762,10 +762,16 @@ where M: MongoDao
     }
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct LeaseVersionMedia {
+    version: NodeFichierVersionOwned,
+    media: Option<MediaOwnedRow>,
+}
+
 #[derive(Serialize)]
 pub struct VersionLeasesResponse {
     ok: bool,
-    leases: Vec<NodeFichierVersionOwned>,
+    leases: Vec<LeaseVersionMedia>,
     secret_keys: Vec<ResponseRequestDechiffrageV2Cle>,
 }
 
@@ -775,13 +781,35 @@ pub async fn lease_batch_fichiersversion<M>(middleware: &M, expiry: &DateTime<Ut
 where M: MongoDao + GenerateurMessages
 {
     let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
-    let mut cursor = collection_versions.find(filtre, None).await?;
+
+    let mut pipeline = vec![doc!{"$match": filtre}];
+
+    pipeline.push(doc!{"$replaceRoot": {"newRoot": {"version": "$$ROOT"}}});
+
+    // Join media information
+    pipeline.push(doc!{"$lookup": {
+            "from": NOM_COLLECTION_MEDIA,
+            "localField": "version.fuuid",
+            "foreignField": "fuuid",
+            // "limit": 1,
+            "as": "medias",
+        }}
+    );
+    pipeline.push(doc!{"$addFields": {
+        "media": {"$arrayElemAt": ["$medias", 0]},
+    }});
+    pipeline.push(doc!{"$unset": "medias"});
+
+    let mut cursor = collection_versions.aggregate(pipeline, None).await?;
+
+    // let mut cursor = collection_versions.find(filtre, None).await?;
     let mut leases = Vec::with_capacity(batch_size);
     while cursor.advance().await? {
         let file = cursor.deserialize_current()?;
+        let file: LeaseVersionMedia = convertir_bson_deserializable(file)?;
 
         // Attempt a lease on the file
-        if lease_file_version(middleware, &file.fuuid, borrower, expiry).await? {
+        if lease_file_version(middleware, &file.version.fuuid, borrower, expiry).await? {
             leases.push(file);
         }
 
@@ -795,10 +823,10 @@ where M: MongoDao + GenerateurMessages
         // Get all decrypted keys for the files
         let mut cle_ids = HashSet::with_capacity(leases.len());
         for lease in &leases {
-            if let Some(cle_id) = lease.cle_id.as_ref() {
+            if let Some(cle_id) = lease.version.cle_id.as_ref() {
                 cle_ids.insert(cle_id);
             } else {
-                cle_ids.insert(&lease.fuuid);  // Legacy
+                cle_ids.insert(&lease.version.fuuid);  // Legacy
             }
         }
         let secret_keys = get_file_keys(middleware, cle_ids).await?;

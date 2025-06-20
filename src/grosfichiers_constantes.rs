@@ -127,6 +127,8 @@ pub const COMMAND_LEASE_FOR_INDEX: &str = "leaseForIndex";
 pub const COMMAND_LEASE_FOR_RAG: &str = "leaseForRag";
 pub const COMMAND_CONFIRM_RAG: &str = "confirmRag";
 pub const COMMAND_CONFIRM_INDEX: &str = "confirmIndex";
+pub const COMMAND_LEASE_FOR_SUMMARY: &str = "leaseForSummary";
+pub const TRANSACTION_FILE_SUMMARY: &str = "fileSummary";
 
 // pub const EVENEMENT_MAJ_FICHIER: &str = "majFichier";
 pub const EVENEMENT_MAJ_COLLECTION: &str = "majCollection";

@@ -260,6 +260,8 @@ pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
         COMMAND_CONFIRM_INDEX,
         COMMAND_LEASE_FOR_RAG,
         COMMAND_CONFIRM_RAG,
+        COMMAND_LEASE_FOR_SUMMARY,
+        TRANSACTION_FILE_SUMMARY,
     ];
     for cmd in commandes_protegees {
         rk_volatils.push(ConfigRoutingExchange {routing_key: format!("commande.{}.{}", DOMAINE_NOM, cmd), exchange: Securite::L3Protege});
