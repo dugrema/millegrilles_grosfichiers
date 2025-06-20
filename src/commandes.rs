@@ -3167,7 +3167,38 @@ async fn command_lease_files_for_summary<M>(middleware: &M, m: MessageValide)
                                         -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_SUMMARY, &vec![ROLE_OLLAMA_RELAI.to_string()], true, false).await
+    // let roles = vec![ROLE_OLLAMA_RELAI.to_string()];
+    // get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_SUMMARY, &vec![ROLE_OLLAMA_RELAI.to_string()], true, false).await
+
+    if ! m.certificat.verifier_roles_string(vec![ROLE_OLLAMA_RELAI.to_string()])? {
+        return Ok(Some(middleware.reponse_err(Some(403), None, Some("Certificate role refused"))?));
+    }
+
+    let command: RequestLeaseForBatchOperation = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
+    let expiry = Utc::now() - Duration::from_secs(300);
+    let batch_size = command.batch_size.unwrap_or(5);
+    // Iterate through files that have a flag_rag == false or undefined.
+    let borrower = CHAMP_FLAG_SUMMARY;
+    let filtre = doc!{
+        CHAMP_SUPPRIME: false,
+        CHAMP_TYPE_NODE: TypeNode::Fichier.to_str(),
+        "$or": [
+            {borrower: {"$exists": false}},
+            {borrower: false},
+        ]
+    };
+    match lease_batch_fichiersrep(middleware, &expiry, borrower, filtre, batch_size, command.filehost_id, false, true).await? {
+        Some(inner) => {
+            // Encrypt response, it contains secret keys
+            Ok(Some(middleware.build_reponse_chiffree(inner, &m.certificat)?.0))
+        },
+        None => Ok(Some(middleware.reponse_ok(Some(1), Some("No files available"))?))
+    }
+
 }
 
 #[derive(Clone, Debug, Deserialize)]

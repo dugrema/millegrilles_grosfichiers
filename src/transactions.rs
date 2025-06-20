@@ -192,7 +192,6 @@ pub struct TransactionUpdateFileTextContent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionFileSummary {
     pub fuuid: String,
-    /// Tuuid provided only if operation is for a single user
     pub tuuid: String,
     /// Detected file language
     pub file_language: Option<String>,
@@ -662,6 +661,7 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, transaction: Transac
         CHAMP_TYPE_NODE: type_node,
         CHAMP_FLAG_INDEX: false,
         CHAMP_FLAG_RAG: false,
+        CHAMP_FLAG_SUMMARY: true,  // No summary for collections
     };
     debug!("grosfichiers.transaction_nouvelle_collection Ajouter nouvelle collection doc : {:?}", doc_collection);
 
