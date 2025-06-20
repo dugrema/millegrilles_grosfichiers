@@ -181,7 +181,7 @@ pub struct TransactionChangerFavoris {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionUpdateFileTextContent {
     pub tuuid: String,
-    pub file_language: Option<String>,
+    // pub file_language: Option<String>,
     pub tags: Option<EncryptedDocument>,
     pub comment: Option<EncryptedDocument>,
     /// Comment_id allows to replace an existing comment
@@ -192,7 +192,7 @@ pub struct TransactionUpdateFileTextContent {
 pub struct TransactionFileSummary {
     pub fuuid: String,
     /// Tuuid provided only if operation is for a single user
-    pub tuuids: Option<Vec<String>>,
+    pub tuuid: String,
     /// Detected file language
     pub file_language: Option<String>,
     /// Generated tags
@@ -318,6 +318,7 @@ pub struct NodeFichierRepRow<'a> {
     pub date_creation: DateTime<Utc>,
     pub flag_index: bool,
     pub flag_rag: Option<bool>,
+    pub flag_summary: Option<bool>,
     pub supprime: bool,
     pub supprime_indirect: bool,
     pub metadata: DataChiffreBorrow<'a>,
@@ -415,7 +416,6 @@ pub struct NodeFichierVersionRow<'a> {
     pub flag_media_retry: Option<i32>,
     pub flag_media_traite: bool,
     pub flag_video_traite: bool,
-    pub flag_summary: Option<bool>,
 
     // Information de chiffrage symmetrique (depuis 2024.3.0)
     #[serde(skip_serializing_if="Option::is_none")]
@@ -539,10 +539,10 @@ async fn transaction_nouvelle_version<M>(middleware: &M, transaction: Transactio
     let mut flag_duplication = false;
     let taille_fichier = transaction_fichier.taille as i64;
 
+    let (flag_media_traite, flag_video_traite, flag_media, flag_summary) = get_flags_media(transaction_fichier.mimetype.as_str());
+
     // Inserer document de version
     {
-        let (flag_media_traite, flag_video_traite, flag_media, flag_summary) = get_flags_media(transaction_fichier.mimetype.as_str());
-
         let mut visites = HashMap::new();
         visites.insert("nouveau".to_string(), Utc::now());
 
@@ -563,7 +563,6 @@ async fn transaction_nouvelle_version<M>(middleware: &M, transaction: Transactio
             flag_media_retry: None,
             flag_media_traite,
             flag_video_traite,
-            flag_summary: Some(flag_summary),
             cle_id: transaction_fichier.cle_id.as_ref().map(|x|x.as_str()),
             format: transaction_fichier.format,
             nonce: transaction_fichier.nonce.as_ref().map(|x|x.as_str()),
@@ -586,6 +585,7 @@ async fn transaction_nouvelle_version<M>(middleware: &M, transaction: Transactio
             date_creation: Utc::now(),
             flag_index: false,
             flag_rag: Some(false),
+            flag_summary: Some(flag_summary),
             supprime: false,
             supprime_indirect: false,
             metadata: transaction_fichier.metadata.borrow(),
@@ -638,7 +638,7 @@ async fn transaction_nouvelle_collection<M>(middleware: &M, transaction: Transac
         Err(e) => Err(format!("grosfichiers.transaction_nouvelle_collection Erreur conversion metadata chiffre en bson {:?}", e))?
     };
 
-    let date_courante = millegrilles_common_rust::bson::DateTime::now();
+    let date_courante = bson::DateTime::now();
     let favoris = match transaction_collection.favoris {
         Some(f) => f,
         None => false
@@ -2734,27 +2734,34 @@ where M: GenerateurMessages + MongoDao
 
     let tuuid = transaction_mappee.tuuid.as_str();
 
-    // Modifier metadata
-    if let Some(inner) = transaction_mappee.file_language {
-        todo!("Put in versions");
-        // set_ops.insert("language", inner);
-    }
+    let collection_comments = middleware.get_collection_typed::<FileComment>(NOM_COLLECTION_FILE_COMMENTS)?;
 
-    if let Some(inner) = transaction_mappee.tags {
-        todo!("Where do they go?")
-        // let inner_bson = match bson::to_bson(&inner) {
-        //     Ok(inner) => inner,
-        //     Err(e) => Err(format!("transaction_update_file_text_content Error converting file_language to bson : {:?}", e))?
-        // };
-        // set_ops.insert("tags", inner_bson);
+    if let Some(tags) = &transaction_mappee.tags {
+        // Insert tags
+        let filtre = doc!{"tuuid": &tuuid, "comment_id": CONST_COMMENT_TAGS};
+        let ops = doc!{
+                "$set": {
+                    "date": transaction.transaction.estampille,
+                    "encrypted_data": convertir_to_bson(tags)?,
+                }
+            };
+        let tag_options = UpdateOptions::builder().upsert(true).build();
+        collection_comments.update_one_with_session(filtre, ops, tag_options.clone(), session).await?;
     }
 
     if let Some(comment) = transaction_mappee.comment {
-        let collection_comments = middleware.get_collection_typed::<FileComment>(NOM_COLLECTION_FILE_COMMENTS)?;
         match transaction_mappee.comment_id {
             Some(comment_id) => {
                 // Update
-                todo!("Update comment");
+                let filtre = doc!{"tuuid": &tuuid, "comment_id": comment_id};
+                let ops = doc!{
+                    "$set": {
+                        "date": transaction.transaction.estampille,
+                        "encrypted_data": convertir_to_bson(comment)?,
+                    }
+                };
+                let tag_options = UpdateOptions::builder().upsert(true).build();
+                collection_comments.update_one_with_session(filtre, ops, tag_options.clone(), session).await?;
             }
             None => {
                 // Insert
@@ -2770,41 +2777,6 @@ where M: GenerateurMessages + MongoDao
         }
     }
 
-    // let mut push_to_array_ops = doc!{};
-    //
-    // if let Some(comment) = transaction_mappee.comment {
-    //     let comment_entry = FileComment {
-    //         encrypted_data: comment,
-    //         date: transaction.transaction.estampille,
-    //         user_id: Some(user_id),
-    //     };
-    //     let comment_bson = match bson::to_bson(&comment_entry) {
-    //         Ok(inner) => inner,
-    //         Err(e) => Err(format!("transaction_update_file_text_content Error converting comment to bson : {:?}", e))?
-    //     };
-    //     match transaction_mappee.comment_idx {
-    //         Some(idx) => {
-    //             set_ops.insert(format!("comments.{}", idx), comment_bson);
-    //         }
-    //         None => {
-    //             push_to_array_ops.insert("comments".to_string(), comment_bson);
-    //         }
-    //     }
-    // }
-    //
-    // let mut ops = doc! {
-    //     "$set": set_ops,
-    //     "$currentDate": { CHAMP_MODIFICATION: true }
-    // };
-    // if push_to_array_ops.len() > 0 {
-    //     ops.insert("$push", push_to_array_ops);
-    // }
-    //
-    // let collection = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
-    // if let Err(e) = collection.find_one_and_update_with_session(filtre, ops, None, session).await {
-    //     Err(format!("transaction_update_file_text_content Erreur update description : {:?}", e))?
-    // }
-
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
@@ -2815,6 +2787,7 @@ where M: GenerateurMessages + MongoDao
     debug!("transaction_update_file_text_content Transaction : {}", transaction.transaction.id);
     let transaction_mappee: TransactionFileSummary = serde_json::from_str(transaction.transaction.contenu.as_str())?;
 
+    let tuuid = transaction_mappee.tuuid.as_str();
     let fuuid = transaction_mappee.fuuid.as_str();
 
     let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
@@ -2823,58 +2796,42 @@ where M: GenerateurMessages + MongoDao
     if let Some(inner) = transaction_mappee.file_language {
         let filtre = doc!{"fuuid": fuuid};
         let ops = doc!{"$set": {"language": inner}, "$currentDate": {CHAMP_MODIFICATION: true}};
-        collection_versions.update_one(filtre, ops, None).await?;
+        collection_versions.update_one_with_session(filtre, ops, None, session).await?;
     }
 
     if let Some(comment) = transaction_mappee.comment {
-        let tuuids = match transaction_mappee.tuuids {
-            Some(tuuids) => tuuids,
-            None => {
-                // Apply to all tuuids that match the file
-                let filtre = doc!{"fuuid": fuuid};
-                let mut cursor = collection_versions.find_with_session(filtre, None, session).await?;
-                let mut tuuids = Vec::new();
-                while cursor.advance(session).await? {
-                    let row = cursor.deserialize_current()?;
-                    tuuids.extend(row.tuuids);
-                }
-                tuuids
-            }
-        };
-
         let collection_comments = middleware.get_collection_typed::<FileComment>(NOM_COLLECTION_FILE_COMMENTS)?;
         // Insert
         let tag_options = UpdateOptions::builder().upsert(true).build();
-        for tuuid in tuuids {
-            let comment_entry = FileComment {
-                tuuid: tuuid.to_string(),
-                comment_id: transaction.transaction.id.clone(),
-                encrypted_data: comment.clone(),
-                date: transaction.transaction.estampille,
-                user_id: None,
-            };
-            collection_comments.insert_one_with_session(comment_entry, None, session).await?;
+        let comment_entry = FileComment {
+            tuuid: tuuid.to_string(),
+            comment_id: transaction.transaction.id.clone(),
+            encrypted_data: comment.clone(),
+            date: transaction.transaction.estampille,
+            user_id: None,
+        };
+        collection_comments.insert_one_with_session(comment_entry, None, session).await?;
 
-            // Insert tags when appropriate
-            if let Some(tags) = &transaction_mappee.tags {
-                let filtre = doc!{"tuuid": &tuuid, "comment_id": CONST_COMMENT_TAGS};
-                let ops = doc!{
-                    "$set": {
-                        "date": transaction.transaction.estampille,
-                        "encrypted_data": convertir_to_bson(tags)?,
-                    }
-                };
-                collection_comments.update_one_with_session(filtre, ops, tag_options.clone(), session).await?;
-            }
+        // Insert tags when appropriate
+        if let Some(tags) = &transaction_mappee.tags {
+            let filtre = doc!{"tuuid": &tuuid, "comment_id": CONST_COMMENT_TAGS};
+            let ops = doc!{
+                "$set": {
+                    "date": transaction.transaction.estampille,
+                    "encrypted_data": convertir_to_bson(tags)?,
+                }
+            };
+            collection_comments.update_one_with_session(filtre, ops, tag_options.clone(), session).await?;
         }
     }
 
-    let filtre = doc!{"fuuid": fuuid};
+    let filtre = doc!{"tuuid": tuuid};
     let ops = doc!{
         "$set": {CHAMP_FLAG_SUMMARY: true},
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
-    collection_versions.update_one(filtre, ops, None).await?;
+    let collection_reps = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    collection_reps.update_one_with_session(filtre, ops, None, session).await?;
 
     Ok(None)
 }

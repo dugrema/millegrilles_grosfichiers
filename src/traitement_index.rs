@@ -594,6 +594,7 @@ pub struct LeaseResponse {
     mimetype: Option<String>,
     cuuids: Option<Vec<String>>,
     version: Option<NodeFichierVersionOwned>,  // Option for folders, no file content
+    media: Option<MediaOwnedRow>,
 }
 
 #[derive(Serialize)]
@@ -604,7 +605,8 @@ pub struct LeasesResponse {
 }
 
 /// Lease a batch of files based on a FichiersRep filtre.
-pub async fn lease_batch_fichiersrep<M>(middleware: &M, expiry: &DateTime<Utc>, borrower: &str, filtre: Document, batch_size: usize, filehost_id: Option<String>)
+pub async fn lease_batch_fichiersrep<M>(middleware: &M, expiry: &DateTime<Utc>, borrower: &str,
+                                        filtre: Document, batch_size: usize, filehost_id: Option<String>, include_media: bool)
     -> Result<Option<LeasesResponse>, CommonError>
 where M: MongoDao + GenerateurMessages
 {
@@ -631,6 +633,21 @@ where M: MongoDao + GenerateurMessages
         "current_version": {"$arrayElemAt": ["$versions", 0]},
     }});
     pipeline.push(doc!{"$unset": "versions"});
+
+    if include_media {
+        // Join media information
+        pipeline.push(doc! {"$lookup": {
+                "from": NOM_COLLECTION_MEDIA,
+                "localField": "current_version.fuuid",
+                "foreignField": "fuuid",
+                "as": "medias",
+            }}
+        );
+        pipeline.push(doc! {"$addFields": {
+            "media": {"$arrayElemAt": ["$medias", 0]},
+        }});
+        pipeline.push(doc! {"$unset": "medias"})
+    }
 
     let mut leases = Vec::with_capacity(batch_size);
 
@@ -665,6 +682,7 @@ where M: MongoDao + GenerateurMessages
                 cuuids,
                 mimetype: match file.mimetype { Some(inner) => Some(inner.to_string()), None => None},
                 version,
+                media: row.media,
             });
         }
 

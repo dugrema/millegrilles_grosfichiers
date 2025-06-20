@@ -3109,7 +3109,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
 }
 
 /// Lease a batch of files for indexing (AI indexing)
-async fn get_batch_of_fichiersrep_leases<M>(middleware: &M, m: MessageValide, borrower: &str, roles: &Vec<String>)
+async fn get_batch_of_fichiersrep_leases<M>(middleware: &M, m: MessageValide, borrower: &str, roles: &Vec<String>, include_media: bool)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -3132,7 +3132,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
             {borrower: false},
         ]
     };
-    match lease_batch_fichiersrep(middleware, &expiry, borrower, filtre, batch_size, command.filehost_id).await? {
+    match lease_batch_fichiersrep(middleware, &expiry, borrower, filtre, batch_size, command.filehost_id, include_media).await? {
         Some(inner) => {
             // Encrypt response, it contains secret keys
             Ok(Some(middleware.build_reponse_chiffree(inner, &m.certificat)?.0))
@@ -3152,7 +3152,7 @@ async fn command_lease_files_for_indexing<M>(middleware: &M, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_INDEX, &vec![ROLE_SOLR_RELAI.to_string()]).await
+    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_INDEX, &vec![ROLE_SOLR_RELAI.to_string()], false).await
 }
 
 /// Lease a batch of files for RAG (AI indexing)
@@ -3160,14 +3160,14 @@ async fn command_lease_files_for_rag<M>(middleware: &M, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_RAG, &vec![ROLE_OLLAMA_RELAI.to_string()]).await
+    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_RAG, &vec![ROLE_OLLAMA_RELAI.to_string()], false).await
 }
 
 async fn command_lease_files_for_summary<M>(middleware: &M, m: MessageValide)
                                         -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    get_batch_of_fichiersversion_leases(middleware, m, CHAMP_FLAG_SUMMARY, &vec![ROLE_OLLAMA_RELAI.to_string()]).await
+    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_SUMMARY, &vec![ROLE_OLLAMA_RELAI.to_string()], true).await
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -3273,7 +3273,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509,
         message_ref.contenu()?.deserialize()?
     };
 
-    let fuuid = command.fuuid.as_str();
+    let tuuid = command.tuuid.as_str();
 
     // Authorization : Must be in the list of roles
     match m.certificat.verifier_roles_string(vec!["ollama_relai".to_string()])? &&
@@ -3283,28 +3283,19 @@ where M: GenerateurMessages + MongoDao + ValidateurX509,
         false => Err(format!("command_file_summary: Invalid authorization {:?}", m.type_message)),
     }?;
 
-    sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
+    sauvegarder_traiter_transaction_v2(middleware, m.clone(), gestionnaire, session).await?;
 
     // Job done, commit then emit events
     session.commit_transaction().await?;
     start_transaction_regular(session).await?;
 
-    // Remove lease
-    let lease_collection = middleware.get_collection(NOM_COLLECTION_JOBS_VERSIONS_LEASES)?;
-    let lease_filtre = doc!{CHAMP_FUUID: fuuid, "borrower": CHAMP_FLAG_SUMMARY};
+    let lease_collection = middleware.get_collection(NOM_COLLECTION_JOBS_LEASES)?;
+    let lease_filtre = doc!{CHAMP_TUUID: tuuid, "borrower": CHAMP_FLAG_SUMMARY};
     lease_collection.delete_one(lease_filtre, None).await?;
 
     // Emit all tuuids matching this file to ensure listeners get notified
-    {
-        let filtre_reps = doc! {CHAMP_FUUIDS_VERSIONS: fuuid, CHAMP_SUPPRIME: false};
-        let collection_reps = middleware.get_collection_typed::<NodeFichierRepRow>(NOM_COLLECTION_FICHIERS_REP)?;
-        let mut cursor = collection_reps.find_with_session(filtre_reps, None, session).await?;
-        if cursor.advance(session).await? {
-            let row = cursor.deserialize_current()?;
-            if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &row.tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION, session).await {
-                warn!("commande_associer_conversions Erreur emettre_evenement_maj_fichier {}: {:?}", fuuid, e);
-            }
-        }
+    if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION, session).await {
+        warn!("commande_associer_conversions Erreur emettre_evenement_maj_fichier {}: {:?}", tuuid, e);
     }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
