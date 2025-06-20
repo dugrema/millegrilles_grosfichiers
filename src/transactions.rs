@@ -438,6 +438,8 @@ pub struct NodeFichierVersionOwned {
     pub tuuids: Vec<String>,
     pub fuuids_reclames: Vec<String>,
 
+    pub language: Option<String>,
+
     #[serde(
         serialize_with="mapstringepochseconds::serialize",
         deserialize_with="map_chrono_datetime_as_bson_datetime::deserialize"
@@ -2817,19 +2819,11 @@ where M: GenerateurMessages + MongoDao
 
     let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
 
-    // Modifier metadata
+    // Modify version
     if let Some(inner) = transaction_mappee.file_language {
-        todo!("Put in versions");
-        // set_ops.insert("language", inner);
-    }
-
-    if let Some(inner) = transaction_mappee.tags {
-        todo!("Where do they go?")
-        // let inner_bson = match bson::to_bson(&inner) {
-        //     Ok(inner) => inner,
-        //     Err(e) => Err(format!("transaction_update_file_text_content Error converting file_language to bson : {:?}", e))?
-        // };
-        // set_ops.insert("tags", inner_bson);
+        let filtre = doc!{"fuuid": fuuid};
+        let ops = doc!{"$set": {"language": inner}, "$currentDate": {CHAMP_MODIFICATION: true}};
+        collection_versions.update_one(filtre, ops, None).await?;
     }
 
     if let Some(comment) = transaction_mappee.comment {
@@ -2838,9 +2832,9 @@ where M: GenerateurMessages + MongoDao
             None => {
                 // Apply to all tuuids that match the file
                 let filtre = doc!{"fuuid": fuuid};
-                let mut cursor = collection_versions.find(filtre, None).await?;
+                let mut cursor = collection_versions.find_with_session(filtre, None, session).await?;
                 let mut tuuids = Vec::new();
-                while cursor.advance().await? {
+                while cursor.advance(session).await? {
                     let row = cursor.deserialize_current()?;
                     tuuids.extend(row.tuuids);
                 }
@@ -2850,6 +2844,7 @@ where M: GenerateurMessages + MongoDao
 
         let collection_comments = middleware.get_collection_typed::<FileComment>(NOM_COLLECTION_FILE_COMMENTS)?;
         // Insert
+        let tag_options = UpdateOptions::builder().upsert(true).build();
         for tuuid in tuuids {
             let comment_entry = FileComment {
                 tuuid: tuuid.to_string(),
@@ -2858,7 +2853,19 @@ where M: GenerateurMessages + MongoDao
                 date: transaction.transaction.estampille,
                 user_id: None,
             };
-            collection_comments.insert_one(comment_entry, None).await?;
+            collection_comments.insert_one_with_session(comment_entry, None, session).await?;
+
+            // Insert tags when appropriate
+            if let Some(tags) = &transaction_mappee.tags {
+                let filtre = doc!{"tuuid": &tuuid, "comment_id": CONST_COMMENT_TAGS};
+                let ops = doc!{
+                    "$set": {
+                        "date": transaction.transaction.estampille,
+                        "encrypted_data": convertir_to_bson(tags)?,
+                    }
+                };
+                collection_comments.update_one_with_session(filtre, ops, tag_options.clone(), session).await?;
+            }
         }
     }
 

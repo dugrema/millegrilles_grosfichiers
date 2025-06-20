@@ -205,6 +205,8 @@ pub const CHAMP_INSTANCES: &str = "instances";
 pub const CHAMP_DATE_MAJ: &str = "date_maj";
 pub const CHAMP_VISITES: &str = "visites";
 
+pub const CONST_COMMENT_TAGS: &str = "tags";
+
 pub const VIDEO_FLAG_CREER_THUMBNAILS: &str = "thumbnails";
 pub const VIDEO_FLAG_DEFAULTS: &str = "defaults";
 pub const VIDEO_FLAG_CLE_CONVERSION: &str = "cle_conversion";
