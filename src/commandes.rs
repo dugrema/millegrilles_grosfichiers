@@ -1183,39 +1183,39 @@ async fn commande_deplacer_fichiers_collection<M>(middleware: &M, m: MessageVali
     Ok(response)
 }
 
-async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao + ValidateurX509,
-{
-    debug!("commande_retirer_documents_collection **OBSOLETE** Consommer commande : {:?}", & m.type_message);
-
-    // let reponse = middleware.formatter_reponse(json!({"ok": false, "err": "Obsolete"}), None)?;
-    // Ok(Some(reponse))
-    Ok(Some(middleware.reponse_err(None, None, Some("Obsolete"))?))
-
-    // let commande: TransactionRetirerDocumentsCollection = m.message.get_msg().map_contenu(None)?;
-    // debug!("Commande commande_retirer_documents_collection versions parsed : {:?}", commande);
-    //
-    // // Autorisation: Action usager avec compte prive ou delegation globale
-    // let user_id = m.get_user_id();
-    // let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
-    // if role_prive && user_id.is_some() {
-    //     let user_id_str = user_id.as_ref().expect("user_id");
-    //     let cuuid = commande.cuuid.as_str();
-    //     let tuuids: Vec<&str> = commande.retirer_tuuids.iter().map(|t| t.as_str()).collect();
-    //     let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
-    //     if err_reponse.is_some() {
-    //         return Ok(err_reponse)
-    //     }
-    // } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
-    //     // Ok
-    // } else {
-    //     Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
-    // }
-    //
-    // // Traiter la transaction
-    // Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
-}
+// async fn commande_retirer_documents_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+//     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+//     where M: GenerateurMessages + MongoDao + ValidateurX509,
+// {
+//     debug!("commande_retirer_documents_collection **OBSOLETE** Consommer commande : {:?}", & m.type_message);
+//
+//     // let reponse = middleware.formatter_reponse(json!({"ok": false, "err": "Obsolete"}), None)?;
+//     // Ok(Some(reponse))
+//     Ok(Some(middleware.reponse_err(None, None, Some("Obsolete"))?))
+//
+//     // let commande: TransactionRetirerDocumentsCollection = m.message.get_msg().map_contenu(None)?;
+//     // debug!("Commande commande_retirer_documents_collection versions parsed : {:?}", commande);
+//     //
+//     // // Autorisation: Action usager avec compte prive ou delegation globale
+//     // let user_id = m.get_user_id();
+//     // let role_prive = m.verifier_roles(vec![RolesCertificats::ComptePrive]);
+//     // if role_prive && user_id.is_some() {
+//     //     let user_id_str = user_id.as_ref().expect("user_id");
+//     //     let cuuid = commande.cuuid.as_str();
+//     //     let tuuids: Vec<&str> = commande.retirer_tuuids.iter().map(|t| t.as_str()).collect();
+//     //     let err_reponse = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), Some(cuuid)).await?;
+//     //     if err_reponse.is_some() {
+//     //         return Ok(err_reponse)
+//     //     }
+//     // } else if m.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE) {
+//     //     // Ok
+//     // } else {
+//     //     Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.correlation_id))?
+//     // }
+//     //
+//     // // Traiter la transaction
+//     // Ok(sauvegarder_traiter_transaction(middleware, m, gestionnaire).await?)
+// }
 
 #[derive(Deserialize)]
 struct CommandeSupprimerV2 {
@@ -3109,7 +3109,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
 }
 
 /// Lease a batch of files for indexing (AI indexing)
-async fn get_batch_of_fichiersrep_leases<M>(middleware: &M, m: MessageValide, borrower: &str, roles: &Vec<String>, include_media: bool, include_comments: bool)
+async fn get_batch_of_fichiersrep_leases<M>(middleware: &M, m: MessageValide, borrower: &str, roles: &Vec<String>, include_comments: bool)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -3132,7 +3132,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
             {borrower: false},
         ]
     };
-    match lease_batch_fichiersrep(middleware, &expiry, borrower, filtre, batch_size, command.filehost_id, include_media, include_comments).await? {
+    match lease_batch_fichiersrep(middleware, &expiry, borrower, filtre, batch_size, command.filehost_id, false, include_comments).await? {
         Some(inner) => {
             // Encrypt response, it contains secret keys
             Ok(Some(middleware.build_reponse_chiffree(inner, &m.certificat)?.0))
@@ -3152,7 +3152,7 @@ async fn command_lease_files_for_indexing<M>(middleware: &M, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_INDEX, &vec![ROLE_SOLR_RELAI.to_string()], false, true).await
+    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_INDEX, &vec![ROLE_SOLR_RELAI.to_string()], true).await
 }
 
 /// Lease a batch of files for RAG (AI indexing)
@@ -3160,7 +3160,7 @@ async fn command_lease_files_for_rag<M>(middleware: &M, m: MessageValide)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
 where M: GenerateurMessages + MongoDao + ValidateurX509
 {
-    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_RAG, &vec![ROLE_OLLAMA_RELAI.to_string()], false, false).await
+    get_batch_of_fichiersrep_leases(middleware, m, CHAMP_FLAG_RAG, &vec![ROLE_OLLAMA_RELAI.to_string()], false).await
 }
 
 async fn command_lease_files_for_summary<M>(middleware: &M, m: MessageValide)
@@ -3191,7 +3191,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
             {borrower: false},
         ]
     };
-    match lease_batch_fichiersrep(middleware, &expiry, borrower, filtre, batch_size, command.filehost_id, false, true).await? {
+    match lease_batch_fichiersrep(middleware, &expiry, borrower, filtre, batch_size, command.filehost_id, true, true).await? {
         Some(inner) => {
             // Encrypt response, it contains secret keys
             Ok(Some(middleware.build_reponse_chiffree(inner, &m.certificat)?.0))

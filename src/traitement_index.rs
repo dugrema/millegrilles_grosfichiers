@@ -637,6 +637,9 @@ where M: MongoDao + GenerateurMessages
     pipeline.push(doc!{"$unset": "versions"});
 
     if include_media {
+        // Filter out files that have not been processed yet. Note: this will filter out collections/directories.
+        pipeline.push(doc!{"$match": {format!("current_version.{}", CHAMP_FLAG_MEDIA_TRAITE): true}});
+
         // Join media information
         pipeline.push(doc! {"$lookup": {
                 "from": NOM_COLLECTION_MEDIA,
@@ -663,6 +666,8 @@ where M: MongoDao + GenerateurMessages
     }
 
     let mut leases = Vec::with_capacity(batch_size);
+
+    debug!("lease_batch_fichiersrep Pipeline: {:?}", pipeline);
 
     let mut cursor = collection.aggregate(pipeline, None).await?;
     while cursor.advance().await? {
