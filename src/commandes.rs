@@ -3294,6 +3294,10 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         warn!("command_update_file_text_content Erreur emettre_evenement_maj_fichier : {:?}", e);
     }
 
+    if let Err(e) = trigger_file_indexing(middleware).await {
+        warn!("command_update_file_text_content Error emitting file indexing trigger: {:?}", e);
+    }
+
     Ok(resultat)
 }
 
@@ -3327,7 +3331,11 @@ where M: GenerateurMessages + MongoDao + ValidateurX509,
 
     // Emit all tuuids matching this file to ensure listeners get notified
     if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, tuuid, EVENEMENT_FUUID_ASSOCIER_CONVERSION, session).await {
-        warn!("commande_associer_conversions Erreur emettre_evenement_maj_fichier {}: {:?}", tuuid, e);
+        warn!("command_file_summary Erreur emettre_evenement_maj_fichier {}: {:?}", tuuid, e);
+    }
+
+    if let Err(e) = trigger_file_indexing(middleware).await {
+        warn!("command_file_summary Error emitting file indexing trigger: {:?}", e);
     }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
@@ -3373,5 +3381,21 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         warn!("command_update_file_text_content Erreur emettre_evenement_maj_fichier : {:?}", e);
     }
 
+    if let Err(e) = trigger_file_indexing(middleware).await {
+        warn!("command_update_file_text_content Error emitting file indexing trigger: {:?}", e);
+    }
+
     Ok(resultat)
+}
+
+#[derive(Serialize)]
+struct EventTriggerIndexing {}
+
+async fn trigger_file_indexing<M>(middleware: &M) -> Result<(), CommonError>
+    where M: GenerateurMessages
+{
+    let routage = RoutageMessageAction::builder(
+            DOMAINE_NOM, EVENT_FILES_TO_INDEX, vec![Securite::L3Protege]).build();
+    middleware.emettre_evenement(routage, EventTriggerIndexing{}).await?;
+    Ok(())
 }
