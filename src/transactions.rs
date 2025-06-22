@@ -2773,11 +2773,12 @@ where M: GenerateurMessages + MongoDao
                     date: transaction.transaction.estampille,
                     user_id: Some(user_id.clone()),
                 };
-                collection_comments.insert_one(comment_entry, None).await?;
+                collection_comments.insert_one_with_session(comment_entry, None, session).await?;
             }
         }
     }
 
+    // Update file modification date has hint to change during sync, set index flag to false to re-index the file
     let filtre = doc! {"tuuid": tuuid, "user_id": &user_id};
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
     let ops = doc! {
@@ -2797,16 +2798,16 @@ where M: GenerateurMessages + MongoDao
     let transaction_mappee: TransactionFileSummary = serde_json::from_str(transaction.transaction.contenu.as_str())?;
 
     let tuuid = transaction_mappee.tuuid.as_str();
-    let fuuid = transaction_mappee.fuuid.as_str();
+    // let fuuid = transaction_mappee.fuuid.as_str();
 
-    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    // let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
 
-    // Modify version
-    if let Some(inner) = transaction_mappee.file_language {
-        let filtre = doc!{"fuuid": fuuid};
-        let ops = doc!{"$set": {"language": inner}, "$currentDate": {CHAMP_MODIFICATION: true}};
-        collection_versions.update_one_with_session(filtre, ops, None, session).await?;
-    }
+    // // Modify version
+    // if let Some(inner) = transaction_mappee.file_language {
+    //     let filtre = doc!{"fuuid": fuuid};
+    //     let ops = doc!{"$set": {"language": inner}, "$currentDate": {CHAMP_MODIFICATION: true}};
+    //     collection_versions.update_one_with_session(filtre, ops, None, session).await?;
+    // }
 
     if let Some(comment) = transaction_mappee.comment {
         let collection_comments = middleware.get_collection_typed::<FileComment>(NOM_COLLECTION_FILE_COMMENTS)?;

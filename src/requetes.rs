@@ -3,45 +3,45 @@ use std::convert::{TryFrom, TryInto};
 use std::ops::Deref;
 use std::str::from_utf8;
 
-use log::{debug, error, warn};
-use millegrilles_common_rust::{serde_json, serde_json::json};
-use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{Bson, doc, Document};
-use millegrilles_common_rust::bson::serde_helpers::deserialize_chrono_datetime_from_bson_datetime;
-use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chrono::{DateTime, NaiveDateTime, Utc};
-use millegrilles_common_rust::common_messages::{InformationDechiffrage, InformationDechiffrageV2, ReponseDechiffrage, ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
-use millegrilles_common_rust::constantes::*;
-use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
-use millegrilles_common_rust::dechiffrage::{DataChiffre, DataChiffreBorrow};
-use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
-use millegrilles_common_rust::jwt_handler::{generer_jwt, verify_jwt};
-use millegrilles_common_rust::messages_generiques::CommandeDechiffrerCle;
-use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, filtrer_doc_id, MongoDao};
-use millegrilles_common_rust::mongodb::Cursor;
-use millegrilles_common_rust::mongodb::options::{AggregateOptions, FindOptions, Hint, UpdateOptions};
-use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
-use millegrilles_common_rust::redis::Commands;
-use millegrilles_common_rust::serde::{Deserialize, Serialize};
-use millegrilles_common_rust::serde_json::Value;
-use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::transactions::Transaction;
-use millegrilles_common_rust::error::{Error as CommonError, Error};
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
-use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
-use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epochseconds, optionepochseconds};
-use millegrilles_common_rust::mongo_dao::{opt_chrono_datetime_as_bson_datetime, map_chrono_datetime_as_bson_datetime};
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
 use crate::data_structs::{AudioDetail, CompleteFileRow, FileComment, MediaOwnedRow, ResponseVersionCourante, SubtitleDetail, VideoDetail};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::traitement_index::{ParametresGetClesStream, ParametresGetPermission, ParametresRecherche, ResultatHits, ResultatHitsDetail};
 use crate::traitement_media::requete_jobs_video;
 use crate::transactions::*;
+use log::{debug, error, warn};
+use millegrilles_common_rust::async_trait::async_trait;
+use millegrilles_common_rust::bson::serde_helpers::deserialize_chrono_datetime_from_bson_datetime;
+use millegrilles_common_rust::bson::{doc, Bson, Document};
+use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
+use millegrilles_common_rust::chrono::{DateTime, NaiveDateTime, Utc};
+use millegrilles_common_rust::common_messages::{InformationDechiffrage, InformationDechiffrageV2, ReponseDechiffrage, ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
+use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
+use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::dechiffrage::{DataChiffre, DataChiffreBorrow};
+use millegrilles_common_rust::error::{Error as CommonError, Error};
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::jwt_handler::{generer_jwt, verify_jwt};
+use millegrilles_common_rust::messages_generiques::CommandeDechiffrerCle;
+use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
+use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
+use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epochseconds, optionepochseconds};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, filtrer_doc_id, MongoDao};
+use millegrilles_common_rust::mongo_dao::{map_chrono_datetime_as_bson_datetime, opt_chrono_datetime_as_bson_datetime};
+use millegrilles_common_rust::mongodb::options::{AggregateOptions, FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongodb::Cursor;
+use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
+use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
+use millegrilles_common_rust::redis::Commands;
+use millegrilles_common_rust::serde::{Deserialize, Serialize};
+use millegrilles_common_rust::serde_json::Value;
+use millegrilles_common_rust::tokio_stream::StreamExt;
+use millegrilles_common_rust::transactions::Transaction;
+use millegrilles_common_rust::{serde_json, serde_json::json};
 
 const CONST_LIMITE_TAILLE_ZIP: u64 = 1024 * 1024 * 1024 * 100;   // Limite 100 GB
 const CONST_LIMITE_NOMBRE_ZIP: u64 = 1_000;
@@ -522,15 +522,6 @@ async fn get_complete_files<M>(middleware: &M, mut filtre: Document, changed_sin
     }});
     pipeline.push(doc!{"$unset": "versions"});
 
-    // Join comments
-    pipeline.push(doc!{"$lookup": {
-            "from": NOM_COLLECTION_FILE_COMMENTS,
-            "localField": "fichierrep.tuuid",
-            "foreignField": "tuuid",
-            "as": "comments",
-        }}
-    );
-
     if let Some(changed_since) = changed_since {
         // Filter on changed date. Use max value for file between fichierrep and versions collections.
         pipeline.push(doc!{"$addFields": {"changed_since": {"$max": [format!("$fichierrep.{}", CHAMP_MODIFICATION), format!("$current_version.{}", CHAMP_MODIFICATION)]}}});
@@ -540,6 +531,15 @@ async fn get_complete_files<M>(middleware: &M, mut filtre: Document, changed_sin
             pipeline.push(doc! {"$limit": limit});
         }
     }
+
+    // Join comments
+    pipeline.push(doc!{"$lookup": {
+            "from": NOM_COLLECTION_FILE_COMMENTS,
+            "localField": "fichierrep.tuuid",
+            "foreignField": "tuuid",
+            "as": "comments",
+        }}
+    );
 
     // Add lookup to media content
     pipeline.push(
@@ -623,7 +623,7 @@ async fn get_complete_files<M>(middleware: &M, mut filtre: Document, changed_sin
         response.fichiers.push(fichier_rep);
     }
 
-    let mut truncated = false;
+    let truncated = false;
 
     Ok((response, truncated))
 }
