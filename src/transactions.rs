@@ -62,7 +62,8 @@ pub async fn aiguillage_transaction<M, T>(_gestionnaire: &GrosFichiersDomainMana
         TRANSACTION_ASSOCIER_VIDEO => transaction_associer_video(middleware, transaction, session).await,
         TRANSACTION_DECRIRE_FICHIER => transaction_decrire_fichier(middleware, transaction, session).await,
         TRANSACTION_DECRIRE_COLLECTION => transaction_decrire_collection(middleware, transaction, session).await,
-        TRANSACTION_UPDATE_FILE_TEXT_CONTENT =>  transaction_update_file_text_content(middleware, transaction, session).await,
+        TRANSACTION_UPDATE_FILE_TEXT_CONTENT => transaction_update_file_text_content(middleware, transaction, session).await,
+        TRANSACTION_DELETE_FILE_COMMENT => transaction_delete_file_comment(middleware, transaction, session).await,
         TRANSACTION_FILE_SUMMARY => transaction_set_file_summary(middleware, transaction, session).await,
 
         // Moving files
@@ -199,6 +200,12 @@ pub struct TransactionFileSummary {
     pub tags: Option<EncryptedDocument>,
     /// The comment contains the summary
     pub comment: Option<EncryptedDocument>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionDeleteFileComment {
+    pub tuuid: String,
+    pub comment_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2845,4 +2852,35 @@ where M: GenerateurMessages + MongoDao
     collection_reps.update_one_with_session(filtre, ops, None, session).await?;
 
     Ok(None)
+}
+
+async fn transaction_delete_file_comment<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
+                                            -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao
+{
+    debug!("transaction_delete_file_comment Transaction : {}", transaction.transaction.id);
+    let transaction_mappee: TransactionDeleteFileComment = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+
+    let user_id = match transaction.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(format!("transaction_delete_file_comment Missing user_id from certificate for id:{}", transaction.transaction.id))?
+    };
+
+    let tuuid = transaction_mappee.tuuid.as_str();
+
+    // Remove comment
+    let collection_comments = middleware.get_collection_typed::<FileComment>(NOM_COLLECTION_FILE_COMMENTS)?;
+    let filtre = doc!{"tuuid": &tuuid, "comment_id": transaction_mappee.comment_id};
+    collection_comments.delete_one_with_session(filtre, None, session).await?;
+
+    // Update file modification date has hint to change during sync, set index flag to false to re-index the file
+    let filtre = doc! {"tuuid": tuuid, "user_id": &user_id};
+    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let ops = doc! {
+        "$set": {CHAMP_FLAG_INDEX: false},
+        "$currentDate": {CHAMP_MODIFICATION: true},
+    };
+    collection.update_one_with_session(filtre, ops, None, session).await?;
+
+    Ok(Some(middleware.reponse_ok(None, None)?))
 }

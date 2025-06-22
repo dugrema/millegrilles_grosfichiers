@@ -296,6 +296,7 @@ struct Favoris {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct FileCommentResponse {
+    pub comment_id: String,
     pub encrypted_data: EncryptedDocument,
     #[serde(default, with="epochseconds")]
     pub date: DateTime<Utc>,
@@ -305,6 +306,7 @@ pub struct FileCommentResponse {
 impl From<FileComment> for FileCommentResponse {
     fn from(value: FileComment) -> Self {
         Self {
+            comment_id: value.comment_id,
             encrypted_data: value.encrypted_data,
             date: value.date,
             user_id: value.user_id,

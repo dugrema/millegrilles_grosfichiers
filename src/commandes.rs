@@ -97,6 +97,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         TRANSACTION_SUPPRIMER_VIDEO => commande_supprimer_video(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_SUPPRIMER_ORPHELINS => commande_supprimer_orphelins(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_UPDATE_FILE_TEXT_CONTENT => command_update_file_text_content(middleware, m, gestionnaire, &mut session).await,
+        TRANSACTION_DELETE_FILE_COMMENT => command_delete_file_comment(middleware, m, gestionnaire, &mut session).await,
 
         // Sync
         COMMANDE_RECLAMER_FUUIDS => evenement_fichiers_syncpret(middleware, m, &mut session).await,
@@ -3330,4 +3331,47 @@ where M: GenerateurMessages + MongoDao + ValidateurX509,
     }
 
     Ok(Some(middleware.reponse_ok(None, None)?))
+}
+
+async fn command_delete_file_comment<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
+                                        -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    debug!("command_delete_file_comment Consommer commande : {:?}", & m.type_message);
+    let command: TransactionDeleteFileComment = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
+    // Autorisation: Action usager avec compte prive ou delegation globale
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err("command_update_file_text_content User_id missing")?
+    };
+
+    let role_admin = m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
+
+    if !role_admin && !role_prive {
+        debug!("command_delete_file_comment Access denied, not a user/admin nor authorized system module");
+        return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access denied"))?))
+    }
+
+    // Find matching file
+    let collection_reps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+    let filtre_reps = doc!{"tuuid": &command.tuuid, "user_id": &user_id};
+    let file_rep = match collection_reps.find_one_with_session(filtre_reps, None, session).await? {
+        Some(inner) => inner,
+        None => Err(format!("command_update_file_text_content File not found: tuuid:{}", command.tuuid))?
+    };
+
+    // Process transaction
+    let resultat = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
+
+    // Emit file modified event
+    if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &file_rep.tuuid, EVENEMENT_FUUID_DECRIRE_FICHIER, session).await {
+        warn!("command_update_file_text_content Erreur emettre_evenement_maj_fichier : {:?}", e);
+    }
+
+    Ok(resultat)
 }
