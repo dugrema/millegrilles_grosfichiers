@@ -1101,9 +1101,9 @@ async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, transaction
             CHAMP_USER_ID: &user_id,
         };
 
-        // Deplacer fichiers/repertoires en remplacant path_cuuids_destination
+        // Deplacer fichiers/repertoires en remplacant path_cuuids_destination. Reset flag index.
         let ops = doc! {
-            "$set": { CHAMP_PATH_CUUIDS: &path_cuuids_destination },
+            "$set": { CHAMP_PATH_CUUIDS: &path_cuuids_destination, CHAMP_FLAG_INDEX: false },
             "$currentDate": {CHAMP_MODIFICATION: true}
         };
         let resultat = match collection.update_many_with_session(filtre.clone(), ops, None, session).await {
@@ -2230,7 +2230,7 @@ where M: GenerateurMessages + MongoDao
 
         // Mark all listed subdirectories as deleted indirectly.
         let directory_filtre = doc!{ "tuuid": {"$in": subdirectories} };
-        let directory_ops = doc!{"$set": {"supprime": true, "supprime_indirect": true}, "$currentDate": {CHAMP_MODIFICATION: true} };
+        let directory_ops = doc!{"$set": {"supprime": true, "supprime_indirect": true, CHAMP_FLAG_INDEX: false}, "$currentDate": {CHAMP_MODIFICATION: true} };
         collection_fichiersrep.update_many_with_session(directory_filtre, directory_ops, None, session).await?;
     }
 
@@ -2241,12 +2241,12 @@ where M: GenerateurMessages + MongoDao
 
         // Mark all the files as indirectly deleted in the rep collection
         let filtre_rep = doc! { "path_cuuids.0": {"$in": &directories}, "supprime": false, "type_node": TypeNode::Fichier.to_str() };
-        let ops = doc!{"$set": {"supprime": true, "supprime_indirect": true}, "$currentDate": {CHAMP_MODIFICATION: true}};
+        let ops = doc!{"$set": {"supprime": true, "supprime_indirect": true, CHAMP_FLAG_INDEX: false}, "$currentDate": {CHAMP_MODIFICATION: true}};
         collection_fichiersrep.update_many_with_session(filtre_rep, ops, None, session).await?;
 
         // Mark all listed directories as deleted directly.
         let directory_filtre = doc!{ "tuuid": {"$in": directories} };
-        let directory_ops = doc!{"$set": {"supprime": true, "supprime_indirect": false}, "$currentDate": {CHAMP_MODIFICATION: true} };
+        let directory_ops = doc!{"$set": {"supprime": true, "supprime_indirect": false, CHAMP_FLAG_INDEX: false}, "$currentDate": {CHAMP_MODIFICATION: true} };
         collection_fichiersrep.update_many_with_session(directory_filtre, directory_ops, None, session).await?;
     }
 
@@ -2259,7 +2259,7 @@ where M: GenerateurMessages + MongoDao
         collection_fichiersversion.update_many_with_session(version_filtre.clone(), version_ops, None, session).await?;
 
         let file_filtre = doc!{ "tuuid": {"$in": &files} };
-        let rep_ops = doc!{"$set": {"supprime": true, "supprime_indirect": false}, "$currentDate": {CHAMP_MODIFICATION: true} };
+        let rep_ops = doc!{"$set": {"supprime": true, "supprime_indirect": false, CHAMP_FLAG_INDEX: false}, "$currentDate": {CHAMP_MODIFICATION: true} };
         collection_fichiersrep.update_many_with_session(file_filtre, rep_ops, None, session).await?;
     }
 
@@ -2329,7 +2329,7 @@ async fn transaction_move_v2<M>(middleware: &M, transaction: TransactionValide, 
     if let Some(files) = transaction_content.files {
         let filtre = doc!{ "tuuid": {"$in": files}, "type_node": TypeNode::Fichier.to_str() };
         let ops = doc! {
-            "$set": {"path_cuuids": &transaction_content.destination},
+            "$set": {"path_cuuids": &transaction_content.destination, CHAMP_FLAG_INDEX: false},
             "$currentDate": {CHAMP_MODIFICATION: true}
         };
         collection_reps.update_many_with_session(filtre, ops, None, session).await?;
@@ -2343,7 +2343,7 @@ async fn transaction_move_v2<M>(middleware: &M, transaction: TransactionValide, 
                 let filtre = doc! { "tuuid": &directory };
                 // Change type_node to Repertoire if it is Collection. It is possible to move a top-level Collection under another.
                 let ops = doc! {
-                    "$set": {"path_cuuids": &move_command.path, "type_node": TypeNode::Repertoire.to_str()},
+                    "$set": {"path_cuuids": &move_command.path, "type_node": TypeNode::Repertoire.to_str(), CHAMP_FLAG_INDEX: false},
                     "$currentDate": {CHAMP_MODIFICATION: true}
                 };
                 collection_reps.update_one_with_session(filtre, ops, None, session).await?;
@@ -2353,7 +2353,7 @@ async fn transaction_move_v2<M>(middleware: &M, transaction: TransactionValide, 
                 new_path.extend(&move_command.path);
                 let filtre = doc! { "path_cuuids.0": &directory, "type_node": TypeNode::Fichier.to_str() };
                 let ops = doc! {
-                    "$set": {"path_cuuids": new_path},
+                    "$set": {"path_cuuids": new_path, CHAMP_FLAG_INDEX: false},
                     "$currentDate": {CHAMP_MODIFICATION: true}
                 };
                 collection_reps.update_many_with_session(filtre, ops, None, session).await?;
