@@ -2975,7 +2975,7 @@ where M: GenerateurMessages + MongoDao
     debug!("transaction_remove_web_subtitle Consommer transaction : {}", transaction.transaction.id);
     let user_id = match transaction.certificat.get_user_id()? {
         Some(inner) => inner,
-        None => Err(format!("transaction_delete_file_comment Missing user_id from certificate for id:{}", transaction.transaction.id))?
+        None => Err(format!("transaction_remove_web_subtitle Missing user_id from certificate for id:{}", transaction.transaction.id))?
     };
 
     let transaction_subtitle: TransactionRemoveWebSubtitle = serde_json::from_str(transaction.transaction.contenu.as_str())?;
@@ -2990,6 +2990,14 @@ where M: GenerateurMessages + MongoDao
     };
     let collection_media = middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
     collection_media.update_one_with_session(filter_media, ops, None, session).await?;
+
+    // Remove the subtitle_fuuid in version_fuuid to ensure it is no longer claimed
+    let filter_version = doc!{CHAMP_FUUID: &fuuid};
+    let ops = doc!{"$pull": {CHAMP_FUUIDS_RECLAMES: &subtitle_fuuid}, "$currentDate": {CHAMP_MODIFICATION: true}};
+    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    if collection_versions.update_one_with_session(filter_version, ops, None, session).await?.matched_count != 1 {
+        Err(format!("transaction_remove_web_subtitle The file is unknown: fuuid {}", fuuid))?
+    };
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
     match middleware.reponse_ok(None, None) {
