@@ -98,6 +98,8 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         TRANSACTION_SUPPRIMER_ORPHELINS => commande_supprimer_orphelins(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_UPDATE_FILE_TEXT_CONTENT => command_update_file_text_content(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_DELETE_FILE_COMMENT => command_delete_file_comment(middleware, m, gestionnaire, &mut session).await,
+        TRANSACTION_ADD_WEB_SUBTITLE => command_add_web_subtitle(middleware, m, gestionnaire, &mut session).await,
+        TRANSACTION_REMOVE_WEB_SUBTITLE => command_remove_web_subtitle(middleware, m, gestionnaire, &mut session).await,
 
         // Sync
         COMMANDE_RECLAMER_FUUIDS => evenement_fichiers_syncpret(middleware, m, &mut session).await,
@@ -3398,4 +3400,120 @@ async fn trigger_file_indexing<M>(middleware: &M) -> Result<(), CommonError>
             DOMAINE_NOM, EVENT_FILES_TO_INDEX, vec![Securite::L3Protege]).build();
     middleware.emettre_evenement(routage, EventTriggerIndexing{}).await?;
     Ok(())
+}
+
+async fn command_add_web_subtitle<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
+                                     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    debug!("command_add_web_subtitle Consommer commande : {:?}", & m.type_message);
+    let command: TransactionAddWebSubtitle = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
+    // Autorisation: Action usager avec compte prive ou delegation globale
+    if m.certificat.get_user_id()?.is_none() {
+        return Ok(Some(middleware.reponse_err(Some(403), None, Some("User_id missing from certificate"))?))
+    };
+
+    let role_admin = m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
+
+    if !role_admin && !role_prive {
+        debug!("command_add_web_subtitle Access denied, not a user/admin nor authorized system module");
+        return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access denied"))?))
+    }
+
+    // Ensure a matching file exists
+    let fuuid = &command.file_fuuid;
+    let version_filter = doc!{"fuuid": fuuid};
+    let collection_versions = middleware.get_collection_typed::<NodeFichierVersionOwned>(NOM_COLLECTION_VERSIONS)?;
+    let version_courante = match collection_versions.find_one_with_session(version_filter, None, session).await {
+        Ok(inner) => match inner {
+            Some(inner) => inner,
+            None => {
+                info!("command_add_web_subtitle find_one : Fichier inconnu {}", fuuid);
+                return Ok(Some(middleware.reponse_err(Some(404), None, Some("File not found"))?))
+            }
+        },
+        Err(e) => {
+            error!("command_add_web_subtitle find_one : DB format error in fuuid {} : {:?}", fuuid, e);
+            return Ok(Some(middleware.reponse_err(None, None, Some("DB format error in file"))?))
+        }
+    };
+
+    // Process transaction
+    let resultat = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
+
+    // Emit file modified event. Note : this emits the event for all tuuids - should filter on user_id.
+    for tuuid in &version_courante.tuuids {
+        if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, tuuid, EVENEMENT_FUUID_DECRIRE_FICHIER, session).await {
+            warn!("command_add_web_subtitle Erreur emettre_evenement_maj_fichier : {:?}", e);
+        }
+    }
+
+    // Uncomment if subtitles get added to the full text index
+    // if let Err(e) = trigger_file_indexing(middleware).await {
+    //     warn!("command_add_web_subtitle Error emitting file indexing trigger: {:?}", e);
+    // }
+
+    Ok(resultat)
+}
+
+async fn command_remove_web_subtitle<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
+                                        -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao + ValidateurX509
+{
+    debug!("command_remove_web_subtitle Consommer commande : {:?}", & m.type_message);
+    let command: TransactionRemoveWebSubtitle = {
+        let message_ref = m.message.parse()?;
+        message_ref.contenu()?.deserialize()?
+    };
+
+    // Autorisation: Action usager avec compte prive ou delegation globale
+    let user_id = match m.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err("command_remove_web_subtitle User_id missing")?
+    };
+
+    let role_admin = m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)?;
+    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
+
+    if !role_admin && !role_prive {
+        debug!("command_remove_web_subtitle Access denied, not a user/admin nor authorized system module");
+        return Ok(Some(middleware.reponse_err(Some(403), None, Some("Access denied"))?))
+    }
+
+    // Find matching file
+    let collection_reps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
+    let filtre_reps = doc!{CHAMP_FUUIDS_VERSIONS: &command.file_fuuid, CHAMP_USER_ID: &user_id};
+    let tuuid = match collection_reps.find_one_with_session(filtre_reps, None, session).await? {
+        Some(row) => row.tuuid,
+        None => {
+            info!("command_add_web_subtitle find_one : Fichier inconnu {}", &command.file_fuuid);
+            return Ok(Some(middleware.reponse_err(Some(404), None, Some("File not found"))?))
+        }
+    };
+
+    let collection_media = middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
+    let filtre_media = doc!{CHAMP_FUUID: &command.file_fuuid, CHAMP_USER_ID: &user_id};
+    if collection_media.find_one_with_session(filtre_media, None, session).await?.is_none() {
+        info!("command_add_web_subtitle find_one : File media information not found: {}", &command.file_fuuid);
+        return Ok(Some(middleware.reponse_err(Some(404), None, Some("File media information not found"))?))
+    };
+
+    // Process transaction
+    let resultat = sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
+
+    // Emit file modified event
+    if let Err(e) = emettre_evenement_maj_fichier(middleware, gestionnaire, &tuuid, EVENEMENT_FUUID_DECRIRE_FICHIER, session).await {
+        warn!("command_remove_web_subtitle Erreur emettre_evenement_maj_fichier : {:?}", e);
+    }
+
+    // if let Err(e) = trigger_file_indexing(middleware).await {
+    //     warn!("command_remove_web_subtitle Error emitting file indexing trigger: {:?}", e);
+    // }
+
+    Ok(resultat)
 }

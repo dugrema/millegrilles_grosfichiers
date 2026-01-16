@@ -39,6 +39,8 @@ pub struct MediaOwnedRow {
     pub audio: Option<Vec<AudioDetail>>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub subtitles: Option<Vec<SubtitleDetail>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub web_subtitles: Option<Vec<MediaWebSubtitleDetail>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -123,6 +125,23 @@ pub struct SubtitleDetail {
     codec_name: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MediaWebSubtitleDetail {
+    pub language: String,
+    pub fuuid: String,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub index: Option<i32>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub label: Option<String>,
+    // Encryption parameters
+    pub cle_id: String,
+    pub format: String,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub compression: Option<String>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub nonce: Option<String>,
+}
+
 #[derive(Clone, Serialize)]
 pub struct ResponseVersionCourante {
     pub fuuid: String,
@@ -157,6 +176,8 @@ pub struct ResponseVersionCourante {
     pub audio: Option<Vec<AudioDetail>>,
     #[serde(skip_serializing_if="Option::is_none")]
     pub subtitles: Option<Vec<SubtitleDetail>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    pub web_subtitles: Option<Vec<MediaWebSubtitleDetail>>,
 
     // Information de chiffrage symmetrique (depuis 2024.3.0)
     #[serde(skip_serializing_if="Option::is_none")]

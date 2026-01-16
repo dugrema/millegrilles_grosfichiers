@@ -104,6 +104,8 @@ pub const TRANSACTION_DELETE_V2: &str = "deleteV2";
 pub const TRANSACTION_MOVE_V2: &str = "moveV2";
 pub const TRANSACTION_COPY_V2: &str = "copyV2";
 pub const TRANSACTION_PERMANENTLY_DELETE_FILES: &str = "permanentlyDeleteFiles";
+pub const TRANSACTION_ADD_WEB_SUBTITLE: &str = "addWebSubtitle";
+pub const TRANSACTION_REMOVE_WEB_SUBTITLE: &str = "removeWebSubtitle";
 
 pub const COMMANDE_REINDEXER: &str = "reindexerFichiers";
 pub const COMMANDE_COMPLETER_PREVIEWS: &str = "completerPreviews";

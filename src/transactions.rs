@@ -1,8 +1,8 @@
 use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryInto;
 
-use crate::data_structs::{FileComment, ImageDetail, MediaOwnedRow, VideoDetail};
+use crate::data_structs::{FileComment, ImageDetail, MediaOwnedRow, MediaWebSubtitleDetail, SubtitleDetail, VideoDetail};
 use crate::domain_manager::GrosFichiersDomainManager;
 use log::{debug, error, info, warn};
 use millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime;
@@ -30,6 +30,7 @@ use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::{bson, bson::doc};
 use millegrilles_common_rust::{hex, serde_json, serde_json::json};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
+use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{verifier_acces_usager_tuuids, ContactRow};
 use crate::traitement_index::{reset_flag_indexe, set_flag_index_traite};
@@ -81,6 +82,8 @@ pub async fn aiguillage_transaction<M, T>(_gestionnaire: &GrosFichiersDomainMana
         TRANSACTION_SUPPRIMER_VIDEO => transaction_supprimer_video(middleware, transaction, session).await,
         TRANSACTION_IMAGE_SUPPRIMER_JOB_V2 => transaction_supprimer_job_image_v2(middleware, transaction, session).await,
         TRANSACTION_VIDEO_SUPPRIMER_JOB_V2 => transaction_supprimer_job_video_v2(middleware, transaction, session).await,
+        TRANSACTION_ADD_WEB_SUBTITLE => transaction_add_web_subtitle(middleware, transaction, session).await,
+        TRANSACTION_REMOVE_WEB_SUBTITLE => transaction_remove_web_subtitle(middleware, transaction, session).await,
 
         // Sharing
         TRANSACTION_AJOUTER_CONTACT_LOCAL => transaction_ajouter_contact_local(middleware, transaction, session).await,
@@ -1608,6 +1611,7 @@ async fn transaction_associer_conversions<M>(middleware: &M, transaction: Transa
                 video: None,
                 audio: None,
                 subtitles: None,
+                web_subtitles: None,
             };
 
             let mut set_ops = doc! {
@@ -2883,4 +2887,106 @@ where M: GenerateurMessages + MongoDao
     collection.update_one_with_session(filtre, ops, None, session).await?;
 
     Ok(Some(middleware.reponse_ok(None, None)?))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionAddWebSubtitle {
+    pub file_fuuid: String,
+    pub user_id: Option<String>,
+    pub subtitle_fuuid: String,
+    pub language: String,
+    pub index: Option<i32>,
+    pub label: Option<String>,
+    pub cle_id: String,
+    // Encryption parameters
+    pub format: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<String>,
+}
+
+impl Into<MediaWebSubtitleDetail> for TransactionAddWebSubtitle {
+    fn into(self) -> MediaWebSubtitleDetail {
+        MediaWebSubtitleDetail {
+            language: self.language,
+            fuuid: self.subtitle_fuuid,
+            index: self.index,
+            label: self.label,
+            cle_id: self.cle_id,
+            format: self.format,
+            compression: self.compression,
+            nonce: self.nonce
+        }
+    }
+}
+
+async fn transaction_add_web_subtitle<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
+                                         -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao
+{
+    debug!("transaction_add_web_subtitle Consommer transaction : {}", transaction.transaction.id);
+    let user_id = match transaction.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(format!("transaction_delete_file_comment Missing user_id from certificate for id:{}", transaction.transaction.id))?
+    };
+
+    let transaction_subtitle: TransactionAddWebSubtitle = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    let fuuid = &transaction_subtitle.file_fuuid.clone();
+    let subtitle_fuuid = &transaction_subtitle.subtitle_fuuid.clone();
+
+    // Insert the subtitle_fuuid in version_fuuid to ensure it is claimed
+    let filter_version = doc!{CHAMP_FUUID: &fuuid};
+    let ops = doc!{"$addToSet": {CHAMP_FUUIDS_RECLAMES: &subtitle_fuuid}, "$currentDate": {CHAMP_MODIFICATION: true}};
+    let collection_versions = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
+    if collection_versions.update_one_with_session(filter_version, ops, None, session).await?.matched_count != 1 {
+        Err(format!("transaction_add_web_subtitle The file is unknown: fuuid {}", fuuid))?
+    };
+
+    let subtitle: MediaWebSubtitleDetail = transaction_subtitle.into();
+    let subtitle = convertir_to_bson(subtitle)?;
+
+    let filter_media = doc!{CHAMP_FUUID: fuuid, CHAMP_USER_ID: &user_id};
+    let ops = doc!{
+        "$setOnInsert": {CHAMP_CREATION: Utc::now()},
+        "$push": {"web_subtitles": subtitle},
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    let collection_media = middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
+    collection_media.update_one_with_session(filter_media, ops, None, session).await?;
+
+    // Retourner le tuuid comme reponse, aucune transaction necessaire
+    match middleware.reponse_ok(None, None) {
+        Ok(r) => Ok(Some(r)),
+        Err(_) => Err(CommonError::Str("grosfichiers.transaction_add_web_subtitle Erreur formattage reponse"))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransactionRemoveWebSubtitle {
+    pub file_fuuid: String,
+    pub subtitle_fuuid: String,
+}
+
+async fn transaction_remove_web_subtitle<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
+                                            -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
+where M: GenerateurMessages + MongoDao
+{
+    debug!("transaction_remove_web_subtitle Consommer transaction : {}", transaction.transaction.id);
+    todo!()
+    // let transaction_supprimer: TransactionSupprimerJobVideoV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    // let job_id = &transaction_supprimer.job_id;
+    // let fuuid = &transaction_supprimer.fuuid;
+    // let tuuid = &transaction_supprimer.tuuid;
+    //
+    // // Indiquer que la job a ete completee et ne doit pas etre redemarree.
+    // if let Err(e) = set_flag_video_traite(middleware, Some(tuuid), fuuid, Some(job_id.as_str()), session).await {
+    //     Err(format!("transactions.transaction_remove_web_subtitle Erreur set_flag video : {:?}", e))?
+    // }
+    //
+    // // Retourner le tuuid comme reponse, aucune transaction necessaire
+    // match middleware.reponse_ok(None, None) {
+    //     Ok(r) => Ok(Some(r)),
+    //     Err(_) => Err(CommonError::Str("grosfichiers.transaction_remove_web_subtitle Erreur formattage reponse"))
+    // }
 }

@@ -602,6 +602,7 @@ async fn get_complete_files<M>(middleware: &M, mut filtre: Document, changed_sin
                 video: None,
                 audio: None,
                 subtitles: None,
+                web_subtitles: None,
                 cle_id: version.cle_id,
                 format: version.format,
                 nonce: version.nonce,
@@ -618,6 +619,7 @@ async fn get_complete_files<M>(middleware: &M, mut filtre: Document, changed_sin
                 version_response.video = media.video;
                 version_response.audio = media.audio;
                 version_response.subtitles = media.subtitles;
+                version_response.web_subtitles = media.web_subtitles;
             }
 
             fichier_rep.version_courante = Some(version_response);
