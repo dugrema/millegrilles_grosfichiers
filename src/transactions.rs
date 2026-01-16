@@ -2953,7 +2953,8 @@ where M: GenerateurMessages + MongoDao
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
     let collection_media = middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
-    collection_media.update_one_with_session(filter_media, ops, None, session).await?;
+    let options = UpdateOptions::builder().upsert(true).build();
+    collection_media.update_one_with_session(filter_media, ops, options, session).await?;
 
     // Retourner le tuuid comme reponse, aucune transaction necessaire
     match middleware.reponse_ok(None, None) {
@@ -2984,7 +2985,6 @@ where M: GenerateurMessages + MongoDao
 
     let filter_media = doc!{CHAMP_FUUID: fuuid, CHAMP_USER_ID: &user_id};
     let ops = doc!{
-        "$setOnInsert": {CHAMP_CREATION: Utc::now()},
         "$pull": {"web_subtitles": {"fuuid": subtitle_fuuid}},
         "$currentDate": {CHAMP_MODIFICATION: true}
     };
