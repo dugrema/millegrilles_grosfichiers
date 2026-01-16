@@ -2973,20 +2973,27 @@ async fn transaction_remove_web_subtitle<M>(middleware: &M, transaction: Transac
 where M: GenerateurMessages + MongoDao
 {
     debug!("transaction_remove_web_subtitle Consommer transaction : {}", transaction.transaction.id);
-    todo!()
-    // let transaction_supprimer: TransactionSupprimerJobVideoV2 = serde_json::from_str(transaction.transaction.contenu.as_str())?;
-    // let job_id = &transaction_supprimer.job_id;
-    // let fuuid = &transaction_supprimer.fuuid;
-    // let tuuid = &transaction_supprimer.tuuid;
-    //
-    // // Indiquer que la job a ete completee et ne doit pas etre redemarree.
-    // if let Err(e) = set_flag_video_traite(middleware, Some(tuuid), fuuid, Some(job_id.as_str()), session).await {
-    //     Err(format!("transactions.transaction_remove_web_subtitle Erreur set_flag video : {:?}", e))?
-    // }
-    //
-    // // Retourner le tuuid comme reponse, aucune transaction necessaire
-    // match middleware.reponse_ok(None, None) {
-    //     Ok(r) => Ok(Some(r)),
-    //     Err(_) => Err(CommonError::Str("grosfichiers.transaction_remove_web_subtitle Erreur formattage reponse"))
-    // }
+    let user_id = match transaction.certificat.get_user_id()? {
+        Some(inner) => inner,
+        None => Err(format!("transaction_delete_file_comment Missing user_id from certificate for id:{}", transaction.transaction.id))?
+    };
+
+    let transaction_subtitle: TransactionRemoveWebSubtitle = serde_json::from_str(transaction.transaction.contenu.as_str())?;
+    let fuuid = &transaction_subtitle.file_fuuid.clone();
+    let subtitle_fuuid = &transaction_subtitle.subtitle_fuuid.clone();
+
+    let filter_media = doc!{CHAMP_FUUID: fuuid, CHAMP_USER_ID: &user_id};
+    let ops = doc!{
+        "$setOnInsert": {CHAMP_CREATION: Utc::now()},
+        "$pull": {"web_subtitles": {"fuuid": subtitle_fuuid}},
+        "$currentDate": {CHAMP_MODIFICATION: true}
+    };
+    let collection_media = middleware.get_collection_typed::<MediaOwnedRow>(NOM_COLLECTION_MEDIA)?;
+    collection_media.update_one_with_session(filter_media, ops, None, session).await?;
+
+    // Retourner le tuuid comme reponse, aucune transaction necessaire
+    match middleware.reponse_ok(None, None) {
+        Ok(r) => Ok(Some(r)),
+        Err(_) => Err(CommonError::Str("grosfichiers.transaction_remove_web_subtitle Erreur formattage reponse"))
+    }
 }
