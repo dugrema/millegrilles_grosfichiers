@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::ops::Deref;
 use std::str::from_utf8;
-
+use std::time::Duration;
 use crate::data_structs::{AudioDetail, CompleteFileRow, FileComment, MediaOwnedRow, ResponseVersionCourante, SubtitleDetail, VideoDetail};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
@@ -3480,7 +3480,7 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     }
 
     if ! cle_ids.is_empty() {
-        let keys = get_file_keys(middleware, cle_ids).await?;
+        let keys = get_file_keys(middleware, cle_ids, None).await?;
         sync_response.keys = Some(keys);
     }
 
@@ -3490,14 +3490,19 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
     Ok(Some(response))
 }
 
-pub async fn get_file_keys<M>(middleware: &M, cle_ids: HashSet<&String>)
+pub async fn get_file_keys<M>(middleware: &M, cle_ids: HashSet<&String>, wait_duration: Option<Duration>)
     -> Result<Vec<ResponseRequestDechiffrageV2Cle>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
+    let wait_duration = match wait_duration {
+        Some(w) => w.as_millis() as u64,
+        None => 3_000
+    };
+
     // Request decrypted keys from keymaster.
     let routage = RoutageMessageAction::builder(
         DOMAINE_NOM_MAITREDESCLES, MAITREDESCLES_REQUETE_DECHIFFRAGE_V2, vec![Securite::L3Protege])
-        .timeout_blocking(3_000)  // Short wait
+        .timeout_blocking(wait_duration)  // Short wait
         .build();
     let key_request = RequeteDechiffrage {
         domaine: DOMAINE_NOM.to_string(),
@@ -3686,7 +3691,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
                 }
 
                 if cle_ids.len() > 0 {
-                    let keys = get_file_keys(middleware, cle_ids).await?;
+                    let keys = get_file_keys(middleware, cle_ids, None).await?;
                     response.keys = Some(keys);
                 }
             } else {
@@ -3849,7 +3854,7 @@ async fn request_files_by_tuuid<M>(middleware: &M, m: MessageValide)
     }
 
     if cle_ids.len() > 0 {
-        let keys = get_file_keys(middleware, cle_ids).await?;
+        let keys = get_file_keys(middleware, cle_ids, None).await?;
         response.keys = Some(keys);
     }
 

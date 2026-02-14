@@ -737,7 +737,7 @@ where M: MongoDao + GenerateurMessages
                 }
             }
         }
-        let secret_keys = get_file_keys(middleware, cle_ids).await?;
+        let secret_keys = get_file_keys(middleware, cle_ids, Some(core::time::Duration::from_secs(8))).await?;
         Ok(Some(LeasesResponse { ok: true, leases, secret_keys }))
     } else {
         Ok(None)
@@ -873,7 +873,7 @@ where M: MongoDao + GenerateurMessages
                 cle_ids.insert(&lease.version.fuuid);  // Legacy
             }
         }
-        let secret_keys = get_file_keys(middleware, cle_ids).await?;
+        let secret_keys = get_file_keys(middleware, cle_ids, Some(core::time::Duration::from_secs(8))).await?;
         Ok(Some(VersionLeasesResponse { ok: true, leases, secret_keys }))
     } else {
         Ok(None)
