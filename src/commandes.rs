@@ -1,49 +1,39 @@
 use log::{debug, error, info, warn};
-use millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime;
-use millegrilles_common_rust::bson::{doc, to_bson_with_options, Bson, Document, SerializerOptions};
+use millegrilles_common_rust::bson::doc;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage_cle::CommandeSauvegarderCle;
-use millegrilles_common_rust::chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::common_messages::{verifier_reponse_ok, RequeteDechiffrage};
-use millegrilles_common_rust::constantes::Securite::{L2Prive, L4Secure};
+use millegrilles_common_rust::constantes::Securite::L2Prive;
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::error::{Error, Error as CommonError};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::messages_generiques::ReponseCommande;
-use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction, sauvegarder_traiter_transaction_serializable, sauvegarder_traiter_transaction_serializable_v2, sauvegarder_traiter_transaction_v2};
+use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction_serializable_v2, sauvegarder_traiter_transaction_v2};
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
-use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{MessageMilleGrillesBufferDefault, MessageMilleGrillesOwned};
 use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, start_transaction_regular, MongoDao};
-use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
-use millegrilles_common_rust::mongodb::{ClientSession, Collection};
+use millegrilles_common_rust::mongodb::options::FindOptions;
+use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
-use millegrilles_common_rust::redis::Client;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
-use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::transactions::Transaction;
 use millegrilles_common_rust::{chrono, get_replyq_correlation, serde_json, serde_json::json};
 use std::collections::{HashMap, HashSet};
-use std::iter::Map;
-use std::str::from_utf8;
 use std::time::Duration;
 
-use crate::data_structs::{FileComment, MediaOwnedRow};
+use crate::data_structs::MediaOwnedRow;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::{emettre_evenement_contenu_collection, emettre_evenement_maj_collection, emettre_evenement_maj_fichier, evenement_fichiers_syncpret, EvenementContenuCollection};
 
 use crate::grosfichiers_constantes::*;
-use crate::requetes::{mapper_fichier_db, verifier_acces_usager, verifier_acces_usager_media, verifier_acces_usager_tuuids, ContactRow};
+use crate::requetes::{verifier_acces_usager_tuuids, ContactRow};
 use crate::traitement_entretien::{claim_all_files, verifier_visites_topologies, RequeteGetVisitesFuuidsResponse};
 use crate::traitement_index::{lease_batch_fichiersrep, lease_batch_fichiersversion, reset_flag_indexe, set_flag_index_traite};
-use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
+use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams, ParametresConfirmerJobIndexation};
 use crate::traitement_media::{commande_supprimer_job_image_v2, commande_supprimer_job_video_v2, sauvegarder_job_video, set_flag_image_traitee, set_flag_video_traite};
 use crate::transactions::*;
-
-const REQUETE_MAITREDESCLES_VERIFIER_PREUVE: &str = "verifierPreuve";
 
 pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
@@ -95,7 +85,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
         TRANSACTION_DECRIRE_FICHIER => commande_decrire_fichier(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_DECRIRE_COLLECTION => commande_decrire_collection(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_SUPPRIMER_VIDEO => commande_supprimer_video(middleware, m, gestionnaire, &mut session).await,
-        TRANSACTION_SUPPRIMER_ORPHELINS => commande_supprimer_orphelins(middleware, m, gestionnaire, &mut session).await,
+        // TRANSACTION_SUPPRIMER_ORPHELINS => commande_supprimer_orphelins(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_UPDATE_FILE_TEXT_CONTENT => command_update_file_text_content(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_DELETE_FILE_COMMENT => command_delete_file_comment(middleware, m, gestionnaire, &mut session).await,
         TRANSACTION_ADD_WEB_SUBTITLE => command_add_web_subtitle(middleware, m, gestionnaire, &mut session).await,
@@ -148,7 +138,7 @@ pub async fn consommer_commande<M>(middleware: &M, m: MessageValide, gestionnair
     }
 }
 
-async fn commande_nouvelle_version<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
+async fn commande_nouvelle_version<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -268,7 +258,7 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
 
     // If this is a file, extract the first fuuid (most recent version)
     let fuuid = match file_rep.fuuids_versions.as_ref() {
-        Some(mut inner) => {
+        Some(inner) => {
             if let Some(fuuid) = inner.first() {
                 fuuid.to_owned()
             } else {
@@ -361,7 +351,7 @@ async fn commande_decrire_fichier<M>(middleware: &M, m: MessageValide, gestionna
     Ok(resultat)
 }
 
-async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
+async fn commande_nouvelle_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -439,7 +429,7 @@ async fn commande_nouvelle_collection<M>(middleware: &M, mut m: MessageValide, g
     {
         // let mut evenement_contenu = EvenementContenuCollection::new();
         let mut evenement_contenu = match cuuid.as_ref() {
-            Some(cuuid) => EvenementContenuCollection::new(cuuid.clone()),
+            Some(cuuid) => EvenementContenuCollection::new(cuuid),
             None => EvenementContenuCollection::new(user_id.clone())
         };
         evenement_contenu.collections_ajoutees = Some(vec![tuuid.clone()]);
@@ -572,7 +562,7 @@ pub struct InformationAutorisation {
     pub erreur: Option<MessageMilleGrillesOwned>,
     pub tuuids_repertoires: Vec<String>,
     pub tuuids_fichiers: Vec<String>,
-    pub tuuids_refuses: Vec<String>,
+    // pub tuuids_refuses: Vec<String>,
     pub fuuids: Vec<String>,
 }
 
@@ -582,7 +572,7 @@ impl InformationAutorisation {
             erreur: None,
             tuuids_repertoires: Vec::new(),
             tuuids_fichiers: Vec::new(),
-            tuuids_refuses: Vec::new(),
+            // tuuids_refuses: Vec::new(),
             fuuids: Vec::new(),
         }
     }
@@ -1418,93 +1408,6 @@ async fn commande_supprimer_documents<M>(middleware: &M, m: MessageValide, gesti
     Ok(result)
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct RowFuuids {
-    fuuids: Option<Vec<String>>
-}
-
-async fn commande_recuperer_documents<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao + ValidateurX509
-{
-    debug!("commande_recuperer_documents Consommer commande : {:?}", & m.type_message);
-    let commande: TransactionListeDocuments = {
-        let message_ref = m.message.parse()?;
-        message_ref.contenu()?.deserialize()?
-    };
-    // let commande: TransactionListeDocuments = m.message.get_msg().map_contenu()?;
-    debug!("Commande commande_recuperer_documents versions parsed : {:?}", commande);
-
-    // Autorisation: Action usager avec compte prive ou delegation globale
-    let user_id = m.certificat.get_user_id()?;
-    let role_prive = m.certificat.verifier_roles(vec![RolesCertificats::ComptePrive])?;
-    if role_prive && user_id.is_some() {
-        let user_id_str = user_id.as_ref().expect("user_id");
-        let tuuids: Vec<&str> = commande.tuuids.iter().map(|t| t.as_str()).collect();
-        let resultat = verifier_autorisation_usager(middleware, user_id_str, Some(&tuuids), None::<String>).await?;
-        if let Some(erreur) = resultat.erreur {
-            return Ok(Some(erreur.try_into()?))
-        }
-    } else if m.certificat.verifier_delegation_globale(DELEGATION_GLOBALE_PROPRIETAIRE)? {
-        // Ok
-    } else {
-        Err(format!("grosfichiers.consommer_commande: Commande autorisation invalide pour message {:?}", m.type_message))?
-    }
-
-    // Emettre une commande de reactivation a fichiers (consignation)
-    // Attendre 1 succes, timeout 10 secondes pour echec
-    let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS, COMMANDE_FICHIERS_REACTIVER, vec![Securite::L2Prive])
-        .timeout_blocking(5_000)
-        .build();
-
-    // Recuperer les fuuids pour tous les tuuids
-    let filtre = match user_id.as_ref() {
-        Some(u) => doc! { CHAMP_USER_ID: u, CHAMP_TUUID: {"$in": &commande.tuuids} },
-        None => doc! { CHAMP_TUUID: {"$in": &commande.tuuids} }
-    };
-    let projection = doc!{ CHAMP_FUUIDS: true };
-    let options = FindOptions::builder().projection(projection).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let mut fuuids = Vec::new();
-    let mut curseur = collection.find_with_session(filtre, Some(options), session).await?;
-    while let Some(r) = curseur.next(session).await {
-        let row: RowFuuids = convertir_bson_deserializable(r?)?;
-        if let Some(fr) = row.fuuids {
-            fuuids.extend(fr.into_iter());
-        }
-    }
-
-    debug!("commande_recuperer_documents Liste fuuids a recuperer : {:?}", fuuids);
-
-    let commande = json!({ "fuuids": fuuids });
-    match middleware.transmettre_commande(routage, &commande).await {
-        Ok(r) => match r {
-            Some(r) => match r {
-                TypeMessage::Valide(reponse) => {
-                    // Traiter la transaction
-                    debug!("commande_recuperer_documents Reponse recuperer document OK : {:?}", reponse);
-                    Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?)
-                },
-                _ => {
-                    debug!("commande_recuperer_documents Reponse recuperer document est invalide");
-                    // Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes"}), None)?))
-                    Ok(Some(middleware.reponse_err(None, None, Some("Fichiers supprimes"))?))
-                }
-            },
-            None => {
-                debug!("commande_recuperer_documents Reponse recuperer : reponse vide");
-                // Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Reponse des serveurs de fichiers vide (aucun contenu)"}), None)?))
-                Ok(Some(middleware.reponse_err(None, None, Some("Reponse des serveurs de fichiers vide (aucun contenu)"))?))
-            }
-        },
-        Err(e) => {
-            debug!("commande_recuperer_documents Reponse recuperer document erreur : {:?}", e);
-            // Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Fichiers supprimes/timeout"}), None)?))
-            Ok(Some(middleware.reponse_err(None, None, Some("Fichiers supprimes/timeout"))?))
-        }
-    }
-}
-
 #[derive(Deserialize)]
 struct ReponseRecupererFichiers {
     errors: Option<Vec<String>>,
@@ -1702,155 +1605,6 @@ async fn commande_decrire_collection<M>(middleware: &M, m: MessageValide, gestio
     Ok(result)
 }
 
-// commande_copier_fichier_tiers est OBSOLETE
-// async fn commande_copier_fichier_tiers<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
-//     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-//     where M: GenerateurMessages + MongoDao + ValidateurX509 + VerificateurMessage
-// {
-//     debug!("commande_copier_fichier_tiers Consommer commande : {:?}", & m.type_message);
-//     let commande: CommandeCopierFichierTiers = m.message.get_msg().map_contenu()?;
-//     debug!("commande_copier_fichier_tiers parsed : {:?}", commande);
-//     // debug!("Commande en json (DEBUG) : \n{:?}", serde_json::to_string(&commande));
-//
-//     let fingerprint_client = match &m.message.certificat {
-//         Some(inner) => inner.fingerprint.clone(),
-//         None => Err(format!("commande_copier_fichier_tiers Envelopppe manquante"))?
-//     };
-//
-//     let user_id = match m.get_user_id() {
-//         Some(inner) => inner,
-//         None => Err(format!("commande_copier_fichier_tiers Enveloppe sans user_id"))?
-//     };
-//
-//     // Verifier aupres du maitredescles si les cles sont valides
-//     let reponse_preuves = {
-//         let requete_preuves = json!({"fingerprint": fingerprint_client, "preuves": &commande.preuves});
-//         let routage_maitrecles = RoutageMessageAction::builder(
-//             DOMAINE_NOM_MAITREDESCLES, REQUETE_MAITREDESCLES_VERIFIER_PREUVE)
-//             .exchanges(vec![Securite::L4Secure])
-//             .build();
-//         debug!("commande_copier_fichier_tiers Requete preuve possession cles : {:?}", requete_preuves);
-//         let reponse_preuve = match middleware.transmettre_requete(routage_maitrecles, &requete_preuves).await? {
-//             TypeMessage::Valide(m) => {
-//                 match m.message.certificat.as_ref() {
-//                     Some(c) => {
-//                         if c.verifier_roles(vec![RolesCertificats::MaitreDesCles]) {
-//                             debug!("commande_copier_fichier_tiers Reponse preuve : {:?}", m);
-//                             let preuve_value: ReponsePreuvePossessionCles = m.message.get_msg().map_contenu()?;
-//                             Ok(preuve_value)
-//                         } else {
-//                             Err(format!("commandes.commande_copier_fichier_tiers Erreur chargement certificat de reponse verification preuve, certificat n'est pas de role maitre des cles"))
-//                         }
-//                     },
-//                     None => Err(format!("commandes.commande_copier_fichier_tiers Erreur chargement certificat de reponse verification preuve, certificat inconnu"))
-//                 }
-//             },
-//             m => Err(format!("commandes.commande_copier_fichier_tiers Erreur reponse message verification cles, mauvais type : {:?}", m))
-//         }?;
-//         debug!("commande_copier_fichier_tiers Reponse verification preuve : {:?}", reponse_preuve);
-//
-//         reponse_preuve.verification
-//     };
-//
-//     let mut resultat_fichiers = HashMap::new();
-//     for mut fichier in commande.fichiers {
-//         let fuuid = fichier.fuuid.as_str();
-//
-//         let mut etat_cle = false;
-//         if Some(&true) == reponse_preuves.get(fuuid) {
-//             etat_cle = true;
-//         } else {
-//             // Tenter de sauvegarder la cle
-//             if let Some(cle) = commande.cles.get(fuuid) {
-//                 debug!("commande_copier_fichier_tiers Sauvegarder cle fuuid {} : {:?}", fuuid, cle);
-//                 let routage = RoutageMessageAction::builder(DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE)
-//                     .exchanges(vec![Securite::L4Secure])
-//                     .timeout_blocking(5000)
-//                     .build();
-//                 let reponse_cle = middleware.transmettre_commande(routage, &cle, true).await?;
-//                 debug!("commande_copier_fichier_tiers Reponse sauvegarde cle : {:?}", reponse_cle);
-//                 if let Some(reponse) = reponse_cle {
-//                     if let TypeMessage::Valide(mva) = reponse {
-//                         debug!("Reponse valide : {:?}", mva);
-//                         let reponse_mappee: ReponseCle = mva.message.get_msg().map_contenu()?;
-//                         etat_cle = true;
-//                     }
-//                 }
-//             } else {
-//                 debug!("commande_copier_fichier_tiers Aucune cle trouvee pour fuuid {} : {:?}", fuuid, commande.cles);
-//             }
-//         }
-//
-//         if etat_cle {
-//             debug!("commande_copier_fichier_tiers Fuuid {} preuve OK", fuuid);
-//
-//             // Injecter le user_id du certificat recu
-//             fichier.user_id = Some(user_id.clone());
-//
-//             // Convertir le fichier en transaction
-//             let transaction_copier_message = middleware.formatter_message(
-//                 MessageKind::Commande, &fichier, DOMAINE_NOM.into(), "copierFichierTiers".into(), None::<&str>, None::<&str>, None, false)?;
-//             let transaction_copier_message = MessageSerialise::from_parsed(transaction_copier_message)?;
-//
-//             let mva = MessageValide::new(
-//                 transaction_copier_message,
-//                 m.q.clone(),
-//                 "transaction.GrosFichiers.copierFichierTiers".into(),
-//                 m.domaine.clone(),
-//                 "copierFichierTiers".into(),
-//                 m.type_message.clone()
-//             );
-//
-//             // Conserver transaction
-//             match sauvegarder_traiter_transaction(middleware, mva, gestionnaire).await {
-//                 Ok(r) => {
-//                     debug!("commande_copier_fichier_tiers Reponse sauvegarde fichier {} : {:?}", fuuid, r);
-//                     resultat_fichiers.insert(fuuid.to_string(), true);
-//
-//                     // Demander visite de presence du fichier par consignation_fichiers
-//                     let params = json!({ "visiter": true, "fuuids": vec![&fuuid] });
-//                     debug!("commande_copier_fichier_tiers Emettre demande visite fichier {}", fuuid);
-//                     let routage = RoutageMessageAction::builder(DOMAINE_FICHIERS_NOM, "fuuidVerifierExistance")
-//                         .exchanges(vec![Securite::L2Prive])
-//                         .build();
-//                     if let Err(e) = middleware.transmettre_requete(routage, &params).await {
-//                         info!("commande_copier_fichier_tiers Erreur visite fichier {} : {:?}", fuuid, e);
-//                     }
-//                 },
-//                 Err(e) => {
-//                     error!("commande.commande_copier_fichier_tiers Erreur sauvegarder_traiter_transaction {} : {:?}", fuuid, e);
-//                     resultat_fichiers.insert(fuuid.to_string(), false);
-//                 }
-//             }
-//
-//         } else {
-//             warn!("commande_copier_fichier_tiers Fuuid {} preuve refusee ou cle inconnue", fuuid);
-//             resultat_fichiers.insert(fuuid.to_string(), false);
-//         }
-//     }
-//
-//     let reponse = json!({"resultat": resultat_fichiers});
-//     Ok(Some(middleware.formatter_reponse(&reponse, None)?))
-// }
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CommandeCopierFichierTiers {
-    pub cles: HashMap<String, CommandeSauvegarderCle>,
-    pub fichiers: Vec<TransactionCopierFichierTiers>,
-    pub preuves: HashMap<String, PreuvePossessionCles>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PreuvePossessionCles {
-    pub preuve: String,
-    pub date: DateTime<Utc>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReponsePreuvePossessionCles {
-    pub verification: HashMap<String, bool>,
-}
-
 async fn commande_reindexer<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
@@ -1866,112 +1620,13 @@ async fn commande_reindexer<M>(middleware: &M, m: MessageValide, gestionnaire: &
     reset_flag_indexe(middleware, gestionnaire, session).await
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct CommandeIndexerContenu {
-    reset: Option<bool>,
-    limit: Option<i64>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct ReponseCommandeReindexer {
-    tuuids: Option<Vec<String>>,
-    ok: bool,
-}
-
-// async fn commande_completer_previews<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
-//     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-//     where M: GenerateurMessages + MongoDao + ValidateurX509,
-// {
-//     debug!("commande_completer_previews Consommer commande : {:?}", & m.type_message);
-//     let commande: CommandeCompleterPreviews = {
-//         let message_ref = m.message.parse()?;
-//         message_ref.contenu()?.deserialize()?
-//     };
-// 
-//     // Autorisation : doit etre un message provenant d'un usager avec acces prive ou delegation globale
-//     // Verifier si on a un certificat delegation globale ou prive
-//     let user_id = match m.certificat.get_user_id()? {
-//         Some(inner) => inner,
-//         None => {
-//             warn!("commande_completer_previews User_id n'est pas fourni, commande refusee");
-//             // let reponse = middleware.formatter_reponse(json!({"ok": false, "err": "Acces refuse (user_id)"}), None)?;
-//             // return Ok(Some(reponse))
-//             return Ok(Some(middleware.reponse_err(None, None, Some("Acces refuse (user_id)"))?))
-//         }
-//     };
-// 
-//     // Parcourir tous les fuuids demandes pour le user_id
-//     let filtre = match commande.fuuids {
-//         Some(fuuids) => {
-//             doc! {CHAMP_FUUID: {"$in": fuuids}}
-//         },
-//         None => {
-//             warn!("commande_completer_previews Aucuns fuuids, pas d'effet.");
-//             // let reponse = middleware.formatter_reponse(json!({"ok": true, "message": "Aucun effet (pas de fuuids fournis)"}), None)?;
-//             // return Ok(Some(reponse))
-//             return Ok(Some(middleware.reponse_err(None, None, Some("Aucun effet (pas de fuuids fournis)"))?))
-//         }
-//     };
-// 
-//     let collection_reps = middleware.get_collection_typed::<NodeFichierRepOwned>(NOM_COLLECTION_FICHIERS_REP)?;
-// 
-//     let collection_versions = middleware.get_collection_typed::<NodeFichierVersionBorrowed>(NOM_COLLECTION_VERSIONS)?;
-//     let mut curseur = collection_versions.find_with_session(filtre, None, session).await?;
-//     while curseur.advance(session).await? {
-//         let fichier_version = match curseur.deserialize_current() {
-//             Ok(inner) => inner,
-//             Err(e) => {
-//                 error!("commande_completer_previews Erreur mapping fichier version, SKIP");
-//                 continue
-//             }
-//         };
-// 
-//         let fuuid = fichier_version.fuuid;
-//         let mimetype= fichier_version.mimetype;
-// 
-//         let filtre_rep = doc!{"fuuids_versions": fuuid, "user_id": &user_id};
-//         let file_rep = match collection_reps.find_one_with_session(filtre_rep, None, session).await? {
-//             Some(inner) => inner,
-//             None => {
-//                 info!("No matching file_rep for fuuid:{}/user_id:{} - SKIP", fuuid, user_id);
-//                 continue
-//             }
-//         };
-//         let tuuid = file_rep.tuuid;
-// 
-//         if fichier_version.cle_id.is_some() && fichier_version.format.is_some() && fichier_version.nonce.is_some() {
-//             let cle_id = fichier_version.cle_id.expect("cle_id");
-//             let format: &str = fichier_version.format.expect("format").into();
-//             let nonce = fichier_version.nonce.expect("nonce");
-//             let filehost_ids: Vec<&String> = fichier_version.visites.keys().collect();
-//             let job = BackgroundJob::new(tuuid, fuuid, mimetype, &filehost_ids, cle_id, format, nonce);
-//             sauvegarder_job_images(middleware, &job, session).await?;
-//         }
-//     }
-// 
-//     // Reponse generer preview
-//     Ok(Some(middleware.reponse_ok(None, None)?))
-// }
-
 #[derive(Clone, Deserialize)]
 struct RowTuuid {
     tuuid: String,
-    fuuid: Option<String>,
-    fuuids: Option<Vec<String>>,
-    mimetype: Option<String>,
+    // fuuid: Option<String>,
+    // fuuids: Option<Vec<String>>,
+    // mimetype: Option<String>,
     // visites: Option<HashMap<String, i64>>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct CommandeCompleterPreviews {
-    reset: Option<bool>,
-    limit: Option<i64>,
-    fuuids: Option<Vec<String>>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct ReponseCompleterPreviews {
-    tuuids: Option<Vec<String>>,
 }
 
 async fn commande_confirmer_fichier_indexe<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
@@ -2277,7 +1932,7 @@ async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, ges
     let user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
-            debug!("commande_ajouter_contact_local user_id absent, SKIP");;
+            debug!("commande_ajouter_contact_local user_id absent, SKIP");
             // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "User id manquant du certificat"}), None)?))
             return Ok(Some(middleware.reponse_err(None, None, Some("User id manquant du certificat"))?))
         }
@@ -2305,14 +1960,12 @@ async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, ges
                                         Some(inner) => inner,
                                         None => {
                                             debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (usager inconnu - 1), SKIP");
-                                            ;
                                             // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
                                             return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                                         }
                                     },
                                     None => {
                                         debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (usager inconnu - 2), SKIP");
-                                        ;
                                         // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
                                         return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                                     }
@@ -2320,7 +1973,6 @@ async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, ges
                             },
                             None => {
                                 debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (reponse sans liste usagers), SKIP");
-                                ;
                                 // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
                                 return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                             }
@@ -2328,18 +1980,17 @@ async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, ges
                     },
                     _ => {
                         debug!("commande_ajouter_contact_local Erreur chargement user_id pour contact (mauvais type reponse), SKIP");
-                        ;
                         // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
                         return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                     }
                 },
                 None => {
-                    debug!("commande_ajouter_contact_local Aucune reponse pour chargement user_id pour contact, SKIP");;
+                    debug!("commande_ajouter_contact_local Aucune reponse pour chargement user_id pour contact, SKIP");
                     return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
                 }
         },
             Err(e) => {
-                warn!("commande_ajouter_contact_local Erreur chargement user_id pour contact, SKIP : {:?}", e);;
+                warn!("commande_ajouter_contact_local Erreur chargement user_id pour contact, SKIP : {:?}", e);
                 // return Ok(Some(middleware.formatter_reponse(&json!({"ok": false, "err": "Erreur chargement user_id pour contact local"}), None)?))
                 return Ok(Some(middleware.reponse_err(None, None, Some("Erreur chargement user_id pour contact local"))?))
             }
@@ -2377,17 +2028,17 @@ async fn commande_ajouter_contact_local<M>(middleware: &M, m: MessageValide, ges
     Ok(Some(middleware.build_reponse(response)?.0))
 }
 
-async fn commande_supprimer_contacts<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
+async fn commande_supprimer_contacts<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
     debug!("commande_supprimer_contacts Consommer commande : {:?}", & m.type_message);
-    let commande: TransactionSupprimerContacts = {
+    let _commande: TransactionSupprimerContacts = {
         let message_ref = m.message.parse()?;
         message_ref.contenu()?.deserialize()?
     };
 
-    let user_id = match m.certificat.get_user_id()? {
+    let _user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             debug!("commande_supprimer_contacts user_id absent, SKIP");
@@ -2399,7 +2050,7 @@ async fn commande_supprimer_contacts<M>(middleware: &M, mut m: MessageValide, ge
     Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?)
 }
 
-async fn commande_partager_collections<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
+async fn commande_partager_collections<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2441,17 +2092,17 @@ async fn commande_partager_collections<M>(middleware: &M, mut m: MessageValide, 
     Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?)
 }
 
-async fn commande_supprimer_partage_usager<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
+async fn commande_supprimer_partage_usager<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
     debug!("commande_supprimer_partage_usager Consommer commande : {:?}", & m.type_message);
-    let commande: TransactionSupprimerPartageUsager = {
+    let _commande: TransactionSupprimerPartageUsager = {
         let message_ref = m.message.parse()?;
         message_ref.contenu()?.deserialize()?
     };
 
-    let user_id = match m.certificat.get_user_id()? {
+    let _user_id = match m.certificat.get_user_id()? {
         Some(inner) => inner,
         None => {
             debug!("commande_supprimer_partage_usager user_id absent, SKIP");
@@ -2463,44 +2114,13 @@ async fn commande_supprimer_partage_usager<M>(middleware: &M, mut m: MessageVali
     Ok(sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?)
 }
 
-async fn commande_supprimer_orphelins<M>(middleware: &M, mut m: MessageValide, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
-    -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-    where M: GenerateurMessages + MongoDao + ValidateurX509
-{
-    debug!("commande_supprimer_orphelins Consommer commande : {:?}", & m.type_message);
-    let commande: TransactionSupprimerOrphelins = {
-        let message_ref = m.message.parse()?;
-        message_ref.contenu()?.deserialize()?
-    };
-
-    todo!("fix me")
-    // let resultat = trouver_orphelins_supprimer(middleware, &commande, session).await?;
-    // debug!("commande_supprimer_orphelins Versions supprimees : {:?}, fuuids a conserver : {:?}",
-    //     resultat.versions_supprimees, resultat.fuuids_a_conserver);
-    //
-    // let mut fuuids_supprimes = 0;
-    // for (fuuid, supprime) in &resultat.versions_supprimees {
-    //     if *supprime { fuuids_supprimes += 1; };
-    // }
-    //
-    // // Determiner si on repond immediatement ou si on procede vers la transaction
-    // if fuuids_supprimes > 0 {
-    //     // On execute la transaction pour supprimer les fichiers dans la base de donnes
-    //     debug!("commande_supprimer_orphelins Au moins une version supprimer (count: {}), executer la transaction", fuuids_supprimes);
-    //     sauvegarder_traiter_transaction_v2(middleware, m, gestionnaire, session).await?;
-    // }
-    //
-    // let reponse = ReponseSupprimerOrphelins { ok: true, err: None, fuuids_a_conserver: resultat.fuuids_a_conserver };
-    // Ok(Some(middleware.build_reponse(reponse)?.0))
-}
-
 async fn transmettre_cle_attachee<M>(middleware: &M, cle: Value)
     -> Result<Option<MessageMilleGrillesBufferDefault>, millegrilles_common_rust::error::Error>
     where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
-    let mut message_cle: MessageMilleGrillesOwned = serde_json::from_value(cle)?;
+    let message_cle: MessageMilleGrillesOwned = serde_json::from_value(cle)?;
 
-    let mut routage_builder = RoutageMessageAction::builder(
+    let routage_builder = RoutageMessageAction::builder(
         // DOMAINE_NOM_MAITREDESCLES, COMMANDE_SAUVEGARDER_CLE, vec![Securite::L3Protege])
         DOMAINE_NOM_MAITREDESCLES, COMMANDE_AJOUTER_CLE_DOMAINES, vec![Securite::L1Public]
     )
@@ -2550,7 +2170,7 @@ async fn transmettre_cle_attachee_domaines<M>(middleware: &M, cle: Value)
     -> Result<Option<MessageMilleGrillesBufferDefault>, millegrilles_common_rust::error::Error>
     where M: ValidateurX509 + GenerateurMessages + MongoDao
 {
-    let mut message_cle: MessageMilleGrillesOwned = serde_json::from_value(cle)?;
+    let message_cle: MessageMilleGrillesOwned = serde_json::from_value(cle)?;
 
     let routage = RoutageMessageAction::builder(
         DOMAINE_NOM_MAITREDESCLES, COMMANDE_AJOUTER_CLE_DOMAINES, vec![Securite::L1Public])
@@ -2717,7 +2337,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
 
                 let type_node = match TypeNode::try_from(item.type_node.as_str()) {
                     Ok(inner) => inner,
-                    Err(e) => {
+                    Err(_e) => {
                         let message = format!("Item tuuid:{} not a supported node type", item.type_node);
                         debug!("commandes.command_recycle_items_v3 {}", message);
                         return Ok(Some(middleware.reponse_err(Some(2), None, Some(message.as_str()))?));
@@ -2820,7 +2440,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
         while cursor.advance(session).await? {
             let row = cursor.deserialize_current()?;
             let cuuid = match row.path_cuuids {
-                Some(mut path_cuuids) => {
+                Some(path_cuuids) => {
                     match path_cuuids.first() {
                         Some(inner) => inner.to_owned(),
                         None => user_id.clone(),
@@ -3003,7 +2623,7 @@ pub struct VisitWorkRow {
     pub visit_time: Option<DateTime<Utc>>,
 }
 
-async fn command_receive_visits<M>(middleware: &M, m: MessageValide, session: &mut ClientSession)
+async fn command_receive_visits<M>(middleware: &M, m: MessageValide, _session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -3206,10 +2826,10 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct RequestReturnFichiersrepLease {
-    pub ok: Option<bool>,
+    // pub ok: Option<bool>,
     pub tuuid: String,
     pub user_id: String,
-    pub err: Option<String>,
+    // pub err: Option<String>,
 }
 
 async fn return_fichiersrep_lease<M>(middleware: &M, m: MessageValide, borrower: &str, roles: &Vec<String>)
