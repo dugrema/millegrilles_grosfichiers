@@ -1,46 +1,30 @@
-use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet};
-use std::convert::{TryFrom, TryInto};
-use std::ops::Deref;
-use std::sync::Mutex;
+use std::collections::HashSet;
 
-use log::{debug, error, info, warn};
-use millegrilles_common_rust::{serde_json, serde_json::json};
-use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{doc, Document};
-use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chiffrage_cle::{InformationCle, ReponseDechiffrageCles};
-use millegrilles_common_rust::chrono::{DateTime, Duration, Utc};
-use millegrilles_common_rust::common_messages::{verifier_reponse_ok, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
-use millegrilles_common_rust::constantes::*;
-use millegrilles_common_rust::dechiffrage::DataChiffre;
-use millegrilles_common_rust::domaines::GestionnaireDomaine;
-use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
-use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
-use millegrilles_common_rust::middleware::{sauvegarder_traiter_transaction_serializable, sauvegarder_traiter_transaction_serializable_v2};
-use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, start_transaction_regeneration, start_transaction_regular, verifier_erreur_duplication_mongo, MongoDao};
-use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
-use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
-use millegrilles_common_rust::serde::{Deserialize, Serialize};
-use millegrilles_common_rust::serde_json::Value;
-use millegrilles_common_rust::error::Error as CommonError;
-use millegrilles_common_rust::mongodb::ClientSession;
-use millegrilles_common_rust::tokio::time::timeout;
 use crate::data_structs::{CompleteFileRow, MediaOwnedRow};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{get_file_keys, FileCommentResponse};
-use crate::traitement_jobs::{BackgroundJob, JobHandler, JobHandlerVersions, sauvegarder_job, JobTrigger, reactiver_jobs};
-use crate::transactions::{NodeFichierRepBorrowed, NodeFichierRepOwned, NodeFichierVersionOwned, TransactionSupprimerOrphelins};
+use crate::transactions::{NodeFichierRepBorrowed, NodeFichierVersionOwned};
+use log::{debug, error, info, warn};
+use millegrilles_common_rust::bson::{doc, Document};
+use millegrilles_common_rust::certificats::ValidateurX509;
+use millegrilles_common_rust::chrono::{DateTime, Duration, Utc};
+use millegrilles_common_rust::common_messages::{verifier_reponse_ok, ResponseRequestDechiffrageV2Cle};
+use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::dechiffrage::DataChiffre;
+use millegrilles_common_rust::error::Error as CommonError;
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, start_transaction_regular, verifier_erreur_duplication_mongo, MongoDao};
+use millegrilles_common_rust::mongodb::options::UpdateOptions;
+use millegrilles_common_rust::mongodb::ClientSession;
+use millegrilles_common_rust::recepteur_messages::TypeMessage;
+use millegrilles_common_rust::serde::{Deserialize, Serialize};
+use millegrilles_common_rust::serde_json::json;
 
-const EVENEMENT_INDEXATION_DISPONIBLE: &str = "jobIndexationDisponible";
 const REQUETE_LISTE_NOEUDS: &str = "listeNoeuds";
 
-#[derive(Clone, Debug)]
-pub struct IndexationJobHandler {}
-
-pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
+pub async fn reset_flag_indexe<M>(middleware: &M, _gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -97,205 +81,6 @@ pub async fn reset_flag_indexe<M>(middleware: &M, gestionnaire: &GrosFichiersDom
     // debug!("First batch created, reindexing started");
 
     Ok(Some(middleware.reponse_ok(None, None)?))
-}
-
-// /// Format de document pret a etre indexe
-// #[derive(Clone, Debug, Serialize, Deserialize)]
-// pub struct InfoDocumentIndexation {
-//     tuuid: String,
-//     fuuid: String,
-//     doc: DocumentIndexation,
-//
-//     // Info permission dechiffrage
-//     permission_duree: Option<u32>,
-//     permission_hachage_bytes: Option<Vec<String>>,
-// }
-
-/// Contenu et mots-cles pour l'indexation d'un document
-// #[derive(Clone, Debug, Serialize, Deserialize)]
-// pub struct DocumentIndexation {
-//     nom: Option<String>,    // Nom du fichier
-//     mimetype: String,
-//     date_v_courante: Option<DateTime<Utc>>,
-//
-//     // Champs qui proviennent du fichierRep (courant uniquement)
-//     titre: Option<HashMap<String, String>>,          // Dictionnaire combine
-//     description: Option<HashMap<String, String>>,    // Dictionnaire combine
-//     cuuids: Option<Vec<String>>,
-//     userid: Option<String>,
-// }
-//
-// impl DocumentIndexation {
-//     fn merge_fichier(&mut self, fichier: &FichierDetail) {
-//         self.titre = fichier.titre.clone();
-//         self.description = fichier.description.clone();
-//         self.userid = fichier.user_id.clone();
-//         self.cuuids = fichier.path_cuuids.clone();
-//     }
-// }
-//
-// impl TryFrom<FichierDetail> for DocumentIndexation {
-//     type Error = String;
-//
-//     fn try_from(value: FichierDetail) -> Result<Self, Self::Error> {
-//
-//         let version_courante = match value.version_courante {
-//             Some(v) => v,
-//             None => Err(format!("DocumentIndexation.try_from Erreur mapping fichier, version_courante manquante"))?
-//         };
-//
-//         Ok(DocumentIndexation {
-//             nom: value.nom.clone(),
-//             mimetype: version_courante.mimetype.clone(),
-//             date_v_courante: version_courante.date_fichier.clone(),
-//             titre: value.titre,
-//             description: value.description,
-//             cuuids: value.path_cuuids,
-//             userid: value.user_id,
-//         })
-//     }
-// }
-//
-// impl TryFrom<DBFichierVersionDetail> for DocumentIndexation {
-//     type Error = String;
-//
-//     fn try_from(value: DBFichierVersionDetail) -> Result<Self, Self::Error> {
-//         Ok(DocumentIndexation {
-//             nom: value.nom.clone(),
-//             mimetype: value.mimetype.clone(),
-//             date_v_courante: value.date_fichier.clone(),
-//             titre: None,
-//             description: None,
-//             cuuids: None,
-//             userid: None,
-//         })
-//     }
-// }
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ParametresIndex {
-
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ResultatRecherche {
-    pub took: u32,
-    pub timed_out: bool,
-    pub hits: Option<ResultatHits>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ResultatHits {
-    pub total: ResultatTotal,
-    pub max_score: Option<f32>,
-    pub hits: Option<Vec<ResultatHitsDetail>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ResultatTotal {
-    pub value: u32,
-    pub relation: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ResultatHitsDetail {
-    #[serde(rename="_index")]
-    pub index: String,
-    #[serde(rename="_type")]
-    pub type_: String,
-    #[serde(rename="_id")]
-    pub id_: String,
-    #[serde(rename="_score")]
-    pub score: f32,
-}
-
-pub fn index_grosfichiers() -> Value {
-    json!({
-        "index_patterns": ["grosfichiers"],
-        "template": {
-            "settings": {
-                "analysis": {
-                    "analyzer": {
-                        "filename_index": {
-                            "tokenizer": "filename_index",
-                            "filter": ["asciifolding", "lowercase", "file_edge"]
-                        },
-                        "filename_search": {
-                            "tokenizer": "filename_index",
-                            "filter": ["asciifolding", "lowercase"]
-                        },
-                    },
-                    "tokenizer": {
-                        "filename_index": {
-                            "type": "pattern",
-                            "pattern": "[\\W|_]+",
-                            "lowercase": true
-                        },
-                    },
-                    "filter": {
-                        "file_edge": {
-                            "type": "edge_ngram",
-                            "min_gram": 3,
-                            "max_gram": 16,
-                            "token_chars": [
-                                "letter",
-                                "digit"
-                            ]
-                        },
-                    }
-                }
-            },
-            "mappings": {
-                "_source": {
-                    "enabled": false
-                },
-                "properties": {
-                    "contenu": {
-                        "type": "text",
-                    },
-                    "nom": {
-                        "type": "text",
-                        "search_analyzer": "filename_search",
-                        "analyzer": "filename_index"
-                    },
-                    "titre._combine": {
-                        "type": "text",
-                        "search_analyzer": "filename_search",
-                        "analyzer": "filename_index"
-                    },
-                    "description._combine": {
-                        "type": "text",
-                        "search_analyzer": "filename_search",
-                        "analyzer": "filename_index"
-                    },
-                    "mimetype": {"type": "keyword"},
-                    // "contenu": {"type": "text"},
-                    "date_v_courante": {"type": "date", "format": "strict_date_optional_time||epoch_second"},
-                    "userid": {
-                        "type": "text",
-                        "fields": {
-                            "keyword": {
-                                "type": "keyword",
-                                "ignore_above": 50
-                            }
-                        }
-                    },
-                }
-            },
-        },
-        "priority": 500,
-        "version": 2,
-        "_meta": {
-            "description": "Index grosfichiers"
-        }
-    })
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ParametresRecherche {
-    pub mots_cles: String,
-    pub from_idx: Option<u32>,
-    pub size: Option<u32>
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -500,7 +285,7 @@ async fn entretien_retirer_supprimes_sans_visites<M>(middleware: &M, gestionnair
     }
 }
 
-async fn entretien_retirer_supprimes_sans_visites_session<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, session: &mut ClientSession)
+async fn entretien_retirer_supprimes_sans_visites_session<M>(_middleware: &M, _gestionnaire: &GrosFichiersDomainManager, _session: &mut ClientSession)
     -> Result<(), CommonError>
     where M: MongoDao + GenerateurMessages + ValidateurX509
 {
@@ -535,7 +320,7 @@ async fn entretien_retirer_supprimes_sans_visites_session<M>(middleware: &M, ges
     Ok(())
 }
 
-pub async fn set_flag_index_traite<M>(middleware: &M, job_id: &str, tuuid: &str, fuuid: Option<&str>, session: &mut ClientSession) -> Result<(), CommonError>
+pub async fn set_flag_index_traite<M>(middleware: &M, _job_id: &str, tuuid: &str, _fuuid: Option<&str>, session: &mut ClientSession) -> Result<(), CommonError>
 where M: MongoDao
 {
     // if let Some(fuuid) = fuuid {
@@ -607,7 +392,7 @@ pub struct LeasesResponse {
 
 /// Lease a batch of files based on a FichiersRep filtre.
 pub async fn lease_batch_fichiersrep<M>(middleware: &M, expiry: &DateTime<Utc>, borrower: &str,
-                                        filtre: Document, batch_size: usize, filehost_id: Option<String>,
+                                        filtre: Document, batch_size: usize, _filehost_id: Option<String>,
                                         include_media: bool, include_comments: bool)
     -> Result<Option<LeasesResponse>, CommonError>
 where M: MongoDao + GenerateurMessages
@@ -820,7 +605,7 @@ pub struct VersionLeasesResponse {
 }
 
 /// Lease a batch of files based on a FichiersRep filtre.
-pub async fn lease_batch_fichiersversion<M>(middleware: &M, expiry: &DateTime<Utc>, borrower: &str, filtre: Document, batch_size: usize, filehost_id: Option<String>)
+pub async fn lease_batch_fichiersversion<M>(middleware: &M, expiry: &DateTime<Utc>, borrower: &str, filtre: Document, batch_size: usize, _filehost_id: Option<String>)
     -> Result<Option<VersionLeasesResponse>, CommonError>
 where M: MongoDao + GenerateurMessages
 {

@@ -1,128 +1,34 @@
+use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::str::from_utf8;
-use log::{debug, error, info, warn};
 
-use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::{bson, bson::{Bson, DateTime, doc}, serde_json};
-use millegrilles_common_rust::certificats::ValidateurX509;
-use millegrilles_common_rust::chiffrage_cle::{InformationCle, ReponseDechiffrageCles};
-use millegrilles_common_rust::chrono::{Duration, Utc};
-use millegrilles_common_rust::common_messages::{InformationDechiffrageV2, ReponseRequeteDechiffrageV2, RequeteDechiffrage};
-use millegrilles_common_rust::constantes::*;
-use millegrilles_common_rust::dechiffrage::DataChiffre;
-use millegrilles_common_rust::domaines::GestionnaireDomaine;
-use millegrilles_common_rust::domaines_traits::{AiguillageTransactions, GestionnaireDomaineV2};
-use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao, opt_chrono_datetime_as_bson_datetime, start_transaction_regular};
-use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOneOptions, FindOptions, Hint, ReturnDocument, UpdateOptions};
-use millegrilles_common_rust::recepteur_messages::TypeMessage;
-use millegrilles_common_rust::serde_json::{json, Value};
-use millegrilles_common_rust::error::{Error as CommonError, Error};
-use millegrilles_common_rust::{chrono, millegrilles_cryptographie, uuid};
-use millegrilles_common_rust::bson::Document;
-use millegrilles_common_rust::domaines_v2::GestionnaireDomaineSimple;
-use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable_v2;
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
-use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_cles::CleSecreteSerialisee;
-use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
-use millegrilles_common_rust::millegrilles_cryptographie::x509::EnveloppeCertificat;
-use millegrilles_common_rust::mongodb::{ClientSession, Collection};
-use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
-use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::uuid::{uuid, Uuid};
-use serde::{Deserialize, Serialize};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::get_decrypted_keys;
 use crate::traitement_entretien::sauvegarder_visites;
 use crate::traitement_index::set_flag_index_traite;
 use crate::traitement_media::emettre_processing_trigger;
-use crate::transactions::{NodeFichierRepBorrowed, NodeFichierRepOwned, NodeFichierRepRow, NodeFichierVersionOwned, TransactionSupprimerJobVideoV2};
+use crate::transactions::{NodeFichierRepOwned, NodeFichierVersionOwned, TransactionSupprimerJobVideoV2};
+use millegrilles_common_rust::bson::Document;
+use millegrilles_common_rust::certificats::ValidateurX509;
+use millegrilles_common_rust::chrono::{Duration, Utc};
+use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::dechiffrage::DataChiffre;
+use millegrilles_common_rust::error::{Error as CommonError, Error};
+use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable_v2;
+use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, opt_chrono_datetime_as_bson_datetime, start_transaction_regular, MongoDao};
+use millegrilles_common_rust::mongodb::options::{FindOneAndUpdateOptions, FindOptions, ReturnDocument};
+use millegrilles_common_rust::mongodb::{ClientSession, Collection};
+use millegrilles_common_rust::recepteur_messages::TypeMessage;
+use millegrilles_common_rust::serde_json::json;
+use millegrilles_common_rust::uuid::Uuid;
+use millegrilles_common_rust::{bson, bson::doc};
+use millegrilles_common_rust::chrono;
+use serde::{Deserialize, Serialize};
 
 const CONST_MAX_RETRY: i32 = 4;
-const CONST_LIMITE_BATCH: i64 = 1_000;
-const CONST_EXPIRATION_SECS: i64 = 180;
-const CONST_INTERVALLE_ENTRETIEN: u64 = 60;
-
-const CONST_CHAMP_RETRY: &str = "retry";
-const CONST_CHAMP_DATE_MAJ: &str = "date_maj";
-
-#[async_trait]
-pub trait JobHandler: Clone + Sized + Sync {
-    /// Nom de la collection ou se trouvent les jobs
-    fn get_nom_collection(&self) -> &str;
-
-    /// Retourne le nom du flag de la table GrosFichiers/versionFichiers pour ce type de job.
-    fn get_nom_flag(&self) -> &str;
-
-    /// Retourne l'action a utiliser dans le routage de l'evenement trigger.
-    fn get_action_evenement(&self) -> &str;
-
-    /// Marque une job comme terminee avec erreur irrecuperable.
-    async fn marquer_job_erreur<M,G,S>(&self, middleware: &M, gestionnaire_domaine: &G, job: BackgroundJob, erreur: S)
-        -> Result<(), CommonError>
-        where
-            M: ValidateurX509 + GenerateurMessages + MongoDao,
-            G: GestionnaireDomaineV2 + AiguillageTransactions,
-            S: ToString + Send;
-
-    /// Emettre un evenement de job disponible.
-    /// evenements emis pour chaque instance avec au moins 1 job de disponible.
-    async fn emettre_evenements_job<M>(&self, middleware: &M, batch_size: Option<i64>)
-        where M: GenerateurMessages + MongoDao + ValidateurX509
-    {
-        let batch_size = batch_size.unwrap_or_else(||CONST_LIMITE_BATCH);
-
-        error!("emettre_evenements_job TODO - FIX ME!");
-        // let visites = match trouver_jobs_instances(middleware, self).await {
-        //     Ok(visites) => match visites {
-        //         Some(inner) => inner,
-        //         None => {
-        //             debug!("JobHandler.emettre_evenements_job Aucune job pour {}", self.get_action_evenement());
-        //             return  // Rien a faire
-        //         }
-        //     },
-        //     Err(e) => {
-        //         error!("JobHandler.emettre_evenements_job Erreur emission trigger {} : {:?}", self.get_action_evenement(), e);
-        //         return
-        //     }
-        // };
-        //
-        // for filehost_id in visites {
-        //     self.emettre_trigger(middleware, filehost_id, fuuid, mimetype).await;
-        // }
-    }
-
-    /// Emet un evenement pour declencher le traitement pour une instance
-    async fn emettre_trigger<M,I>(&self, middleware: &M, background_job: &BackgroundJob)
-    where M: GenerateurMessages {
-
-        let trigger = JobTrigger::from(background_job);
-
-        for filehost_id in &background_job.filehost_ids {
-            let routage = RoutageMessageAction::builder("media", self.get_action_evenement(), vec![Securite::L3Protege])
-                .partition(filehost_id)
-                .build();
-            if let Err(e) = middleware.emettre_evenement(routage, &trigger).await {
-                error!("JobHandler.emettre_trigger Erreur emission trigger {} : {:?}", self.get_action_evenement(), e);
-            }
-        }
-    }
-}
-
-#[async_trait]
-pub trait JobHandlerVersions: JobHandler {
-
-}
-
-#[derive(Debug, Deserialize)]
-struct RowVersionsIds {
-    tuuid: String,
-    fuuid: String,
-    mimetype: String,
-    user_id: String,
-    // visites: Option<HashMap<String, i64>>,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BackgroundJobParams {
@@ -280,7 +186,7 @@ pub struct ParametresConfirmerJobIndexation {
     pub job_id: String,
     pub tuuid: String,
     pub fuuid: Option<String>,
-    pub supprimer: Option<bool>,
+    // pub supprimer: Option<bool>,
     // pub user_id: String,
     // pub cle_conversion: Option<String>,
 }
@@ -351,146 +257,11 @@ pub async fn create_missing_jobs<M>(middleware: &M) -> Result<(), CommonError>
 }
 
 #[derive(Deserialize, Debug)]
-struct MissingJobIndexMapping {
-    fichierrep: NodeFichierRepOwned,
-    versions: Vec<NodeFichierVersionOwned>,
-    jobs: Vec<BackgroundJob>,
-}
-
-// /// Create missing jobs for all entries not already indexed.
-// pub async fn create_missing_jobs_indexing<M>(middleware: &M) -> Result<(), CommonError>
-//     where M: MongoDao + GenerateurMessages
-// {
-//     let collection_reps = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-//     let collection_jobs = middleware.get_collection_typed::<BackgroundJob>(NOM_COLLECTION_INDEXATION_JOBS)?;
-// 
-//     // Remove all file indexing jobs with empty filehosts ([]). They will get recreated. Ignore directories (fuuid is null).
-//     let filtre_empty = doc!{"filehost_ids.0": {"$exists": false}, "fuuid": {"$exists": true}};
-//     collection_jobs.delete_many(filtre_empty, None).await?;
-// 
-//     let pipeline = vec![
-//         doc! { "$match": {CHAMP_SUPPRIME: false, CHAMP_FLAG_INDEX: false} },
-//         doc! { "$replaceRoot": {"newRoot": {"_id": "$tuuid", "fichierrep": "$$ROOT"}}},
-//         doc! { "$lookup": {
-//             "from": NOM_COLLECTION_INDEXATION_JOBS,
-//             "localField": "fichierrep.tuuid",
-//             "foreignField": "tuuid",
-//             "as": "jobs",
-//         }},
-//         // Filter out files that already have a job
-//         doc! { "$match": {"jobs.0": {"$exists": false} } },
-//         // Get version when present
-//         doc! { "$lookup": {
-//             "from": NOM_COLLECTION_VERSIONS,
-//             "localField": "fichierrep.fuuids_versions",
-//             "foreignField": "fuuid",
-//             "as": "versions",
-//         }},
-//     ];
-//     debug!("create_missing_jobs_indexing Pipeline: {:?}", pipeline);
-// 
-//     let mut batch = Vec::with_capacity(50);
-//     let mut cursor = collection_reps.aggregate(pipeline, None).await?;
-//     while cursor.advance().await? {
-//         let row = cursor.deserialize_current()?;
-//         let mut row: MissingJobIndexMapping = convertir_bson_deserializable(row)?;
-//         // debug!("Mapping job: {:?}", row);
-//         let row_reps = row.fichierrep;
-//         let row_version = row.versions.first();
-// 
-//         let tuuid = row_reps.tuuid.as_str();
-//         let user_id = row_reps.user_id.as_str();
-// 
-//         match row_version {
-//             Some(fichier_version) => {
-//                 // This is a file with associated content
-//                 let fuuid = fichier_version.fuuid.as_str();
-//                 let mimetype = match row_reps.mimetype {
-//                     Some(inner) => inner,
-//                     None => fichier_version.mimetype.to_owned()
-//                 };
-// 
-//                 let visites: Vec<&String> = fichier_version.visites.keys().collect();
-//                 // Ensure the "nouveau" visit is not counted
-//                 let visites = visites.into_iter().filter(|v| v.as_str() != "nouveau").collect();
-// 
-//                 // File
-//                 if fichier_version.cle_id.is_some() && fichier_version.format.is_some() && fichier_version.nonce.is_some() {
-//                     // Current format with cle_id directly available
-//                     let cle_id = fichier_version.cle_id.as_ref().expect("cle_id").to_owned();
-//                     let format: &str = fichier_version.format.clone().expect("format").into();
-//                     let nonce = fichier_version.nonce.as_ref().expect("nonce").to_owned();
-// 
-//                     let mut job = BackgroundJob::new(tuuid, fuuid, mimetype, &visites, cle_id, format, nonce);
-//                     job.user_id = Some(user_id.to_string());
-//                     batch.push(job);
-//                 } else {
-//                     // Old format. The keymaster has the key where cle_id == fuuid.
-//                     let cle_id = fuuid;
-// 
-//                     // Values for format and header (nonce) are available directly from the key.
-//                     let mut key_information = get_decrypted_keys(middleware, vec![cle_id.to_owned()]).await?;
-//                     if key_information.len() == 1 {
-//                         let key = key_information.pop().expect("pop key_information");
-//                         if key.format.is_some() && key.nonce.is_some() {
-//                             debug!("Cle_id {} information recovered successfully from keymaster", cle_id);
-//                             let format: &str = key.format.expect("format").into();
-//                             let nonce = key.nonce.expect("nonce");
-//                             let job = BackgroundJob::new_index(tuuid, Some(fuuid), user_id, mimetype, &visites, cle_id, format, nonce);
-//                             batch.push(job);
-//                         }
-//                     }
-//                 }
-//             }
-//             None => {
-//                 // Directory/Collection
-//                 let metadata = row_reps.metadata;
-//                 if metadata.cle_id.is_some() && metadata.format.is_some() && metadata.nonce.is_some() {
-//                     let cle_id = metadata.cle_id.expect("cle_id");
-//                     let format = metadata.format.expect("format");
-//                     let nonce = metadata.nonce.expect("nonce");
-//                     let mimetype = row_reps.mimetype.unwrap_or_else(|| "application/octet-stream".to_string());
-//                     let visites: Vec<&String> = vec![];
-//                     let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, mimetype, &visites, cle_id, format, nonce);
-//                     batch.push(job);
-//                 } else if metadata.format.is_some() && metadata.header.is_some() && metadata.ref_hachage_bytes.is_some() {
-//                     // Old format. The keymaster has the key where cle_id == ref_hachage_bytes.
-//                     let cle_id = metadata.ref_hachage_bytes.expect("ref_hachage_bytes");
-//                     let format = metadata.format.expect("format");
-//                     let header = metadata.header.expect("header");
-//                     let nonce = &header[1..]; // Remove multibase marker
-//                     let mimetype = row_reps.mimetype.unwrap_or_else(|| "application/octet-stream".to_string());
-//                     let visites: Vec<&String> = vec![];
-//                     let job = BackgroundJob::new_index(tuuid, None::<&str>, user_id, mimetype, &visites, cle_id, format, nonce);
-//                     batch.push(job);
-//                 }
-//             }
-//         }
-// 
-//         if batch.len() >= 50 {
-//             // Save batch to database
-//             debug!("Saving batch of index jobs");
-//             collection_jobs.insert_many(&batch, None).await?;
-//             batch.clear();
-//         }
-//     }
-// 
-//     if batch.len() > 0 {
-//         // Save last batch to database
-//         debug!("Saving last batch of {} index jobs", batch.len());
-//         collection_jobs.insert_many(batch, None).await?;
-//         batch = Vec::new();
-//     }
-// 
-//     Ok(())
-// }
-
-#[derive(Deserialize, Debug)]
 struct MissingMediaJobMapping {
-    fuuid: String,
+    // fuuid: String,
     version: NodeFichierVersionOwned,
     fichierreps: Vec<NodeFichierRepOwned>,
-    jobs: Vec<BackgroundJob>,
+    // jobs: Vec<BackgroundJob>,
 }
 
 pub async fn create_missing_jobs_media<M>(middleware: &M, jobs_collection_name: &str, flag_job: &str) -> Result<(), CommonError>

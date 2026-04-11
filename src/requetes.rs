@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::data_structs::{AudioDetail, CompleteFileRow, FileComment, MediaOwnedRow, ResponseVersionCourante, SubtitleDetail, VideoDetail};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
-use crate::traitement_index::{ParametresGetClesStream, ParametresGetPermission, ParametresRecherche, ResultatHits, ResultatHitsDetail};
+use crate::traitement_index::{ParametresGetClesStream, ParametresGetPermission};
 use crate::traitement_media::requete_jobs_video;
 use crate::transactions::*;
 use log::{debug, error, warn};
