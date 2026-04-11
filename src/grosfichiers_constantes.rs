@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::collections::HashMap;
 
 use millegrilles_common_rust::bson::{Bson, Document};

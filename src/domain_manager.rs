@@ -1,5 +1,3 @@
-use std::sync::Arc;
-use std::thread::sleep;
 use log::{debug, error, info};
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::async_trait::async_trait;
@@ -20,23 +18,21 @@ use millegrilles_common_rust::mongodb::ClientSession;
 use millegrilles_common_rust::rabbitmq_dao::{ConfigQueue, ConfigRoutingExchange, QueueType};
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::tokio;
-use millegrilles_common_rust::tokio::time::{Duration as DurationTokio, timeout};
+use millegrilles_common_rust::tokio::time::{Duration as DurationTokio};
 
 use crate::grosfichiers_constantes::*;
 use crate::commandes::consommer_commande;
 use crate::requetes::consommer_requete;
 use crate::evenements::{consommer_evenement, HandlerEvenements};
 use crate::traitement_entretien::{calculer_quotas, reclamer_fichiers, claim_all_files, process_visits, maintain_deleted_files, run_cleanup_leases};
-use crate::traitement_index::IndexationJobHandler;
 use crate::traitement_jobs::{create_missing_jobs, entretien_jobs_expirees, maintenance_impossible_jobs};
-// use crate::traitement_media::{ImageJobHandler, VideoJobHandler};
 use crate::transactions::aiguillage_transaction;
 
 const INTERVALLE_THREAD_EVENEMENTS_SECS: u64 = 1;
 
 #[derive(Clone)]
 pub struct GrosFichiersDomainManager {
-    pub instance_id: String,
+    // pub instance_id: String,
     // pub image_job_handler: ImageJobHandler,
     // pub video_job_handler: VideoJobHandler,
     // pub indexation_job_handler: IndexationJobHandler,
@@ -44,15 +40,15 @@ pub struct GrosFichiersDomainManager {
 }
 
 impl GrosFichiersDomainManager {
-    pub fn new(instance_id: String) -> GrosFichiersDomainManager {
+    pub fn new(_instance_id: String) -> GrosFichiersDomainManager {
 
         // let image_job_handler = ImageJobHandler {};
         // let video_job_handler = VideoJobHandler {};
-        let indexation_job_handler = IndexationJobHandler {};
+        // let indexation_job_handler = IndexationJobHandler {};
         let evenements_handler = HandlerEvenements::new();
 
         GrosFichiersDomainManager {
-            instance_id,
+            // instance_id,
             // image_job_handler, video_job_handler, indexation_job_handler,
             evenements_handler
         }
@@ -161,7 +157,7 @@ impl GestionnaireDomaineSimple for GrosFichiersDomainManager {
     }
 }
 
-pub fn preparer_queues(manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
+pub fn preparer_queues(_manager: &GrosFichiersDomainManager) -> Vec<QueueType> {
     let mut rk_volatils = Vec::new();
     //let mut rk_sauvegarder_cle = Vec::new();
 
