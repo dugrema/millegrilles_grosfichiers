@@ -1,47 +1,35 @@
-use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 use log::{debug, error, info, warn};
+use std::collections::HashMap;
+use std::time::Duration;
 
-use millegrilles_common_rust::bson::{doc, Bson, Document};
-use millegrilles_common_rust::{bson, chrono};
+use millegrilles_common_rust::bson::doc;
 use millegrilles_common_rust::certificats::ValidateurX509;
-use millegrilles_common_rust::error::{Error as CommonError, Error};
-use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, start_transaction_regular, ChampIndex, IndexOptions, MongoDao};
-use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::chrono::{DateTime, Utc};
 use millegrilles_common_rust::configuration::ConfigMessages;
+use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
+use millegrilles_common_rust::jwt_simple::prelude::Deserialize;
 use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction_serializable_v2;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, start_transaction_regular, ChampIndex, IndexOptions, MongoDao};
 
-use millegrilles_common_rust::mongodb::ClientSession;
-use millegrilles_common_rust::mongodb::options::{CountOptions, FindOneOptions, FindOptions, Hint, UpdateOptions};
-use millegrilles_common_rust::recepteur_messages::TypeMessage;
-use millegrilles_common_rust::redis::SetOptions;
-use millegrilles_common_rust::tokio::time::sleep;
-use serde::Serialize;
-use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
 use crate::commandes::VisitWorkRow;
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::evenements::declencher_traitement_nouveau_fuuid;
 use crate::grosfichiers_constantes::*;
-use crate::transactions::{NodeFichierRepOwned, NodeFichierVersionOwned, PermanentlyDeleteFilesTransaction};
+use crate::transactions::{NodeFichierRepOwned, PermanentlyDeleteFilesTransaction};
+use millegrilles_common_rust::mongodb::options::{FindOptions, Hint};
+use millegrilles_common_rust::mongodb::ClientSession;
+use millegrilles_common_rust::recepteur_messages::TypeMessage;
+use millegrilles_common_rust::tokio::time::sleep;
+use serde::Serialize;
 
 pub async fn calculer_quotas<M>(middleware: &M)
                                 -> Result<(), CommonError>
 where M: MongoDao
 {
     calculer_quotas_fichiers_usagers(middleware).await
-}
-
-#[derive(Deserialize)]
-struct QuotaFichiersAggregateRow {
-    #[serde(rename="_id")]
-    user_id: String,
-    bytes_total_versions: i64,
-    nombre_total_versions: i64,
 }
 
 async fn calculer_quotas_fichiers_usagers<M>(middleware: &M) -> Result<(), CommonError>
@@ -84,7 +72,7 @@ where M: MongoDao
     Ok(())
 }
 
-pub async fn reclamer_fichiers<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, nouveau: bool)
+pub async fn reclamer_fichiers<M>(middleware: &M, gestionnaire: &GrosFichiersDomainManager, _nouveau: bool)
     -> Result<(), CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -201,7 +189,7 @@ where M: GenerateurMessages + MongoDao
         let row = cursor.deserialize_current()?;
         visits.extend(row.fuuids_reclames);
 
-        if(visits.len() >= VISIT_BATCH_SIZE) {
+        if visits.len() >= VISIT_BATCH_SIZE {
             let mut reponse = claim_files(middleware, batch_no, false, &visits).await?;
             for _ in 0..3 {
                 if reponse.ok {
