@@ -40,7 +40,7 @@ use crate::requetes::{mapper_fichier_db, verifier_acces_usager, verifier_acces_u
 use crate::traitement_entretien::{claim_all_files, verifier_visites_topologies, RequeteGetVisitesFuuidsResponse};
 use crate::traitement_index::{lease_batch_fichiersrep, lease_batch_fichiersversion, reset_flag_indexe, set_flag_index_traite};
 use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams, JobHandler, JobHandlerVersions, ParametresConfirmerJobIndexation};
-use crate::traitement_media::{commande_supprimer_job_image, commande_supprimer_job_image_v2, commande_supprimer_job_video, commande_supprimer_job_video_v2, sauvegarder_job_video, set_flag_image_traitee, set_flag_video_traite};
+use crate::traitement_media::{commande_supprimer_job_image_v2, commande_supprimer_job_video_v2, sauvegarder_job_video, set_flag_image_traitee, set_flag_video_traite};
 use crate::transactions::*;
 
 const REQUETE_MAITREDESCLES_VERIFIER_PREUVE: &str = "verifierPreuve";
