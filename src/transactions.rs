@@ -1,10 +1,10 @@
 use std::borrow::Borrow;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::convert::TryInto;
 
-use crate::data_structs::{FileComment, ImageDetail, MediaOwnedRow, MediaWebSubtitleDetail, SubtitleDetail, VideoDetail};
+use crate::data_structs::{FileComment, MediaOwnedRow, MediaWebSubtitleDetail, VideoDetail};
 use crate::domain_manager::GrosFichiersDomainManager;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use millegrilles_common_rust::bson::serde_helpers::chrono_datetime_as_bson_datetime;
 use millegrilles_common_rust::bson::Bson;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
@@ -22,18 +22,16 @@ use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{opt
 use millegrilles_common_rust::millegrilles_cryptographie::serde_dates::mapstringepochseconds;
 use millegrilles_common_rust::mongo_dao::{opt_chrono_datetime_as_bson_datetime, map_chrono_datetime_as_bson_datetime};
 use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, convertir_to_bson_array, start_transaction_regeneration, MongoDao};
-use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint, UpdateOptions};
-use millegrilles_common_rust::mongodb::{ClientSession, Collection, Cursor, SessionCursor};
+use millegrilles_common_rust::mongodb::options::{FindOneOptions, UpdateOptions};
+use millegrilles_common_rust::mongodb::{ClientSession, SessionCursor};
 use millegrilles_common_rust::multibase::Base;
 use millegrilles_common_rust::multihash::Code;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::{bson, bson::doc};
 use millegrilles_common_rust::{hex, serde_json, serde_json::json};
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
-use millegrilles_common_rust::millegrilles_cryptographie::maitredescles::SignatureDomaines;
 use crate::grosfichiers_constantes::*;
 use crate::requetes::{verifier_acces_usager_tuuids, ContactRow};
-use crate::traitement_index::{reset_flag_indexe, set_flag_index_traite};
 use crate::traitement_media::{set_flag_image_traitee, set_flag_video_traite};
 
 pub async fn aiguillage_transaction<M, T>(_gestionnaire: &GrosFichiersDomainManager, middleware: &M, transaction: T, session: &mut ClientSession)
@@ -162,12 +160,6 @@ pub struct TransactionDeplacerFichiersCollection {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TransactionRetirerDocumentsCollection {
-    pub cuuid: String,  // Collection qui recoit les documents
-    pub retirer_tuuids: Vec<String>,  // Fichiers/rep a retirer de la collection
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionListeDocuments {
     pub tuuids: Vec<String>,  // Fichiers/rep a supprimer, archiver, etc
 }
@@ -176,11 +168,6 @@ pub struct TransactionListeDocuments {
 pub struct TransactionSupprimerDocuments {
     pub tuuids: Vec<String>,    // Fichiers/rep a supprimer
     pub cuuid: Option<String>,  // Collection a retirer des documents (suppression conditionnelle)
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TransactionChangerFavoris {
-    pub favoris: HashMap<String, bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -209,84 +196,6 @@ pub struct TransactionFileSummary {
 pub struct TransactionDeleteFileComment {
     pub tuuid: String,
     pub comment_id: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TransactionCopierFichierTiers {
-    pub fuuid: String,
-    pub cuuid: String,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub metadata: Option<DataChiffre>,
-    pub mimetype: String,
-    pub user_id: Option<String>,
-    pub taille: u64,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub anime: Option<bool>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub duration: Option<f32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub height: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub width: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub images: Option<HashMap<String, ImageInfo>>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub video: Option<HashMap<String, VideoInfo>>,
-    #[serde(rename="videoCodec", skip_serializing_if="Option::is_none")]
-    pub video_codec: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ImageInfo {
-    pub hachage: String,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub resolution: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub height: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub width: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub taille: Option<u64>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub mimetype: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub data_chiffre: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub header: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub format: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct VideoInfo {
-    pub fuuid: String,
-    pub tuuid: String,
-    pub fuuid_video: String,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub resolution: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub height: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub width: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub taille_fichier: Option<u64>,
-    pub mimetype: String,
-    pub codec: String,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub bitrate: Option<u32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub quality: Option<i32>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub header: Option<String>,
-    #[serde(skip_serializing_if="Option::is_none")]
-    pub format: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TransactionFavorisCreerpath {
-    pub favoris_id: String,
-    pub user_id: Option<String>,
-    pub path_collections: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -379,24 +288,6 @@ pub struct NodeFichierRepOwned {
         serialize_with="optionepochseconds::serialize",
         deserialize_with = "opt_chrono_datetime_as_bson_datetime::deserialize")]
     pub date_creation: Option<DateTime<Utc>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NodeFichierVersionAudioOwned {
-    index: u32,
-    title: Option<String>,
-    language: Option<String>,
-    codec_name: Option<String>,
-    bit_rate: Option<u32>,
-    default: Option<bool>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NodeFichierVersionSubtitlesOwned {
-    index: u32,
-    language: Option<String>,
-    title: Option<String>,
-    codec_name: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -546,7 +437,7 @@ async fn transaction_nouvelle_version<M>(middleware: &M, transaction: Transactio
     };
 
     let fuuid = transaction_fichier.fuuid;
-    let mut flag_duplication = false;
+    let flag_duplication = false;
     let taille_fichier = transaction_fichier.taille as i64;
 
     let (flag_media_traite, flag_video_traite, flag_media, flag_summary) = get_flags_media(transaction_fichier.mimetype.as_str());
@@ -762,15 +653,6 @@ async fn get_path_cuuid_no_session<M,S>(middleware: &M, cuuid: S)
     };
 
     Ok(Some(path_cuuids))
-}
-
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RowFichiersRepCuuidNode {
-    tuuid: String,
-    cuuids: Option<Vec<String>>,
-    cuuids_paths: Option<HashMap<String, Vec<String>>>,
-    ancetres: Option<Vec<String>>,  // Liste (set) de tous les cuuids ancetres
 }
 
 /// The transaction_ajouter_fichiers_collection transaction is deprecated since 2024.9 - replaced by transaction_copy_v2.
@@ -1135,54 +1017,6 @@ async fn transaction_deplacer_fichiers_collection<M>(middleware: &M, transaction
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-async fn supprimer_versions_conditionnel<M,T,U>(middleware: &M, user_id: U, fuuids_in: &Vec<T>, session: &mut ClientSession)
-    -> Result<(), CommonError>
-    where M: MongoDao, U: AsRef<str>, T: AsRef<str>
-{
-    let user_id = user_id.as_ref();
-    let fuuids: Vec<&str> = fuuids_in.iter().map(|s| s.as_ref()).collect();
-    let mut fuuids_inconnus: HashSet<&str> = HashSet::new();
-    fuuids_inconnus.extend(fuuids.iter());
-
-    // Charger les fichiers non supprimes par user_id/fuuid
-    // Ces fichiers sont connus et non supprimes, on les retire de la liste d'inconnus
-    {
-        let filtre = doc! {
-            CHAMP_USER_ID: user_id,
-            CHAMP_FUUIDS_VERSIONS: { "$in": fuuids },
-            CHAMP_SUPPRIME: false,
-        };
-        let options = FindOptions::builder().hint(Hint::Name("fuuids_versions_user_id".to_string())).build();
-        let collection = middleware.get_collection_typed::<NodeFichierRepBorrowed>(
-            NOM_COLLECTION_FICHIERS_REP)?;
-        let mut curseur = collection.find_with_session(filtre, options, session).await?;
-        if curseur.advance(session).await? {
-            let row = curseur.deserialize_current()?;
-            if let Some(row_fuuids) = &row.fuuids_versions {
-                for row_fuuid in row_fuuids {
-                    fuuids_inconnus.remove(*row_fuuid);
-                }
-            }
-        }
-    }
-
-    debug!("supprimer_versions_conditionnel Fuuids inconnus ou supprimes pour user_id {} : {:?}", user_id, fuuids_inconnus);
-    let fuuids_inconnus: Vec<&str> = fuuids_inconnus.into_iter().collect();
-    let filtre = doc! {
-        // CHAMP_USER_ID: user_id,
-        CHAMP_FUUID: {"$in": fuuids_inconnus}
-    };
-    let ops = doc! {
-        "$pullAll": { "tuuids": {} },
-        "$currentDate": { CHAMP_MODIFICATION: true }
-    };
-    let options = UpdateOptions::builder().hint(Hint::Name("fuuid".to_string())).build();
-    let collection = middleware.get_collection(NOM_COLLECTION_VERSIONS)?;
-    collection.update_many_with_session(filtre, ops, options, session).await?;
-
-    Ok(())
-}
-
 /// Deprecated since 2024.9
 async fn _supprimer_tuuids<M,U,T>(middleware: &M, user_id_in: U, tuuids_in: Vec<T>, session: &mut ClientSession)
     -> Result<(), CommonError>
@@ -1357,17 +1191,6 @@ async fn recuperer_parents<M,C,U>(middleware: &M, user_id: U, tuuid: C, session:
     collection.update_many_with_session(filtre, ops, None, session).await?;
 
     Ok(())
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RowRecupererFichierDb {
-    tuuid: String,
-    cuuid: Option<String>,
-    cuuids_supprimes: Option<Vec<String>>,
-    cuuids_supprimes_indirect: Option<Vec<String>>,
-    type_node: String,
-    supprime: bool,
-    supprime_indirect: Option<bool>,
 }
 
 async fn recuperer_tuuids<M,T,C,U>(middleware: &M, user_id: U, cuuid: C, tuuids_params: Option<Vec<T>>, session: &mut ClientSession) -> Result<(), CommonError>
@@ -1837,16 +1660,6 @@ async fn transaction_decrire_collection<M>(middleware: &M, transaction: Transact
     Ok(Some(middleware.reponse_ok(None, None)?))
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct InformationCollection {
-    pub tuuid: String,
-    pub nom: String,
-    pub cuuids: Option<Vec<String>>,
-    pub user_id: String,
-    pub supprime: Option<bool>,
-    pub favoris: Option<bool>,
-}
-
 async fn transaction_supprimer_video<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
@@ -2144,11 +1957,6 @@ pub struct ReponseSupprimerOrphelins {
     pub ok: bool,
     pub err: Option<String>,
     pub fuuids_a_conserver: Vec<String>,
-}
-
-pub struct ResultatVerifierOrphelins {
-    pub versions_supprimees: HashMap<String, bool>,
-    pub fuuids_a_conserver: Vec<String>
 }
 
 async fn transaction_supprimer_orphelins<M>(middleware: &M, transaction: TransactionValide, session: &mut ClientSession)
@@ -2644,7 +2452,7 @@ async fn transaction_recycle_items_v3<M>(middleware: &M, transaction: Transactio
         let mut cursor = collection.find(filtre_files, None).await?;
         let mut file_tuuids = Vec::new();
         while cursor.advance().await? {
-            let mut row = cursor.deserialize_current()?;
+            let row = cursor.deserialize_current()?;
             file_tuuids.push(row.tuuid.to_string());
         }
 
@@ -2667,7 +2475,7 @@ async fn recycle_files<M>(middleware: &M, session: &mut ClientSession, user_id: 
     let filtre_filerep = doc!{CHAMP_TUUID: {"$in": files}, CHAMP_USER_ID: &user_id};
     let mut cursor = collection.find_with_session(filtre_filerep.clone(), None, session).await?;
     while cursor.advance(session).await? {
-        let mut row = cursor.deserialize_current()?;
+        let row = cursor.deserialize_current()?;
         if let Some(fuuids) = row.fuuids_versions {
             let filtre = doc! {
                 CHAMP_FUUID: {"$in": fuuids},
