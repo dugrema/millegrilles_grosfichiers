@@ -1,8 +1,3 @@
-use std::collections::{HashMap, HashSet};
-use std::convert::{TryFrom, TryInto};
-use std::ops::Deref;
-use std::str::from_utf8;
-use std::time::Duration;
 use crate::data_structs::{AudioDetail, CompleteFileRow, FileComment, MediaOwnedRow, ResponseVersionCourante, SubtitleDetail, VideoDetail};
 use crate::domain_manager::GrosFichiersDomainManager;
 use crate::grosfichiers_constantes::*;
@@ -10,40 +5,37 @@ use crate::traitement_index::{ParametresGetClesStream, ParametresGetPermission};
 use crate::traitement_media::requete_jobs_video;
 use crate::transactions::*;
 use log::{debug, error, warn};
-use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::serde_helpers::deserialize_chrono_datetime_from_bson_datetime;
-use millegrilles_common_rust::bson::{doc, Bson, Document};
+use millegrilles_common_rust::bson::{doc, Document};
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
-use millegrilles_common_rust::chrono::{DateTime, NaiveDateTime, Utc};
-use millegrilles_common_rust::common_messages::{InformationDechiffrage, InformationDechiffrageV2, ReponseDechiffrage, ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
+use millegrilles_common_rust::chrono::{DateTime, Utc};
+use millegrilles_common_rust::common_messages::{InformationDechiffrageV2, ReponseRequeteDechiffrageV2, RequeteDechiffrage, ResponseRequestDechiffrageV2Cle};
 use millegrilles_common_rust::constantes::Securite::{L2Prive, L3Protege, L4Secure};
 use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::dechiffrage::{DataChiffre, DataChiffreBorrow};
 use millegrilles_common_rust::error::{Error as CommonError, Error};
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction};
 use millegrilles_common_rust::jwt_handler::{generer_jwt, verify_jwt};
-use millegrilles_common_rust::messages_generiques::CommandeDechiffrerCle;
-use millegrilles_common_rust::middleware::sauvegarder_traiter_transaction;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::optionformatchiffragestr;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage::FormatChiffrage;
 use millegrilles_common_rust::millegrilles_cryptographie::chiffrage_docs::EncryptedDocument;
 use millegrilles_common_rust::millegrilles_cryptographie::deser_message_buffer;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::{epochseconds, optionepochseconds};
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, convertir_to_bson, filtrer_doc_id, MongoDao};
-use millegrilles_common_rust::mongo_dao::{map_chrono_datetime_as_bson_datetime, opt_chrono_datetime_as_bson_datetime};
-use millegrilles_common_rust::mongodb::options::{AggregateOptions, FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, MongoDao};
+use millegrilles_common_rust::mongo_dao::opt_chrono_datetime_as_bson_datetime;
+use millegrilles_common_rust::mongodb::options::{FindOptions, Hint};
 use millegrilles_common_rust::mongodb::Cursor;
 use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::recepteur_messages::{MessageValide, TypeMessage};
-use millegrilles_common_rust::redis::Commands;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::serde_json::Value;
 use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::transactions::Transaction;
 use millegrilles_common_rust::{serde_json, serde_json::json};
+use std::collections::{HashMap, HashSet};
+use std::convert::TryFrom;
+use std::str::from_utf8;
+use std::time::Duration;
 
-const CONST_LIMITE_TAILLE_ZIP: u64 = 1024 * 1024 * 1024 * 100;   // Limite 100 GB
 const CONST_LIMITE_NOMBRE_ZIP: u64 = 1_000;
 const CONST_LIMITE_NOMBRE_SOUS_REPERTOIRES: u64 = 10_000;
 
@@ -175,7 +167,7 @@ pub async fn consommer_requete<M>(middleware: &M, message: MessageValide, gestio
 
 }
 
-async fn requete_activite_recente<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_activite_recente<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -209,7 +201,7 @@ async fn requete_activite_recente<M>(middleware: &M, m: MessageValide, gestionna
     let filtre = doc!{CHAMP_SUPPRIME: false, CHAMP_USER_ID: user_id};
 
     let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let mut curseur = collection.find(filtre, opts).await?;
+    let curseur = collection.find(filtre, opts).await?;
     let fichiers_mappes = mapper_fichiers_curseur(curseur).await?;
 
     let reponse = json!({ "fichiers": fichiers_mappes });
@@ -245,7 +237,7 @@ pub fn mapper_fichier_db(fichier: Document) -> Result<FichierDetail, CommonError
     Ok(fichier_mappe)
 }
 
-async fn requete_favoris<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_favoris<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -364,7 +356,7 @@ pub struct ReponseFichierRepVersion {
 }
 
 impl From<NodeFichierRepOwned> for ReponseFichierRepVersion {
-    fn from(mut value: NodeFichierRepOwned) -> Self {
+    fn from(value: NodeFichierRepOwned) -> Self {
         Self {
             tuuid: value.tuuid,
             user_id: value.user_id,
@@ -395,7 +387,7 @@ struct ReponseDocumentsParTuuid {
     fichiers: Vec<ReponseFichierRepVersion>
 }
 
-async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -418,7 +410,7 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
         Err(format!("requetes.requete_documents_par_tuuid: Commande autorisation invalide pour message {:?}", m.type_message))?
     }
 
-    let (user_id, filtre) = if let Some(true) = requete.partage {
+    let (_user_id, filtre) = if let Some(true) = requete.partage {
         // Pre-filtrage pour le partage. Charger les tuuids partages avec le user_id.
         let mut user_id = user_id;
         let contact_ids = {
@@ -477,7 +469,7 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
 
     debug!("requete_documents_par_tuuid Filtre {:?}", serde_json::to_string(&filtre)?);
 
-    let (reponse, truncated) = get_complete_files(middleware, filtre, None, None, None).await?;
+    let (reponse, _truncated) = get_complete_files(middleware, filtre, None, None, None).await?;
 
     debug!("requete_documents_par_tuuid Reponse {:?}", serde_json::to_string(&reponse)?);
 
@@ -485,7 +477,7 @@ async fn requete_documents_par_tuuid<M>(middleware: &M, m: MessageValide, gestio
 }
 
 /// Fetches complete file content from fichierrep, versions and media. Supports paging.
-async fn get_complete_files<M>(middleware: &M, mut filtre: Document, changed_since: Option<DateTime<Utc>>,
+async fn get_complete_files<M>(middleware: &M, filtre: Document, changed_since: Option<DateTime<Utc>>,
                                skip_count: Option<i64>, limit_count: Option<i32>)
     -> Result<(ReponseDocumentsParTuuid, bool), Error>
     where M: MongoDao
@@ -584,7 +576,7 @@ async fn get_complete_files<M>(middleware: &M, mut filtre: Document, changed_sin
             fichier_rep.comments = Some(mapped_comments);
         }
 
-        if let Some(mut version) = row.current_version {
+        if let Some(version) = row.current_version {
             // Map the version to response format
             let mut version_response = ResponseVersionCourante {
                 fuuid: version.fuuid,
@@ -654,7 +646,7 @@ struct ReponseVerifierAccesTuuids {
 }
 
 /// Requete pour verifier si un contact_id ou user_id a acces aux tuuids listes.
-async fn requete_verifier_acces_tuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_verifier_acces_tuuids<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -716,7 +708,7 @@ async fn requete_verifier_acces_tuuids<M>(middleware: &M, m: MessageValide, gest
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_verifier_acces_fuuids<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -798,7 +790,7 @@ struct ReponseCreerJwtStreaming {
     jwt_token: Option<String>,
 }
 
-async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_creer_jwt_streaming<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1030,7 +1022,7 @@ async fn get_information_fichier_stream<M,U,S,R>(middleware: &M, user_id: U, fuu
     Ok(resultat)
 }
 
-async fn requete_get_corbeille<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_get_corbeille<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1087,7 +1079,7 @@ async fn requete_get_corbeille<M>(middleware: &M, m: MessageValide, gestionnaire
 #[derive(Deserialize)]
 struct RowPartageContactOwned {
     contact_id: String,
-    contact_user_id: String,
+    // contact_user_id: String,
     user_id: String,
 }
 
@@ -1113,20 +1105,20 @@ async fn get_contacts_user<M,U>(middleware: &M, user_id: U) -> Result<Vec<RowPar
 struct RowPartageContactBorrowed<'a> {
     #[serde(borrow)]
     contact_id: &'a str,
-    #[serde(borrow)]
-    contact_user_id: &'a str,
-    #[serde(borrow)]
-    user_id: &'a str,
+    // #[serde(borrow)]
+    // contact_user_id: &'a str,
+    // #[serde(borrow)]
+    // user_id: &'a str,
 }
 
 #[derive(Deserialize)]
 struct RowPartageCollection<'a> {
-    #[serde(borrow)]
-    contact_id: &'a str,
+    // #[serde(borrow)]
+    // contact_id: &'a str,
     #[serde(borrow)]
     tuuid: &'a str,
-    #[serde(borrow)]
-    user_id: &'a str,
+    // #[serde(borrow)]
+    // user_id: &'a str,
 }
 
 async fn get_tuuids_partages_user<M,U>(middleware: &M, user_id: U) -> Result<Vec<String>, CommonError>
@@ -1158,7 +1150,7 @@ async fn get_tuuids_partages_user<M,U>(middleware: &M, user_id: U) -> Result<Vec
     Ok(tuuids_partages)
 }
 
-async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
                                       -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1335,7 +1327,7 @@ async fn requete_get_cles_fichiers<M>(middleware: &M, m: MessageValide, gestionn
     Ok(None)  // Aucune reponse a transmettre, c'est le maitre des cles qui va repondre
 }
 
-async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
                                     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -1496,241 +1488,11 @@ async fn requete_get_cles_stream<M>(middleware: &M, m: MessageValide, gestionnai
     Ok(None)  // Aucune reponse a transmettre, c'est le maitre des cles qui va repondre
 }
 
-// async fn mapper_fichiers_resultat<M>(middleware: &M, resultats: Vec<ResultatHitsDetail>, user_id: Option<String>)
-//     -> Result<Vec<ResultatDocumentRecherche>, CommonError>
-//     where M: MongoDao
-// {
-//     // Generer liste de tous les fichiers par version
-//     let (resultat_par_fuuid, fuuids) = {
-//         let mut map = HashMap::new();
-//         let mut fuuids = Vec::new();
-//         for r in &resultats {
-//             map.insert(r.id_.as_str(), r);
-//             fuuids.push(r.id_.clone());
-//         }
-//         (map, fuuids)
-//     };
-//
-//     debug!("requete.mapper_fichiers_resultat resultat par fuuid : {:?}", resultat_par_fuuid);
-//
-//     let mut fichiers_par_tuuid = {
-//         let mut filtre = doc! { CHAMP_FUUIDS: {"$in": &fuuids} };
-//         if user_id.is_some() {
-//             filtre.insert(String::from("user_id"), user_id.expect("user_id"));
-//         }
-//         let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-//         let mut curseur = collection.find(filtre, None).await?;
-//
-//         let mut fichiers: HashMap<String, Vec<ResultatDocumentRecherche>> = HashMap::new();
-//         while let Some(c) = curseur.next().await {
-//             // let fichier: DBFichierVersionDetail = convertir_bson_deserializable(c?)?;
-//             let fcurseur = c?;
-//             let fichier = mapper_fichier_db(fcurseur)?;
-//
-//             if fichier.fuuid_v_courante.is_none() {
-//                 warn!("Fichier tuuid={} sans fuuid_v_courante", fichier.tuuid);
-//                 continue  // Skip le mapping
-//             }
-//
-//             let fuuid = match fichier.fuuid_v_courante.as_ref() {
-//                 Some(f) => f.to_owned(),
-//                 None => {
-//                     warn!("mapper_fichiers_resultat Erreur mapping fichier tuuid={} sans fuuid", fichier.tuuid);
-//                     continue;
-//                 }
-//             };
-//
-//             let resultat = resultat_par_fuuid.get(fuuid.as_str()).expect("resultat");
-//             // let fichier_resultat = ResultatDocumentRecherche::new(fichier, *resultat)?;
-//             let fichier_resultat = match ResultatDocumentRecherche::new_fichier(fichier, *resultat) {
-//                 Ok(fichier_resultat) => fichier_resultat,
-//                 Err(e) => {
-//                     warn!("mapper_fichiers_resultat Erreur mapping fichier fuuid={}: {:?}", fuuid, e);
-//                     continue  // Skip le mapping
-//                 }
-//             };
-//             let tuuid = fichier_resultat.tuuid.clone();
-//             match fichiers.get_mut(&tuuid) {
-//                 Some(mut inner) => { inner.push(fichier_resultat); },
-//                 None => { fichiers.insert(tuuid, vec![fichier_resultat]); }
-//             }
-//
-//         }
-//
-//         fichiers
-//     };
-//
-//     // Charger les details "courants" pour les fichiers
-//     {
-//         let tuuids: Vec<String> = fichiers_par_tuuid.keys().map(|k| k.clone()).collect();
-//         let filtre = doc! { CHAMP_TUUID: {"$in": tuuids} };
-//         let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-//         let mut curseur = collection.find(filtre, None).await?;
-//         while let Some(c) = curseur.next().await {
-//             let fichier: FichierDetail = convertir_bson_deserializable(c?)?;
-//             let tuuid = &fichier.tuuid;
-//             if let Some(mut fichier_resultat) = fichiers_par_tuuid.get_mut(tuuid) {
-//                 for f in fichier_resultat {
-//                     f.nom = fichier.nom.clone();
-//                     f.titre = fichier.titre.clone();
-//                     f.description = fichier.description.clone();
-//                     f.date_creation = fichier.date_creation.clone();
-//                     f.date_modification = fichier.derniere_modification.clone();
-//                 }
-//             }
-//         }
-//     };
-//
-//     // Generer liste de fichiers en reponse, garder l'ordre des fuuid
-//     let mut fichiers_par_fuuid: HashMap<String, ResultatDocumentRecherche> = HashMap::new();
-//     for (_, vec_fichiers) in fichiers_par_tuuid.into_iter() {
-//         for f in vec_fichiers {
-//             fichiers_par_fuuid.insert(f.fuuid.clone(), f);
-//         }
-//     }
-//
-//     let mut liste_reponse = Vec::new();
-//     for fuuid in &fuuids {
-//         if let Some(f) = fichiers_par_fuuid.remove(fuuid) {
-//             liste_reponse.push(f);
-//         }
-//     }
-//
-//     Ok(liste_reponse)
-// }
-
-#[derive(Clone, Serialize, Deserialize)]
-struct ResultatDocumentRecherche {
-    tuuid: String,
-    fuuid: String,
-    nom: Option<String>,
-    supprime: Option<bool>,
-    archive: Option<bool>,
-    nom_version: Option<String>,
-    taille: u64,
-    mimetype: String,
-    date_creation: Option<DateTime<Utc>>,
-    date_modification: Option<DateTime<Utc>>,
-    date_version: Option<DateTime<Utc>>,
-    titre: Option<HashMap<String, String>>,
-    description: Option<HashMap<String, String>>,
-
-    version_courante: Option<DBFichierVersionDetail>,
-
-    // Thumbnail
-    thumb_hachage_bytes: Option<String>,
-    thumb_data: Option<String>,
-
-    // Info recherche
-    score: f32,
-}
-
-// impl ResultatDocumentRecherche {
-//     fn new(value: DBFichierVersionDetail, resultat: &ResultatHitsDetail) -> Result<Self, CommonError> {
-//
-//         let (thumb_hachage_bytes, thumb_data) = match value.images {
-//             Some(mut images) => {
-//                 match images.remove("thumb") {
-//                     Some(inner) => {
-//                         (Some(inner.hachage), inner.data_chiffre)
-//                     },
-//                     None => (None, None)
-//                 }
-//             },
-//             None => (None, None)
-//         };
-//
-//         Ok(ResultatDocumentRecherche {
-//             tuuid: value.tuuid.expect("tuuid"),
-//             fuuid: value.fuuid.expect("fuuid"),
-//             nom: value.nom.clone(),
-//             supprime: None,
-//             archive: None,
-//             nom_version: value.nom,
-//             taille: value.taille as u64,
-//             mimetype: value.mimetype,
-//             date_creation: None,
-//             date_modification: None,
-//             date_version: value.date_fichier,
-//             titre: None,
-//             description: None,
-//
-//             version_courante: None,
-//
-//             // Thumbnail
-//             thumb_hachage_bytes,
-//             thumb_data,
-//
-//             // Info recherche
-//             score: resultat.score,
-//         })
-//     }
-//
-//     fn new_fichier(value: FichierDetail, resultat: &ResultatHitsDetail) -> Result<Self, CommonError> {
-//
-//         let (thumb_hachage_bytes, thumb_data, mimetype, taille) = match &value.version_courante {
-//             Some(v) => {
-//                 let taille = v.taille as u64;
-//                 let mimetype = v.mimetype.to_owned();
-//                 match &v.images {
-//                     Some(images) => {
-//                         match images.get("thumb") {
-//                             Some(inner) => {
-//                                 (Some(inner.hachage.clone()), inner.data_chiffre.clone(), mimetype, taille)
-//                             },
-//                             None => (None, None, mimetype, taille)
-//                         }
-//                     },
-//                     None => (None, None, mimetype, taille)
-//                 }
-//             },
-//             None => (None, None, String::from("application/data"), 0)
-//         };
-//
-//         let fuuid = match value.fuuid_v_courante { Some(t) => t, None => Err(format!("Resultat sans tuuid"))? };
-//
-//         let date_version = match value.derniere_modification {
-//             Some(d) => d,
-//             None => Err(format!("Resultat sans date de derniere_modification"))?
-//         };
-//
-//         Ok(ResultatDocumentRecherche {
-//             tuuid: value.tuuid,
-//             fuuid,
-//             nom: value.nom.clone(),
-//             supprime: value.supprime,
-//             archive: value.archive,
-//             nom_version: value.nom,
-//             taille,
-//             mimetype,
-//             date_creation: value.date_creation,
-//             date_modification: Some(date_version.clone()),
-//             date_version: Some(date_version),
-//             titre: value.titre,
-//             description: value.description,
-//
-//             version_courante: value.version_courante,
-//
-//             // Thumbnail
-//             thumb_hachage_bytes,
-//             thumb_data,
-//
-//             // Info recherche
-//             score: resultat.score,
-//         })
-//     }
-// }
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RequeteDocumentsParTuuids {
     tuuids_documents: Vec<String>,
     partage: Option<bool>,       // Flag qui indique qu'on utilise une permission (contact partage)
     contact_id: Option<String>,  // Identificateur de contact direct
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct RequeteDocumentsParFuuids {
-    fuuids_documents: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1748,20 +1510,6 @@ struct RequeteGenererJwtStreaming {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct RequeteContenuCollection {
-    tuuid_collection: String,
-    limit: Option<i64>,
-    skip: Option<u64>,
-    sort_keys: Option<Vec<SortKey>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct SortKey {
-    colonne: String,
-    ordre: Option<i32>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ResultatDocsPermission<'a> {
     tuuid: &'a str,
     #[serde(borrow)]
@@ -1770,15 +1518,7 @@ struct ResultatDocsPermission<'a> {
     metadata: Option<DataChiffreBorrow<'a>>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct ResultatDocsVersionsFuuidsBorrow<'a> {
-    fuuid: &'a str,
-    fuuids: Option<Vec<&'a str>>,
-    metadata: Option<DataChiffreBorrow<'a>>,
-    cle_id: Option<&'a str>,
-}
-
-async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_confirmer_etat_fuuids<M>(_middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -1834,54 +1574,6 @@ async fn requete_confirmer_etat_fuuids<M>(middleware: &M, m: MessageValide, gest
     // let confirmation = ReponseConfirmerEtatFuuids { fichiers: fichiers_confirmation };
     // let reponse = json!({ "confirmation": confirmation });
     // Ok(Some(middleware.build_reponse(&reponse)?.0))
-}
-
-pub async fn verifier_acces_usager<M,S,T,V>(middleware: &M, user_id_in: S, fuuids_in: V)
-                                            -> Result<Vec<String>, CommonError>
-where M: GenerateurMessages + MongoDao,
-      S: AsRef<str>,
-      T: AsRef<str>,
-      V: AsRef<Vec<T>>
-{
-    todo!("obsolete?")
-    // let user_id = user_id_in.as_ref();
-    // let fuuids: Vec<&str> = fuuids_in.as_ref().iter().map(|s| s.as_ref()).collect();
-    //
-    // let mut filtre = doc! {
-    //     CHAMP_FUUID: { "$in": &fuuids },
-    //     // CHAMP_USER_ID: user_id,
-    //     // CHAMP_SUPPRIME: false,
-    // };
-    //
-    // // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    // let collection = middleware.get_collection_typed::<RowEtatFuuid>(NOM_COLLECTION_VERSIONS)?;
-    // let options = FindOptions::builder()
-    //     .projection(doc!{CHAMP_FUUID: 1})
-    //     //.projection(doc!{CHAMP_FUUIDS: 1})
-    //     .hint(Hint::Name("fuuid".into()))
-    //     .build();
-    // let mut curseur = collection.find(filtre, Some(options)).await?;
-    //
-    // let mut fuuids_acces = HashSet::new();
-    //
-    // //while let Some(row) = curseur.next().await {
-    // while curseur.advance().await? {
-    //     let doc_map = curseur.deserialize_current()?;
-    //     // let doc_row = row?;
-    //     // let doc_map: RowEtatFuuid = convertir_bson_deserializable(doc_row)?;
-    //     fuuids_acces.extend(doc_map.fuuids.into_iter().map(|s| s.to_owned()));
-    // }
-    //
-    // let hashset_requete = HashSet::from_iter(fuuids);
-    // let mut hashset_acces = HashSet::new();
-    // for fuuid in &fuuids_acces {
-    //     hashset_acces.insert(fuuid.as_str());
-    // }
-    //
-    // let resultat: Vec<&&str> = hashset_acces.intersection(&hashset_requete).collect();
-    //
-    // // String to_owned
-    // Ok(resultat.into_iter().map(|s| s.to_string()).collect())
 }
 
 pub async fn verifier_acces_usager_media<M,S,T,V>(middleware: &M, user_id_in: S, fuuids_in: V)
@@ -1984,7 +1676,7 @@ pub async fn verifier_acces_usager_tuuids<M,S,T,V>(middleware: &M, user_id_in: S
     let user_id = user_id_in.as_ref();
     let tuuids: Vec<&str> = tuuids_in.as_ref().iter().map(|s| s.as_ref()).collect();
 
-    let mut filtre = doc! {
+    let filtre = doc! {
         CHAMP_TUUID: { "$in": &tuuids },
         CHAMP_USER_ID: user_id,
         CHAMP_SUPPRIME: false,
@@ -2023,27 +1715,9 @@ struct RequeteConfirmerEtatFuuids {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct ReponseConfirmerEtatFuuids {
-    fichiers: Vec<ConfirmationEtatFuuid>
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct RowEtatFuuid<'a> {
-    #[serde(borrow)]
-    fuuids: Vec<&'a str>,
-    // supprime: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 struct RowEtatTuuid<'a> {
     #[serde(borrow)]
     tuuid: &'a str,
-    supprime: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct ConfirmationEtatFuuid {
-    fuuid: String,
     supprime: bool,
 }
 
@@ -2118,7 +1792,7 @@ struct ReponseRequeteSyncCollection {
     liste: Vec<FichierSync>
 }
 
-async fn requete_sync_collection<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_sync_collection<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2207,14 +1881,14 @@ async fn requete_sync_collection<M>(middleware: &M, m: MessageValide, gestionnai
     debug!("requete_sync_collection Filtre {:?}", filtre);
 
     // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let mut fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
+    let fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
     let complete = fichiers_confirmation.len() < limit as usize;
 
     let reponse = ReponseRequeteSyncCollection { complete, liste: fichiers_confirmation };
     Ok(Some(middleware.build_reponse(&reponse)?.0))
 }
 
-async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2268,7 +1942,7 @@ async fn requete_sync_corbeille<M>(middleware: &M, m: MessageValide, gestionnair
 
     debug!("requete_sync_corbeille Requete fichiers filtre : {:?}", filtre);
 
-    let mut fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
+    let fichiers_confirmation = find_sync_fichiers(middleware, filtre, opts).await?;
     let complete = fichiers_confirmation.len() < limit as usize;
 
     let reponse = ReponseRequeteSyncCollection { complete, liste: fichiers_confirmation };
@@ -2281,7 +1955,7 @@ struct ReponseRequeteSyncCuuids {
     liste: Vec<CuuidsSync>
 }
 
-async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao
 {
@@ -2327,7 +2001,7 @@ async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValide, gestionnaire: 
 
     let type_node_repertoire: &str = TypeNode::Repertoire.into();
     let type_node_collection: &str = TypeNode::Collection.into();
-    let mut filtre = doc! {
+    let filtre = doc! {
         "type_node": {"$in": [type_node_repertoire, type_node_collection]},
         "supprime": false,
         "metadata": {"$exists": true}
@@ -2335,8 +2009,8 @@ async fn requete_sync_cuuids<M>(middleware: &M, m: MessageValide, gestionnaire: 
 
     debug!("requete_sync_cuuids filtre : {:?}", filtre);
 
-    let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
-    let mut fichiers_confirmation = find_sync_cuuids(middleware, filtre, opts).await?;
+    // let collection = middleware.get_collection(NOM_COLLECTION_FICHIERS_REP)?;
+    let fichiers_confirmation = find_sync_cuuids(middleware, filtre, opts).await?;
     let complete = fichiers_confirmation.len() < limit as usize;
 
     let reponse = ReponseRequeteSyncCuuids { complete, liste: fichiers_confirmation };
@@ -2352,7 +2026,7 @@ async fn find_sync_fichiers<M>(middleware: &M, filtre: Document, opts: FindOptio
     let mut fichiers_confirmation = Vec::new();
     // while let Some(d) = curseur.next().await {
     while curseur.advance().await? {
-        let mut row = curseur.deserialize_current()?;
+        let row = curseur.deserialize_current()?;
         // let mut record: FichierSync = convertir_bson_deserializable(d?)?;
         // row.derniere_modification = Some(row.map_derniere_modification.clone());
         fichiers_confirmation.push(row);
@@ -2369,7 +2043,7 @@ async fn find_sync_cuuids<M>(middleware: &M, filtre: Document, opts: FindOptions
     let mut curseur = collection.find(filtre, opts).await?;
     let mut cuuids_confirmation = Vec::new();
     while let Some(d) = curseur.next().await {
-        let mut record: CuuidsSync = convertir_bson_deserializable(d?)?;
+        let record: CuuidsSync = convertir_bson_deserializable(d?)?;
         // record.derniere_modification = Some(record.map_derniere_modification.clone());
         cuuids_confirmation.push(record);
     }
@@ -2442,7 +2116,7 @@ async fn map_user_ids_nom_usager<M,U>(middleware: &M, user_ids_in: &Vec<U>) -> R
     Ok(reponse.usagers)
 }
 
-async fn requete_charger_contacts<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_charger_contacts<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2457,7 +2131,7 @@ async fn requete_charger_contacts<M>(middleware: &M, m: MessageValide, gestionna
         }
     };
 
-    let commande: RequeteChargerContacts = {
+    let _commande: RequeteChargerContacts = {
         let message_ref = m.message.parse()?;
         message_ref.contenu()?.deserialize()?
     };
@@ -2520,7 +2194,7 @@ struct ReponsePartagesUsager {
     usagers: Option<Vec<ReponseUsager>>,
 }
 
-async fn requete_partages_usager<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_partages_usager<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2559,10 +2233,12 @@ async fn requete_partages_usager<M>(middleware: &M, m: MessageValide, gestionnai
 }
 
 #[derive(Deserialize)]
-struct RequetePartagesContact { user_id: Option<String> }
+struct RequetePartagesContact {
+    // user_id: Option<String>
+}
 
 /// Retourne la liste de tuuids partages avec l'usager qui fait la requete
-async fn requete_partages_contact<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_partages_contact<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
                                      -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2577,7 +2253,7 @@ async fn requete_partages_contact<M>(middleware: &M, m: MessageValide, gestionna
         }
     };
 
-    let requete: RequetePartagesContact = {
+    let _requete: RequetePartagesContact = {
         let message_ref = m.message.parse()?;
         message_ref.contenu()?.deserialize()?
     };
@@ -2633,7 +2309,7 @@ struct ReponseInfoStatistiques {
     info: Vec<ResultatStatistiquesRow>,
 }
 
-async fn requete_info_statistiques<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_info_statistiques<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2785,7 +2461,7 @@ struct ReponseStructureRepertoire {
     liste: Vec<NodeFichierRepVersionCouranteOwned>,
 }
 
-async fn requete_structure_repertoire<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_structure_repertoire<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2923,7 +2599,7 @@ struct ReponseSousRepertoires {
     liste: Vec<NodeFichierRepOwned>,
 }
 
-async fn requete_sous_repertoires<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+async fn requete_sous_repertoires<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -2945,7 +2621,7 @@ async fn requete_sous_repertoires<M>(middleware: &M, m: MessageValide, gestionna
 
     let limite_nombre = match requete.limite_nombre { Some(inner) => inner, None => CONST_LIMITE_NOMBRE_SOUS_REPERTOIRES };
 
-    let mut filtre = doc! {
+    let filtre = doc! {
         CHAMP_USER_ID: &user_id,
         CHAMP_SUPPRIME: false,
         CHAMP_TYPE_NODE: TypeNode::Repertoire.to_str(),
@@ -3021,7 +2697,7 @@ impl TransfertRequeteRechercheIndex {
     }
 }
 
-pub async fn requete_recherche_index<M>(middleware: &M, m: MessageValide, gestionnaire: &GrosFichiersDomainManager)
+pub async fn requete_recherche_index<M>(middleware: &M, m: MessageValide, _gestionnaire: &GrosFichiersDomainManager)
     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
     where M: GenerateurMessages + MongoDao + ValidateurX509
 {
@@ -3194,7 +2870,7 @@ struct RequestSyncDirectory {
     last_sync: Option<i64>,
     skip: Option<i64>,
     limit_count: Option<i32>,
-    limit_size: Option<i32>,
+    // limit_size: Option<i32>,
     deleted: Option<bool>,
     produce_stats: Option<bool>,
 }
@@ -3384,7 +3060,7 @@ pub async fn request_sync_directory<M>(middleware: &M, m: MessageValide)
         let mut deleted_tuuids = Vec::new();
         if let Some(sync_date) = last_sync.as_ref() {
             if ! deleted {
-                let mut filtre = match cuuid.as_ref() {
+                let filtre = match cuuid.as_ref() {
                     Some(cuuid) => doc! {
                         "path_cuuids.0": cuuid,
                         "user_id": &user_id,
@@ -3666,7 +3342,7 @@ where M: GenerateurMessages + MongoDao + ValidateurX509
                 let tuuids: Vec<&String> = first_batch.iter().map(|d| &d.tuuid).collect();
                 let filtre = doc!{"tuuid": {"$in": &tuuids}};
                 // debug!("search_index_v2 Filter for loading files:\n{:?}", filtre);
-                let (result, truncated) = get_complete_files(middleware, filtre, None, None, None).await?;
+                let (result, _truncated) = get_complete_files(middleware, filtre, None, None, None).await?;
                 // debug!("Loaded {} complete files", result.fichiers.len());
                 response.files = Some(result.fichiers);
 
@@ -3791,7 +3467,7 @@ async fn request_files_by_tuuid<M>(middleware: &M, m: MessageValide)
                     updated_files.push(file);  // Move file to final list (same user)
                 } else {
                     match files_by_user_id.get_mut(&file.user_id) {
-                        Some(mut list) => {
+                        Some(list) => {
                             list.push(file);
                         }
                         None => {
