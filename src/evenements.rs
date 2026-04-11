@@ -1,35 +1,32 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use log::{debug, error, info, warn};
-use millegrilles_common_rust::{chrono, serde_json, serde_json::json};
-use millegrilles_common_rust::async_trait::async_trait;
-use millegrilles_common_rust::bson::{Bson, doc, Document};
+use millegrilles_common_rust::bson::doc;
+use millegrilles_common_rust::{chrono, serde_json::json};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Duration;
 
+use crate::domain_manager::GrosFichiersDomainManager;
 use millegrilles_common_rust::certificats::{ValidateurX509, VerificateurPermissions};
 use millegrilles_common_rust::chrono::{DateTime, Utc};
-use millegrilles_common_rust::constantes::*;
 use millegrilles_common_rust::constantes::Securite::{L1Public, L2Prive, L3Protege};
+use millegrilles_common_rust::constantes::*;
+use millegrilles_common_rust::error::Error as CommonError;
 use millegrilles_common_rust::generateur_messages::{GenerateurMessages, RoutageMessageAction, RoutageMessageReponse};
 use millegrilles_common_rust::millegrilles_cryptographie::messages_structs::MessageMilleGrillesBufferDefault;
-use millegrilles_common_rust::mongo_dao::{convertir_bson_deserializable, start_transaction_regular, MongoDao};
-use millegrilles_common_rust::mongodb::options::{FindOneOptions, FindOptions, Hint, UpdateOptions};
+use millegrilles_common_rust::mongo_dao::{start_transaction_regular, MongoDao};
+use millegrilles_common_rust::mongodb::options::FindOptions;
+use millegrilles_common_rust::mongodb::ClientSession;
+use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
 use millegrilles_common_rust::recepteur_messages::MessageValide;
 use millegrilles_common_rust::serde::{Deserialize, Serialize};
 use millegrilles_common_rust::tokio::time as tokio_time;
-use millegrilles_common_rust::tokio::time::{Duration as DurationTokio, timeout};
-use millegrilles_common_rust::tokio_stream::StreamExt;
-use millegrilles_common_rust::error::Error as CommonError;
-use millegrilles_common_rust::mongodb::ClientSession;
-use millegrilles_common_rust::rabbitmq_dao::TypeMessageOut;
-use crate::domain_manager::GrosFichiersDomainManager;
 
 use crate::grosfichiers_constantes::*;
 use crate::requetes::mapper_fichier_db;
 use crate::traitement_index::entretien_supprimer_fichiersrep;
 use crate::traitement_jobs::{BackgroundJob, BackgroundJobParams};
 use crate::traitement_media::sauvegarder_job_video;
-use crate::transactions::{NodeFichierRepOwned, NodeFichierRepRow, NodeFichierVersionRow};
+use crate::transactions::{NodeFichierRepOwned, NodeFichierVersionRow};
 
 const LIMITE_FUUIDS_BATCH: usize = 10000;
 const EXPIRATION_THROTTLING_EVENEMENT_CUUID_CONTENU: i64 = 1;
@@ -224,11 +221,6 @@ pub async fn evenement_fichiers_syncpret<M>(middleware: &M, m: MessageValide, se
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct EvenementConfirmerEtatFuuids {
-    fuuids: Vec<String>
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 struct EvenementTranscodageProgres {
     job_id: String,
     fuuid: String,
@@ -243,28 +235,6 @@ struct EvenementTranscodageProgres {
     #[serde(rename="pctProgres")]
     pct_progres: Option<i32>,
     passe: Option<i32>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct RowEtatFuuid {
-    fuuids: Vec<String>,
-    supprime: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct RequeteConfirmerEtatFuuids {
-    fuuids: Vec<String>
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct ReponseConfirmerEtatFuuids {
-    fuuids: Vec<ConfirmationEtatFuuid>
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct ConfirmationEtatFuuid {
-    fuuid: String,
-    supprime: bool,
 }
 
 #[derive(Clone, Deserialize)]
@@ -298,50 +268,6 @@ async fn evenement_visiter_fuuids<M>(middleware: &M, m: MessageValide, session: 
     marquer_visites_fuuids(middleware, &evenement.fuuids, date_visite, instance_id, session).await?;
 
     Ok(None)
-}
-
-// async fn evenement_filecontroler_visiter_fuuids<M>(middleware: &M, m: MessageValide)
-//     -> Result<Option<MessageMilleGrillesBufferDefault>, CommonError>
-//     where M: GenerateurMessages + MongoDao
-// {
-//     if !m.certificat.verifier_exchanges(vec![L1Public])? {
-//         error!("evenement_filecontroler_visiter_fuuids Acces refuse, certificat n'est pas d'un exchange L1");
-//         return Ok(None)
-//     }
-//
-//     if !m.certificat.verifier_roles_string(vec![DOMAINE_FILECONTROLER_NOM.into()])? {
-//         error!("evenement_filecontroler_visiter_fuuids Acces refuse, certificat n'est pas de role filecontroler");
-//         return Ok(None)
-//     }
-//
-//     debug!("evenement_filecontroler_visiter_fuuids Mapper EvenementVisiterFuuids a partir de {:?}", m.type_message);
-//     let message_ref = m.message.parse()?;
-//     let evenement: FilecontrolerVisitEvent = message_ref.contenu()?.deserialize()?;
-//     let date_visite = &message_ref.estampille;
-//
-//     debug!("evenement_filecontroler_visiter_fuuids Visiter fuuid {} de filehost_id {}", evenement.fuuid, evenement.filehost_id);
-//     marquer_visites_fuuids_filecontroler(middleware, &vec![evenement.fuuid], date_visite, evenement.filehost_id).await?;
-//
-//     Ok(None)
-// }
-
-#[derive(Clone, Deserialize)]
-struct EvenementFichierConsigne { hachage_bytes: String }
-
-#[derive(Clone, Deserialize)]
-struct DocumentFichierDetailIds {
-    fuuid: String,
-    // tuuid: String,
-    // user_id: String,
-    // flag_media: Option<String>,
-    flag_media_traite: Option<bool>,
-    flag_video_traite: Option<bool>,
-    // flag_index: Option<bool>,
-    mimetype: Option<String>,
-    visites: Option<HashMap<String, u32>>,
-    cle_id: Option<String>,
-    format: Option<String>,
-    nonce: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -405,7 +331,7 @@ pub async fn declencher_traitement_nouveau_fuuid<M,V>(middleware: &M, gestionnai
             None => doc_fuuid.fuuid.as_str()
         };
 
-        let image_traitee = doc_fuuid.flag_media_traite;
+        // let image_traitee = doc_fuuid.flag_media_traite;
         let video_traite = doc_fuuid.flag_video_traite;
 
         // Find a matching tuuid for the user_id/fuuid. If the user has copied the file multiple times,
@@ -595,11 +521,8 @@ impl HandlerEvenements {
             for holder in evenements_expires {
                 match holder.evenement {
                     Some(inner) => {
-                        if let EvenementHolderType::ContenuCollection(evenement) = inner {
-                            emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
-                        } else {
-                            error!("emettre_cuuid_content_expires Mauvais type de Holder pour evenement emettre_cuuid_content_expires");
-                        }
+                        let EvenementHolderType::ContenuCollection(evenement) = inner;
+                        emettre_evenement_contenu_collection(middleware, gestionnaire, evenement).await?;
                     },
                     None => ()  // Rien a faire, le lock a ete retire
                 }
@@ -627,11 +550,8 @@ impl HandlerEvenements {
             Some(val) => {
                 match val.evenement.as_mut() {
                     Some(inner) => {
-                        if let EvenementHolderType::ContenuCollection(evenement_existant) = inner {
-                            evenement_existant.merge(evenement)?;
-                        } else {
-                            error!("verifier_evenement_cuuid_contenu Mauvais type de Holder pour evenement emettre_cuuid_content_expires");
-                        }
+                        let EvenementHolderType::ContenuCollection(evenement_existant) = inner;
+                        evenement_existant.merge(evenement)?;
                     },
                     None => {
                         // Inserer l'evenement recu tel quel pour re-emission apres expiration
@@ -752,7 +672,7 @@ impl EvenementContenuCollection {
     }
 
     /// Combine deux instances de EvenementContenuCollection
-    pub fn merge(&mut self, mut other: Self) -> Result<(), CommonError> {
+    pub fn merge(&mut self, other: Self) -> Result<(), CommonError> {
         if self.cuuid.as_str() != other.cuuid.as_str() {
             Err(format!("EvenementContenuCollection.merge cuuid mismatch"))?
         }
