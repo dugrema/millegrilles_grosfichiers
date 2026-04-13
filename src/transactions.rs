@@ -2378,12 +2378,15 @@ async fn copy_media_file<M,S,T>(middleware: &M, session: &mut ClientSession, use
         if let Some(subtitles) = row.subtitles {
             set_on_insert.insert("subtitles", convertir_to_bson_array(subtitles)?);
         }
+        if let Some(web_subtitles) = row.web_subtitles {
+            set_on_insert.insert("web_subtitles", convertir_to_bson_array(web_subtitles)?);
+        }
 
         let mut ops = doc! {
             "$setOnInsert": set_on_insert,
             "$currentDate": {CHAMP_MODIFICATION: true}
         };
-        // Copy videos individually to merge to merge the entries.
+        // Copy videos individually to merge the entries.
         if let Some(video) = row.video {
             let mut set_ops = doc! {};
             for (key, value) in video {
