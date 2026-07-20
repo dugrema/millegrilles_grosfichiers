@@ -23,7 +23,7 @@ services:
       - MG_MQ_PORT=${MQ_PORT:-5673}
       - CERTFILE=/run/secrets/cert.pem
       - KEYFILE=/run/secrets/key.pem
-      - CAFILE=/run/secrets/millegrille.cert.pem
+      - CAFILE=/run/secrets/millegrille.pem
       - MG_MONGO_HOST=mongo
       - RUST_LOG=warn
       - MG_REDIS_URL=rediss://client_rust@redis:6379#insecure
