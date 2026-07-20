@@ -1,0 +1,64 @@
+include:
+  - path: ../include/app_net.yml
+    project_directory: .
+
+name: ${INSTANCE_NAME}
+
+services:
+  grosfichiers:
+    image: "replace_me"
+    x-millegrilles-certificat:
+      roles:
+        - grosfichiers
+      exchanges:
+        - 4.secure
+        - 3.protege
+        - 2.prive
+        - 1.public
+      domaines:
+        - GrosFichiers
+      split: true
+    environment:
+      - MG_MQ_HOST=${MQ_HOSTNAME:-mq}
+      - MG_MQ_PORT=${MQ_PORT:-5673}
+      - CERTFILE=/run/secrets/cert.pem
+      - KEYFILE=/run/secrets/key.pem
+      - CAFILE=/run/secrets/millegrille.cert.pem
+      - MG_MONGO_HOST=mongo
+      - RUST_LOG=warn,millegrilles_grosfichiers=info
+      - MG_REDIS_URL=rediss://client_rust@redis:6379#insecure
+    volumes:
+      - ${MILLEGRILLES_ROOT}/var/backup/domains:/var/opt/millegrilles/archives
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 250M
+      restart_policy:
+        condition: on-failure
+        delay: 30s
+        max_attempts: 1000
+    configs:
+      - source: grosfichiers
+        target: /run/secrets/cert.pem
+      - source: mgca
+        target: /run/secrets/millegrille.pem
+    secrets:
+      - source: grosfichiers
+        target: key.pem
+      - source: passwd_redis
+        target: redis.txt
+    networks:
+      - app_net
+
+configs:
+  maitredescles:
+    file: ${MILLEGRILLES_ROOT}/secrets/grosfichiers.cert.pem
+  mgca:
+    file: ${MILLEGRILLES_ROOT}/etc/millegrille.pem
+
+secrets:
+  maitredescles:
+    file: ${MILLEGRILLES_ROOT}/secrets/grosfichiers.key.pem
+  passwd_redis:
+    file: ${MILLEGRILLES_ROOT}/secrets/redis.txt
