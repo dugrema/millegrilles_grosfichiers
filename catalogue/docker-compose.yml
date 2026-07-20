@@ -19,11 +19,12 @@ services:
         - GrosFichiers
       split: true
     environment:
+      - INSTANCE_ID=${INSTANCE_ID}
       - MG_MQ_HOST=${MQ_HOSTNAME:-mq}
       - MG_MQ_PORT=${MQ_PORT:-5673}
       - CERTFILE=/run/secrets/cert.pem
       - KEYFILE=/run/secrets/key.pem
-      - CAFILE=/run/secrets/millegrille.pem
+      - CAFILE=/run/secrets/millegrille.cert.pem
       - MG_MONGO_HOST=mongo
       - RUST_LOG=warn
       - MG_REDIS_URL=rediss://client_rust@redis:6379#insecure
@@ -42,12 +43,12 @@ services:
       - source: grosfichiers_backend
         target: /run/secrets/cert.pem
       - source: mgca
-        target: /run/secrets/millegrille.pem
+        target: /run/secrets/millegrille.cert.pem
     secrets:
       - source: grosfichiers_backend
         target: key.pem
       - source: passwd_redis
-        target: redis.txt
+        target: passwd.redis.txt
     networks:
       - app_net
 
