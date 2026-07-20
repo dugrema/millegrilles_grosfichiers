@@ -28,6 +28,7 @@ services:
       - MG_MONGO_HOST=mongo
       - RUST_LOG=warn
       - MG_REDIS_URL=rediss://client_rust@redis:6379#insecure
+      - MG_REDIS_PASSWORD_FILE=/run/secrets/passwd.redis.txt
     volumes:
       - ${MILLEGRILLES_ROOT}/var/backup/domains:/var/opt/millegrilles/archives
     deploy:
