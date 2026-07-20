@@ -5,7 +5,7 @@ include:
 name: ${INSTANCE_NAME}
 
 services:
-  grosfichiers:
+  grosfichiers_backend:
     image: "replace_me"
     x-millegrilles-certificat:
       roles:
@@ -25,7 +25,7 @@ services:
       - KEYFILE=/run/secrets/key.pem
       - CAFILE=/run/secrets/millegrille.cert.pem
       - MG_MONGO_HOST=mongo
-      - RUST_LOG=warn,millegrilles_grosfichiers=info
+      - RUST_LOG=warn
       - MG_REDIS_URL=rediss://client_rust@redis:6379#insecure
     volumes:
       - ${MILLEGRILLES_ROOT}/var/backup/domains:/var/opt/millegrilles/archives
@@ -39,12 +39,12 @@ services:
         delay: 30s
         max_attempts: 1000
     configs:
-      - source: grosfichiers
+      - source: grosfichiers_backend
         target: /run/secrets/cert.pem
       - source: mgca
         target: /run/secrets/millegrille.pem
     secrets:
-      - source: grosfichiers
+      - source: grosfichiers_backend
         target: key.pem
       - source: passwd_redis
         target: redis.txt
@@ -52,13 +52,13 @@ services:
       - app_net
 
 configs:
-  maitredescles:
-    file: ${MILLEGRILLES_ROOT}/secrets/grosfichiers.cert.pem
+  grosfichiers_backend:
+    file: ${MILLEGRILLES_ROOT}/secrets/grosfichiers_backend.cert.pem
   mgca:
     file: ${MILLEGRILLES_ROOT}/etc/millegrille.pem
 
 secrets:
-  maitredescles:
-    file: ${MILLEGRILLES_ROOT}/secrets/grosfichiers.key.pem
+  grosfichiers_backend:
+    file: ${MILLEGRILLES_ROOT}/secrets/grosfichiers_backend.key.pem
   passwd_redis:
     file: ${MILLEGRILLES_ROOT}/secrets/redis.txt
