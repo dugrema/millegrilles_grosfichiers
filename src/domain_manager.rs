@@ -67,6 +67,7 @@ impl GestionnaireDomaineV2 for GrosFichiersDomainManager {
             String::from(NOM_COLLECTION_DOCUMENTS),
             String::from(NOM_COLLECTION_PARTAGE_CONTACT),
             String::from(NOM_COLLECTION_MEDIA),
+            String::from(NOM_COLLECTION_FILE_COMMENTS),
             // Volatile but need to reset
             String::from(NOM_COLLECTION_JOBS_LEASES),
             String::from(NOM_COLLECTION_JOBS_VERSIONS_LEASES),
