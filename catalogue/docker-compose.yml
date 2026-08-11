@@ -18,13 +18,11 @@ services:
         - 1.public
       domaines:
         - GrosFichiers
-      split: true
     environment:
       - INSTANCE_ID=${INSTANCE_ID}
       - MG_MQ_HOST=${MQ_HOSTNAME:-mq}
       - MG_MQ_PORT=${MQ_PORT:-5673}
-      - CERTFILE=/run/secrets/cert.pem
-      - KEYFILE=/run/secrets/key.pem
+      - KEYFILE=/run/secrets/key_cert.pem
       - CAFILE=/run/secrets/millegrille.cert.pem
       - MG_MONGO_HOST=mongo
       - RUST_LOG=warn
@@ -41,26 +39,22 @@ services:
         condition: any
         delay: 30s
     configs:
-      - source: grosfichiers_backend
-        target: /run/secrets/cert.pem
       - source: mgca
         target: /run/secrets/millegrille.cert.pem
     secrets:
       - source: grosfichiers_backend
-        target: key.pem
+        target: key_cert.pem
       - source: passwd_redis
         target: passwd.redis.txt
     networks:
       - app_net
 
 configs:
-  grosfichiers_backend:
-    file: ${MILLEGRILLES_ROOT}/secrets/grosfichiers_backend.cert.pem
   mgca:
     file: ${MILLEGRILLES_ROOT}/etc/millegrille.pem
 
 secrets:
   grosfichiers_backend:
-    file: ${MILLEGRILLES_ROOT}/secrets/grosfichiers_backend.key.pem
+    file: ${MILLEGRILLES_ROOT}/secrets/grosfichiers_backend.pem
   passwd_redis:
     file: ${MILLEGRILLES_ROOT}/secrets/redis.txt
